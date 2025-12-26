@@ -24,12 +24,14 @@ public class OracleParser {
         Files.writeString(tempFile, source);
 
         try {
-            // Run Node.js with esprima to parse
+            // Run Node.js with acorn to parse
+            // Set working directory to src/test/resources so npx can find acorn
             ProcessBuilder pb = new ProcessBuilder(
                 "node",
-                ORACLE_SCRIPT.toString(),
+                ORACLE_SCRIPT.toAbsolutePath().toString(),
                 tempFile.toString()
             );
+            pb.directory(ORACLE_SCRIPT.getParent().toFile());
             pb.redirectErrorStream(true);
             Process process = pb.start();
 
