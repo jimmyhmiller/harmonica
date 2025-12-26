@@ -2,21 +2,15 @@ package com.jsparser;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jsparser.ast.Program;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Paths;
 
-/**
- * Debug test for manually comparing parser output against acorn oracle.
- * Disabled in CI because it requires npm dependencies installed in src/test/resources/.
- */
 public class DebugCompareTest {
     private static final ObjectMapper mapper = new ObjectMapper();
 
     @Test
-    @Disabled("Debug utility - requires npm dependencies in src/test/resources/")
     void debugCompare() throws Exception {
         String source = "assert(true);";
 
