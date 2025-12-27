@@ -25,16 +25,12 @@ import java.util.Set;
  */
 public class TestObjectMapper {
 
-    private static ObjectMapper instance;
-
     // Fields to exclude from serialization (we use loc instead)
     private static final Set<String> EXCLUDED_FIELDS = Set.of("startLine", "startCol", "endLine", "endCol");
 
-    public static synchronized ObjectMapper get() {
-        if (instance == null) {
-            instance = createObjectMapper();
-        }
-        return instance;
+    public static ObjectMapper get() {
+        // Create a new ObjectMapper each time to avoid caching issues with serializers
+        return createObjectMapper();
     }
 
     public static ObjectMapper createObjectMapper() {
