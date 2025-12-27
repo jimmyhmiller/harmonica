@@ -271,7 +271,8 @@ public class TestObjectMapper {
                 return beanProperties;
             }
 
-            // Filter out the excluded fields
+            // Filter out the excluded fields (startLine, startCol, endLine, endCol)
+            // The loc property is serialized via the mixin's @JsonProperty("loc")
             List<BeanPropertyWriter> filtered = new java.util.ArrayList<>();
             for (BeanPropertyWriter prop : beanProperties) {
                 if (EXCLUDED_FIELDS.contains(prop.getName())) {
@@ -281,17 +282,6 @@ public class TestObjectMapper {
             }
 
             return filtered;
-        }
-
-        @Override
-        public JsonSerializer<?> modifySerializer(SerializationConfig config,
-                                                    BeanDescription beanDesc,
-                                                    JsonSerializer<?> serializer) {
-            Class<?> beanClass = beanDesc.getBeanClass();
-            if (isAstClass(beanClass)) {
-                return new LocAddingSerializer(serializer, beanClass);
-            }
-            return serializer;
         }
 
         private boolean isAstClass(Class<?> clazz) {
@@ -306,97 +296,6 @@ public class TestObjectMapper {
             } catch (NoSuchMethodException e) {
                 return false;
             }
-        }
-    }
-
-    /**
-     * A serializer wrapper that ensures the 'loc' property is always written for AST nodes.
-     * This works around Jackson mixin inheritance issues on Java 25-ea where mixins applied
-     * to interfaces don't properly cascade to implementing record classes.
-     */
-    private static class LocAddingSerializer extends JsonSerializer<Object>
-            implements com.fasterxml.jackson.databind.ser.ResolvableSerializer {
-        private final JsonSerializer<Object> delegate;
-        private final java.lang.reflect.Method locMethod;
-
-        @SuppressWarnings("unchecked")
-        LocAddingSerializer(JsonSerializer<?> delegate, Class<?> beanClass) {
-            this.delegate = (JsonSerializer<Object>) delegate;
-            java.lang.reflect.Method method = null;
-            try {
-                method = beanClass.getMethod("loc");
-                if (method.getReturnType() != SourceLocation.class) {
-                    method = null;
-                }
-            } catch (NoSuchMethodException e) {
-                // No loc method
-            }
-            this.locMethod = method;
-        }
-
-        @Override
-        public void resolve(SerializerProvider provider) throws JsonMappingException {
-            if (delegate instanceof com.fasterxml.jackson.databind.ser.ResolvableSerializer) {
-                ((com.fasterxml.jackson.databind.ser.ResolvableSerializer) delegate).resolve(provider);
-            }
-        }
-
-        @Override
-        public void serialize(Object value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
-            serializeWithLocHandling(value, gen, serializers, null);
-        }
-
-        @Override
-        public void serializeWithType(Object value, JsonGenerator gen, SerializerProvider serializers,
-                                       com.fasterxml.jackson.databind.jsontype.TypeSerializer typeSer) throws IOException {
-            serializeWithLocHandling(value, gen, serializers, typeSer);
-        }
-
-        private void serializeWithLocHandling(Object value, JsonGenerator gen, SerializerProvider serializers,
-                                               com.fasterxml.jackson.databind.jsontype.TypeSerializer typeSer) throws IOException {
-            // We need to intercept the serialization and add loc if missing
-            // Use a wrapper that captures and modifies the output
-
-            // Create a buffer to capture the default serialization
-            java.io.StringWriter sw = new java.io.StringWriter();
-            try (JsonGenerator bufferGen = gen.getCodec().getFactory().createGenerator(sw)) {
-                if (typeSer != null) {
-                    delegate.serializeWithType(value, bufferGen, serializers, typeSer);
-                } else {
-                    delegate.serialize(value, bufferGen, serializers);
-                }
-            }
-
-            String json = sw.toString();
-
-            // Parse and check if loc is present
-            ObjectMapper mapper = (ObjectMapper) gen.getCodec();
-            com.fasterxml.jackson.databind.node.ObjectNode node =
-                (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(json);
-
-            // Add loc if missing and we have a loc method
-            if (!node.has("loc") && locMethod != null) {
-                try {
-                    SourceLocation loc = (SourceLocation) locMethod.invoke(value);
-                    if (loc != null) {
-                        com.fasterxml.jackson.databind.node.ObjectNode locNode = mapper.createObjectNode();
-                        com.fasterxml.jackson.databind.node.ObjectNode startNode = mapper.createObjectNode();
-                        startNode.put("line", loc.start().line());
-                        startNode.put("column", loc.start().column());
-                        com.fasterxml.jackson.databind.node.ObjectNode endNode = mapper.createObjectNode();
-                        endNode.put("line", loc.end().line());
-                        endNode.put("column", loc.end().column());
-                        locNode.set("start", startNode);
-                        locNode.set("end", endNode);
-                        node.set("loc", locNode);
-                    }
-                } catch (Exception e) {
-                    // If we can't get loc, just skip
-                }
-            }
-
-            // Write the modified JSON
-            gen.writeTree(node);
         }
     }
 
