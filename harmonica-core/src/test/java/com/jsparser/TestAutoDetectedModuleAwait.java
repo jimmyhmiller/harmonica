@@ -42,6 +42,16 @@ public class TestAutoDetectedModuleAwait {
         String javaJson = mapper.writeValueAsString(javaAst);
 
         // Debug output
+        System.out.println("=== Java version: " + System.getProperty("java.version") + " ===");
+        System.out.println("=== Checking parameter names on ImportDeclaration ===");
+        try {
+            java.lang.reflect.RecordComponent[] components = com.jsparser.ast.ImportDeclaration.class.getRecordComponents();
+            for (java.lang.reflect.RecordComponent c : components) {
+                System.out.println("  Component: " + c.getName() + " -> " + c.getType().getSimpleName());
+            }
+        } catch (Exception e) {
+            System.out.println("  Error getting components: " + e);
+        }
         System.out.println("=== Java JSON (first 1000 chars) ===");
         System.out.println(javaJson.substring(0, Math.min(1000, javaJson.length())));
         System.out.println("=== Acorn JSON (first 1000 chars) ===");
