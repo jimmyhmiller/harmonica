@@ -1,7 +1,7 @@
 package com.jsparser;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.jsparser.ast.Program;
+import com.jsparser.ast.*;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
