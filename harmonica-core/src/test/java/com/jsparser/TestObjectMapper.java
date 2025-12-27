@@ -306,28 +306,7 @@ public class TestObjectMapper {
         private BeanPropertyWriter createLocPropertyWriter(SerializationConfig config,
                                                             BeanDescription beanDesc,
                                                             java.lang.reflect.Method locMethod) {
-            try {
-                com.fasterxml.jackson.databind.introspect.AnnotatedMethod annotatedMethod =
-                    new com.fasterxml.jackson.databind.introspect.AnnotatedMethod(
-                        null, locMethod, null, null);
-
-                com.fasterxml.jackson.databind.PropertyName propName =
-                    com.fasterxml.jackson.databind.PropertyName.construct("loc");
-
-                com.fasterxml.jackson.databind.JavaType type =
-                    config.getTypeFactory().constructType(SourceLocation.class);
-
-                com.fasterxml.jackson.databind.introspect.BeanPropertyDefinition propDef =
-                    com.fasterxml.jackson.databind.util.SimpleBeanPropertyDefinition.construct(
-                        config, annotatedMethod, propName);
-
-                return new BeanPropertyWriter(
-                    propDef, annotatedMethod, null,
-                    type, null, null, null,
-                    false, null, null);
-            } catch (Exception e) {
-                return null;
-            }
+            return new LocBeanPropertyWriter(locMethod, config);
         }
 
         private boolean isAstClass(Class<?> clazz) {
@@ -341,6 +320,32 @@ public class TestObjectMapper {
                 return locMethod.getReturnType() == SourceLocation.class;
             } catch (NoSuchMethodException e) {
                 return false;
+            }
+        }
+    }
+
+    /**
+     * A property writer that adds 'loc' to the JSON output by calling the loc() method.
+     */
+    private static class LocBeanPropertyWriter extends BeanPropertyWriter {
+        private final java.lang.reflect.Method locMethod;
+
+        LocBeanPropertyWriter(java.lang.reflect.Method locMethod, SerializationConfig config) {
+            super();
+            this.locMethod = locMethod;
+        }
+
+        @Override
+        public String getName() {
+            return "loc";
+        }
+
+        @Override
+        public void serializeAsField(Object bean, JsonGenerator gen, SerializerProvider prov) throws Exception {
+            Object value = locMethod.invoke(bean);
+            if (value != null) {
+                gen.writeFieldName("loc");
+                prov.defaultSerializeValue(value, gen);
             }
         }
     }
