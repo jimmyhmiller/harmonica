@@ -41,6 +41,12 @@ public class TestAutoDetectedModuleAwait {
 
         String javaJson = mapper.writeValueAsString(javaAst);
 
+        // Debug output
+        System.out.println("=== Java JSON (first 1000 chars) ===");
+        System.out.println(javaJson.substring(0, Math.min(1000, javaJson.length())));
+        System.out.println("=== Acorn JSON (first 1000 chars) ===");
+        System.out.println(acornJson.substring(0, Math.min(1000, acornJson.length())));
+
         Object acornObj = mapper.readValue(acornJson, Object.class);
         Object javaObj = mapper.readValue(javaJson, Object.class);
 
