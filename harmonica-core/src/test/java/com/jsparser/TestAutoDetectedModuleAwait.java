@@ -41,15 +41,6 @@ public class TestAutoDetectedModuleAwait {
 
         String javaJson = mapper.writeValueAsString(javaAst);
 
-        // Debug output for CI
-        System.out.println("=== SOURCE ===");
-        System.out.println(source);
-        System.out.println("=== ACORN JSON ===");
-        System.out.println(acornJson);
-        System.out.println("=== JAVA JSON ===");
-        System.out.println(javaJson);
-        System.out.println("=== END DEBUG ===");
-
         Object acornObj = mapper.readValue(acornJson, Object.class);
         Object javaObj = mapper.readValue(javaJson, Object.class);
 

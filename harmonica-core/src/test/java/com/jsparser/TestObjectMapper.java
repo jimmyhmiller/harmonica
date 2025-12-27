@@ -293,14 +293,11 @@ public class TestObjectMapper {
                         BeanPropertyWriter locWriter = createLocPropertyWriter(config, beanDesc, locMethod);
                         if (locWriter != null) {
                             filtered.add(locWriter);
-                            System.err.println("DEBUG: Added loc property writer for " + beanClass.getSimpleName());
                         }
                     }
                 } catch (NoSuchMethodException e) {
                     // No loc method
                 }
-            } else {
-                System.err.println("DEBUG: loc already present for " + beanClass.getSimpleName());
             }
 
             return filtered;
