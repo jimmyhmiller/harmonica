@@ -54,6 +54,15 @@ public class TestObjectMapper {
         mapper.addMixIn(Expression.class, NodeMixin.class);
         mapper.addMixIn(Pattern.class, NodeMixin.class);
 
+        // Explicitly add mixin to ImportDeclaration and ImportSpecifier
+        // (mixin inheritance from interfaces may not work consistently across Java versions)
+        mapper.addMixIn(ImportDeclaration.class, NodeMixin.class);
+        mapper.addMixIn(ImportSpecifier.class, NodeMixin.class);
+        mapper.addMixIn(ImportDefaultSpecifier.class, NodeMixin.class);
+        mapper.addMixIn(ImportNamespaceSpecifier.class, NodeMixin.class);
+        mapper.addMixIn(ExportSpecifier.class, NodeMixin.class);
+        mapper.addMixIn(ExportAllDeclaration.class, NodeMixin.class);
+
         // Add serialization mixins for special cases
         mapper.addMixIn(Literal.class, LiteralMixin.class);
         mapper.addMixIn(MethodDefinition.class, MethodDefinitionMixin.class);
