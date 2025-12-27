@@ -85,7 +85,12 @@ public class RegexValidationState {
      */
     private void parseAlternative() {
         while (!isAtEnd() && peek() != '|' && peek() != ')') {
+            int beforePos = pos;
             parseTerm();
+            // If parseTerm made no progress, we have an invalid pattern character
+            if (pos == beforePos) {
+                throw error("Invalid pattern character: " + peek());
+            }
         }
     }
 
@@ -221,6 +226,7 @@ public class RegexValidationState {
 
         // Group
         if (c == '(') {
+            int groupStart = pos;
             consume();
 
             // Check for non-capturing group (?:...) or named group (?<name>...) or modifiers (?i:...)
@@ -250,9 +256,8 @@ public class RegexValidationState {
                     }
                     parseDisjunction();
                 } else {
-                    // This is an assertion, not a group - backtrack
-                    pos--;
-                    return false;
+                    // Invalid group syntax - not a valid assertion, modifier, or group specifier
+                    throw error("Invalid group syntax: (?" + next);
                 }
             } else {
                 // Capturing group

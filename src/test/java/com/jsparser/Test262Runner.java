@@ -65,9 +65,7 @@ public class Test262Runner {
         System.out.println("Found " + allFiles.size() + " JavaScript files to scan");
 
         // Process files in a regular loop instead of stream to avoid hanging
-        // Limit to first 10000 to avoid resource exhaustion hang
-        int maxFiles = Math.min(allFiles.size(), 10000);
-        for (int i = 0; i < maxFiles; i++) {
+        for (int i = 0; i < allFiles.size(); i++) {
             Path path = allFiles.get(i);
             total.incrementAndGet();
 
