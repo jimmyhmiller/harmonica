@@ -40,15 +40,5 @@ jobs:
       - name: Generate curated cache
         run: node scripts/generate-curated-cache.js
 
-      - name: Debug symlinks
-        run: |
-          echo "=== Checking symlinks ==="
-          ls -la harmonica-core/
-          ls -la harmonica-core/scripts || echo "scripts not accessible"
-          ls -la harmonica-core/test-oracles || echo "test-oracles not accessible"
-          echo "=== Checking if acorn is available ==="
-          node -e "require('acorn'); console.log('acorn OK')" || echo "acorn not found"
-          cd scripts && node -e "require('acorn'); console.log('acorn in scripts OK')" || echo "acorn not in scripts"
-
       - name: Run tests
         run: mvn test -B

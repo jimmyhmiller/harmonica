@@ -55,11 +55,13 @@ public class TestAutoDetectedModuleAwait {
         try {
             String[] cmd = {
                 "node",
-                "scripts/parse-with-acorn.js",
+                "parse-with-acorn.js",
                 tempSource.toAbsolutePath().toString()
             };
 
             ProcessBuilder pb = new ProcessBuilder(cmd);
+            // Set working directory to scripts/ so node can find acorn in node_modules
+            pb.directory(new java.io.File("scripts"));
             Process process = pb.start();
 
             int exitCode = process.waitFor();

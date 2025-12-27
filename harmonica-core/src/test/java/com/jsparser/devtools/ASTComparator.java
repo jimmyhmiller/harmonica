@@ -72,7 +72,8 @@ public class ASTComparator {
 
     private static String parseWithAcorn(String source, String filePath) {
         try {
-            ProcessBuilder pb = new ProcessBuilder("node", "scripts/parse-with-acorn.js", filePath);
+            ProcessBuilder pb = new ProcessBuilder("node", "parse-with-acorn.js", filePath);
+            pb.directory(new java.io.File("scripts"));
             pb.redirectErrorStream(true);
             Process process = pb.start();
 
