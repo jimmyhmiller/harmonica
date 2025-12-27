@@ -272,16 +272,62 @@ public class TestObjectMapper {
             }
 
             // Filter out the excluded fields (startLine, startCol, endLine, endCol)
-            // The loc property is serialized via the mixin's @JsonProperty("loc")
             List<BeanPropertyWriter> filtered = new java.util.ArrayList<>();
+            boolean hasLoc = false;
             for (BeanPropertyWriter prop : beanProperties) {
                 if (EXCLUDED_FIELDS.contains(prop.getName())) {
                     continue;
                 }
+                if ("loc".equals(prop.getName())) {
+                    hasLoc = true;
+                }
                 filtered.add(prop);
             }
 
+            // If loc is not present in properties (mixin didn't work), add it manually
+            if (!hasLoc) {
+                try {
+                    java.lang.reflect.Method locMethod = beanClass.getMethod("loc");
+                    if (locMethod.getReturnType() == SourceLocation.class) {
+                        // Create a virtual property for loc using reflection
+                        BeanPropertyWriter locWriter = createLocPropertyWriter(config, beanDesc, locMethod);
+                        if (locWriter != null) {
+                            filtered.add(locWriter);
+                        }
+                    }
+                } catch (NoSuchMethodException e) {
+                    // No loc method
+                }
+            }
+
             return filtered;
+        }
+
+        private BeanPropertyWriter createLocPropertyWriter(SerializationConfig config,
+                                                            BeanDescription beanDesc,
+                                                            java.lang.reflect.Method locMethod) {
+            try {
+                com.fasterxml.jackson.databind.introspect.AnnotatedMethod annotatedMethod =
+                    new com.fasterxml.jackson.databind.introspect.AnnotatedMethod(
+                        null, locMethod, null, null);
+
+                com.fasterxml.jackson.databind.PropertyName propName =
+                    com.fasterxml.jackson.databind.PropertyName.construct("loc");
+
+                com.fasterxml.jackson.databind.JavaType type =
+                    config.getTypeFactory().constructType(SourceLocation.class);
+
+                com.fasterxml.jackson.databind.introspect.BeanPropertyDefinition propDef =
+                    com.fasterxml.jackson.databind.util.SimpleBeanPropertyDefinition.construct(
+                        config, annotatedMethod, propName);
+
+                return new BeanPropertyWriter(
+                    propDef, annotatedMethod, null,
+                    type, null, null, null,
+                    false, null, null);
+            } catch (Exception e) {
+                return null;
+            }
         }
 
         private boolean isAstClass(Class<?> clazz) {
