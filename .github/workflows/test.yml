@@ -30,6 +30,10 @@ jobs:
         run: npm install
         working-directory: scripts
 
+      - name: Install oracle parser dependencies
+        run: npm install
+        working-directory: src/test/resources
+
       - name: Generate test262 cache
         run: node scripts/generate-test262-cache.js
 
