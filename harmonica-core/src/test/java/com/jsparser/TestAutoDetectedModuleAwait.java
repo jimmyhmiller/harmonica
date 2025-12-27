@@ -1,7 +1,7 @@
 package com.jsparser;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.jsparser.ast.*;
+import com.jsparser.ast.Program;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -40,19 +40,6 @@ public class TestAutoDetectedModuleAwait {
         assertEquals("module", javaAst.sourceType(), "Module mode should produce sourceType: module");
 
         String javaJson = mapper.writeValueAsString(javaAst);
-
-        // Debug: Print the raw JSON
-        System.out.println("=== Raw Java JSON ===");
-        System.out.println(javaJson.substring(0, Math.min(2000, javaJson.length())));
-
-        // Debug: Check mixin registration
-        System.out.println("=== Mixin check ===");
-        Class<?> mixin = mapper.findMixInClassFor(ImportDeclaration.class);
-        System.out.println("Mixin for ImportDeclaration: " + (mixin != null ? mixin.getName() : "null"));
-        mixin = mapper.findMixInClassFor(Statement.class);
-        System.out.println("Mixin for Statement: " + (mixin != null ? mixin.getName() : "null"));
-        mixin = mapper.findMixInClassFor(Node.class);
-        System.out.println("Mixin for Node: " + (mixin != null ? mixin.getName() : "null"));
 
         Object acornObj = mapper.readValue(acornJson, Object.class);
         Object javaObj = mapper.readValue(javaJson, Object.class);

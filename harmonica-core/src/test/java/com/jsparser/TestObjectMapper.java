@@ -271,10 +271,68 @@ public class TestObjectMapper {
                 return beanProperties;
             }
 
-            // Filter out the excluded fields
-            return beanProperties.stream()
-                .filter(prop -> !EXCLUDED_FIELDS.contains(prop.getName()))
-                .toList();
+            // Filter out the excluded fields and check if loc is already present
+            boolean hasLoc = false;
+            List<BeanPropertyWriter> filtered = new java.util.ArrayList<>();
+            for (BeanPropertyWriter prop : beanProperties) {
+                if (EXCLUDED_FIELDS.contains(prop.getName())) {
+                    continue;
+                }
+                if ("loc".equals(prop.getName())) {
+                    hasLoc = true;
+                }
+                filtered.add(prop);
+            }
+
+            // If loc is not present but the class has a loc() method, add it manually
+            // This is a workaround for Jackson mixin inheritance issues on Java 25
+            if (!hasLoc) {
+                try {
+                    java.lang.reflect.Method locMethod = beanClass.getMethod("loc");
+                    if (locMethod.getReturnType() == SourceLocation.class) {
+                        // Create a virtual property writer for loc
+                        BeanPropertyWriter locWriter = createLocPropertyWriter(config, beanDesc, locMethod);
+                        if (locWriter != null) {
+                            filtered.add(locWriter);
+                        }
+                    }
+                } catch (NoSuchMethodException e) {
+                    // No loc method, skip
+                }
+            }
+
+            return filtered;
+        }
+
+        private BeanPropertyWriter createLocPropertyWriter(SerializationConfig config,
+                                                            BeanDescription beanDesc,
+                                                            java.lang.reflect.Method locMethod) {
+            try {
+                // Use Jackson's introspection to create a property writer
+                com.fasterxml.jackson.databind.introspect.AnnotatedMethod annotatedMethod =
+                    new com.fasterxml.jackson.databind.introspect.AnnotatedMethod(
+                        null, locMethod, null, null);
+
+                com.fasterxml.jackson.databind.PropertyName propName =
+                    com.fasterxml.jackson.databind.PropertyName.construct("loc");
+
+                com.fasterxml.jackson.databind.JavaType type =
+                    config.getTypeFactory().constructType(SourceLocation.class);
+
+                com.fasterxml.jackson.databind.introspect.BeanPropertyDefinition propDef =
+                    com.fasterxml.jackson.databind.util.SimpleBeanPropertyDefinition.construct(
+                        config, annotatedMethod, propName);
+
+                JsonSerializer<Object> ser = null; // Will be resolved later
+
+                return new BeanPropertyWriter(
+                    propDef, annotatedMethod, null,
+                    type, ser, null, null,
+                    false, null, null);
+            } catch (Exception e) {
+                // If we fail to create the writer, just skip it
+                return null;
+            }
         }
 
         private boolean isAstClass(Class<?> clazz) {
