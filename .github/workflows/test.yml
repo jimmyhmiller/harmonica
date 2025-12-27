@@ -32,7 +32,7 @@ jobs:
 
       - name: Install oracle parser dependencies
         run: npm install
-        working-directory: src/test/resources
+        working-directory: harmonica-core/src/test/resources
 
       - name: Generate test262 cache
         run: node scripts/generate-test262-cache.js
