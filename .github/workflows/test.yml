@@ -40,5 +40,5 @@ jobs:
       - name: Generate curated cache
         run: node scripts/generate-curated-cache.js
 
-      - name: Run tests
-        run: mvn clean test -B
+      - name: Run single failing test with debug output
+        run: mvn test -pl harmonica-core -Dtest=TestAutoDetectedModuleAwait -B
