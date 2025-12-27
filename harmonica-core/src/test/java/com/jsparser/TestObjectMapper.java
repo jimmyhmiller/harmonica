@@ -57,7 +57,7 @@ public class TestObjectMapper {
         mapper.addMixIn(ImportDefaultSpecifier.class, NodeMixin.class);
         mapper.addMixIn(ImportNamespaceSpecifier.class, NodeMixin.class);
         mapper.addMixIn(ExportSpecifier.class, NodeMixin.class);
-        mapper.addMixIn(ExportAllDeclaration.class, NodeMixin.class);
+        mapper.addMixIn(ExportAllDeclaration.class, ExportAllDeclarationMixin.class);
 
         // Add serialization mixins for special cases
         mapper.addMixIn(Literal.class, LiteralMixin.class);
@@ -85,6 +85,7 @@ public class TestObjectMapper {
         mapper.addMixIn(ImportExpression.class, ImportExpressionMixin.class);
         mapper.addMixIn(YieldExpression.class, YieldExpressionMixin.class);
         mapper.addMixIn(ThrowStatement.class, ThrowStatementMixin.class);
+        mapper.addMixIn(TemplateElement.TemplateElementValue.class, TemplateElementValueMixin.class);
 
         // Register module with serializer and deserializer modifiers
         mapper.registerModule(new TestAstModule());
@@ -233,6 +234,18 @@ public class TestObjectMapper {
     private abstract static class ThrowStatementMixin extends SerializationMixin {
         @JsonInclude(JsonInclude.Include.ALWAYS)
         abstract Expression argument();
+    }
+
+    // Mixin for ExportAllDeclaration - exported can be null for "export * from 'mod'"
+    private abstract static class ExportAllDeclarationMixin extends SerializationMixin {
+        @JsonInclude(JsonInclude.Include.ALWAYS)
+        abstract Node exported();
+    }
+
+    // Mixin for TemplateElementValue - cooked can be null for invalid escape sequences
+    private abstract static class TemplateElementValueMixin {
+        @JsonInclude(JsonInclude.Include.ALWAYS)
+        abstract String cooked();
     }
 
     // ==================== AST Module ====================
