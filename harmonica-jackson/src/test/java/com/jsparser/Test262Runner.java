@@ -2,6 +2,7 @@ package com.jsparser;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jsparser.ast.Program;
+import com.jsparser.jackson.HarmonicaJackson;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 
@@ -17,13 +18,14 @@ import java.util.stream.Stream;
 
 public class Test262Runner {
 
-    private static final ObjectMapper mapper = TestObjectMapper.get();
+    private static final ObjectMapper mapper = HarmonicaJackson.createObjectMapper();
 
     @Test
     @DisplayName("Parse all test262 files and compare against esprima oracle")
     void parseAllTest262Files() throws IOException {
-        Path test262Dir = Paths.get("test-oracles/test262/test");
-        Path cacheDir = Paths.get("test-oracles/test262-cache");
+        // Paths are relative to project root, not module directory
+        Path test262Dir = Paths.get("../test-oracles/test262/test");
+        Path cacheDir = Paths.get("../test-oracles/test262-cache");
 
         if (!Files.exists(test262Dir)) {
             System.out.println("test262 directory not found at: " + test262Dir.toAbsolutePath());

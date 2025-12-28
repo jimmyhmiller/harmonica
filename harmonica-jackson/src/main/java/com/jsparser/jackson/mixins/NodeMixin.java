@@ -1,12 +1,13 @@
 package com.jsparser.jackson.mixins;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.jsparser.ast.*;
 
 /**
- * Jackson mixin for polymorphic Node deserialization.
- * Maps the "type" property to concrete AST classes.
+ * Jackson mixin for polymorphic Node serialization/deserialization.
+ * Maps the "type" property to concrete AST classes and adds the loc property.
  */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
 @JsonSubTypes({
@@ -83,5 +84,7 @@ import com.jsparser.ast.*;
     @JsonSubTypes.Type(value = ImportAttribute.class, name = "ImportAttribute"),
     @JsonSubTypes.Type(value = VariableDeclarator.class, name = "VariableDeclarator"),
 })
-public interface NodeMixin {
+public abstract class NodeMixin {
+    @JsonProperty("loc")
+    abstract SourceLocation loc();
 }
