@@ -21,8 +21,17 @@ public class JavaScriptNumberSerializer extends JsonSerializer<Object> {
                 gen.writeNull();
             } else if (d.isNaN()) {
                 gen.writeNull();
-            } else if (d == Math.floor(d) && d >= Long.MIN_VALUE && d <= Long.MAX_VALUE) {
+            } else if (d == Math.floor(d) && Math.abs(d) <= 9007199254740992.0) {
+                // Only convert to long within safe integer range (2^53)
+                // Beyond this, the double has already lost precision, so converting
+                // to long would give a different value than JavaScript outputs
                 gen.writeNumber(d.longValue());
+            } else if (d == Math.floor(d) && Math.abs(d) < 1e21) {
+                // For large integers outside safe range but < 1e21, output as integer without decimal
+                // JavaScript outputs these as full integer strings (e.g., 72057594037927940)
+                // Use String.format with %.0f which properly rounds like JavaScript does
+                String formatted = String.format("%.0f", d);
+                gen.writeNumber(new java.math.BigInteger(formatted));
             } else {
                 gen.writeNumber(d);
             }
