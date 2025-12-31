@@ -47,6 +47,13 @@ public class Lexer {
         contextStack.push(LexerContext.B_STAT);
     }
 
+    /**
+     * Set strict mode. Called by Parser when "use strict" directive is detected.
+     */
+    public void setStrictMode(boolean strictMode) {
+        this.strictMode = strictMode;
+    }
+
     public List<Token> tokenize() {
         List<Token> tokens = new ArrayList<>();
 
@@ -401,6 +408,10 @@ public class Lexer {
                 if (match('-')) {
                     // Check for HTML comment closing: --> (only at line start)
                     if (atLineStart && peek() == '>') {
+                        if (isModule) {
+                            throw new ExpectedTokenException("HTML-like comments are not allowed in module code",
+                                new Token(TokenType.MINUS, "--", startLine, startColumn, startPos));
+                        }
                         advance(); // consume '>'
                         // This is an HTML closing comment, skip to end of line
                         while (!isAtEnd() && !isLineTerminator(peek())) {
@@ -444,10 +455,12 @@ public class Lexer {
                     advance(); // consume /
                     advance(); // consume *
                     boolean containsLineTerminator = false;
+                    boolean terminated = false;
                     while (!isAtEnd()) {
                         if (peek() == '*' && peekNext() == '/') {
                             advance(); // consume *
                             advance(); // consume /
+                            terminated = true;
                             break;
                         }
                         char ch = peek();
@@ -475,6 +488,10 @@ public class Lexer {
                         } else {
                             advance(); // consume regular character in comment
                         }
+                    }
+                    // Check for unterminated multi-line comment
+                    if (!terminated) {
+                        throw new RuntimeException("Unterminated multi-line comment");
                     }
                     // If comment contains line terminator, treat it as being at line start
                     if (containsLineTerminator) {
@@ -533,6 +550,10 @@ public class Lexer {
                     advance(); // consume '!'
                     advance(); // consume first '-'
                     if (peek() == '-') {
+                        if (isModule) {
+                            throw new ExpectedTokenException("HTML-like comments are not allowed in module code",
+                                new Token(TokenType.LT, "<", startLine, startColumn, startPos));
+                        }
                         advance(); // consume second '-'
                         // This is an HTML comment, skip to end of line
                         while (!isAtEnd() && !isLineTerminator(peek())) {
@@ -674,6 +695,13 @@ public class Lexer {
                                         advance();
                                     }
                                 }
+                            } else if (!isAtEnd() && peek() >= '8' && peek() <= '9') {
+                                // \0 followed by 8 or 9 is a "non-octal decimal escape" - NOT allowed in strict mode
+                                // Also \1-\7 followed by 8 or 9 would be legacy octal then identity escape
+                                if (strictMode && escaped == '0') {
+                                    // \08 or \09 in strict mode - error
+                                    throw new RuntimeException("\\0 followed by a decimal digit is not allowed in strict mode");
+                                }
                             } else {
                                 // Single digit octal - check if it's \1-\7 in strict mode
                                 if (strictMode && escaped != '0') {
@@ -694,48 +722,59 @@ public class Lexer {
                                 advance(); // consume {
                                 StringBuilder hexBuilder = new StringBuilder();
                                 while (!isAtEnd() && peek() != '}') {
+                                    char c = peek();
+                                    if (!isHexDigit(c)) {
+                                        throw new RuntimeException("Invalid character in unicode escape sequence");
+                                    }
                                     hexBuilder.append(advance());
                                 }
-                                if (peek() == '}') {
-                                    advance(); // consume }
-                                    try {
-                                        int codePoint = Integer.parseInt(hexBuilder.toString(), 16);
-                                        value.appendCodePoint(codePoint);
-                                    } catch (NumberFormatException e) {
-                                        value.append(escaped);
+                                if (isAtEnd() || peek() != '}') {
+                                    throw new RuntimeException("Unterminated unicode escape sequence");
+                                }
+                                advance(); // consume }
+                                if (hexBuilder.length() == 0) {
+                                    throw new RuntimeException("Empty unicode escape sequence");
+                                }
+                                try {
+                                    int codePoint = Integer.parseInt(hexBuilder.toString(), 16);
+                                    if (codePoint > 0x10FFFF) {
+                                        throw new RuntimeException("Unicode escape sequence out of range");
                                     }
-                                } else {
-                                    value.append(escaped);
+                                    value.appendCodePoint(codePoint);
+                                } catch (NumberFormatException e) {
+                                    throw new RuntimeException("Invalid unicode escape sequence");
                                 }
                             } else if (position + 4 <= length) {
                                 // Fixed 4-digit unicode: \\uXXXX
                                 String hex = new String(buf, position, 4);
-                                try {
-                                    int codePoint = Integer.parseInt(hex, 16);
-                                    value.append((char) codePoint);
-                                    // Advance 4 times to skip hex digits and update column
-                                    for (int i = 0; i < 4; i++) advance();
-                                } catch (NumberFormatException e) {
-                                    value.append(escaped); // Invalid unicode escape
+                                // Validate all 4 characters are hex digits
+                                for (int i = 0; i < 4; i++) {
+                                    if (!isHexDigit(hex.charAt(i))) {
+                                        throw new RuntimeException("Invalid unicode escape sequence");
+                                    }
                                 }
+                                int codePoint = Integer.parseInt(hex, 16);
+                                value.append((char) codePoint);
+                                // Advance 4 times to skip hex digits and update column
+                                for (int i = 0; i < 4; i++) advance();
                             } else {
-                                value.append(escaped);
+                                throw new RuntimeException("Invalid unicode escape sequence");
                             }
                         }
                         case 'x' -> {
                             // Hex escape: \xXX
                             if (position + 2 <= length) {
                                 String hex = new String(buf, position, 2);
-                                try {
-                                    int codePoint = Integer.parseInt(hex, 16);
-                                    value.append((char) codePoint);
-                                    // Advance 2 times to skip hex digits and update column
-                                    for (int i = 0; i < 2; i++) advance();
-                                } catch (NumberFormatException e) {
-                                    value.append(escaped);
+                                // Validate both characters are hex digits
+                                if (!isHexDigit(hex.charAt(0)) || !isHexDigit(hex.charAt(1))) {
+                                    throw new RuntimeException("Invalid hex escape sequence");
                                 }
+                                int codePoint = Integer.parseInt(hex, 16);
+                                value.append((char) codePoint);
+                                // Advance 2 times to skip hex digits and update column
+                                for (int i = 0; i < 2; i++) advance();
                             } else {
-                                value.append(escaped);
+                                throw new RuntimeException("Invalid hex escape sequence");
                             }
                         }
                         case '\n', '\r', '\u2028', '\u2029' -> {
@@ -752,18 +791,33 @@ public class Lexer {
                             }
                             // Don't append anything - line continuation produces empty sequence
                         }
+                        case '8', '9' -> {
+                            // NonOctalDecimalEscapeSequence - not allowed in strict mode
+                            if (strictMode) {
+                                throw new RuntimeException("\\8 and \\9 escape sequences are not allowed in strict mode");
+                            }
+                            // In sloppy mode, these produce the literal '8' or '9'
+                            value.append(escaped);
+                        }
                         default -> value.append(escaped);
                     }
                 }
             } else {
-                char c = advance();
-                value.append(c);
-                // U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) are line terminators
-                // even when they appear literally (not escaped) in strings
+                char c = peek();
+                // String literals cannot contain unescaped CR or LF line terminators
+                // ES2019: U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) ARE allowed
+                if (c == '\n' || c == '\r') {
+                    throw new RuntimeException("Unterminated string literal (unescaped line terminator)");
+                }
+                // U+2028 and U+2029 are line terminators - they increment line count
                 if (c == '\u2028' || c == '\u2029') {
                     line++;
                     column = 0;
+                    position++;
+                } else {
+                    advance();
                 }
+                value.append(c);
             }
         }
 
@@ -777,19 +831,58 @@ public class Lexer {
         return new Token(TokenType.STRING, lexeme, value.toString(), startLine, startColumn, startPos, position, line, column, null);
     }
 
+    /**
+     * Validate numeric separator placement in a digit sequence.
+     * Rules: no leading underscore, no trailing underscore, no consecutive underscores.
+     */
+    private void validateNumericSeparators(String digits, int startPos) {
+        if (digits.isEmpty()) return;
+
+        char prev = 0;
+        for (int i = 0; i < digits.length(); i++) {
+            char c = digits.charAt(i);
+            if (c == '_') {
+                if (i == 0) {
+                    throw new RuntimeException("Numeric separator cannot appear at the start of a number");
+                }
+                if (i == digits.length() - 1) {
+                    throw new RuntimeException("Numeric separator cannot appear at the end of a number");
+                }
+                if (prev == '_') {
+                    throw new RuntimeException("Numeric separator cannot appear adjacent to another separator");
+                }
+            }
+            prev = c;
+        }
+    }
+
     private Token scanNumber(int startLine, int startColumn, int startPos) {
         // Check for hex (0x), octal (0o), or binary (0b) literals
         if (peek() == '0' && (peekNext() == 'x' || peekNext() == 'X')) {
             advance(); // consume 0
             advance(); // consume x
+
+            // Check for leading separator after prefix
+            if (peek() == '_') {
+                throw new RuntimeException("Numeric separator cannot appear after prefix 0x");
+            }
+
+            int digitStart = position;
             while (isHexDigit(peek()) || peek() == '_') {
                 advance();
             }
+            String hexDigits = source.substring(digitStart, position);
+            validateNumericSeparators(hexDigits, digitStart);
+
             String lexeme = source.substring(startPos, position);
-            String hexPart = lexeme.substring(2).replace("_", ""); // Remove "0x" and underscores
+            String hexPart = hexDigits.replace("_", "");
 
             // Check for BigInt suffix
             if (peek() == 'n') {
+                // Check for trailing separator before 'n'
+                if (!hexDigits.isEmpty() && hexDigits.charAt(hexDigits.length() - 1) == '_') {
+                    throw new RuntimeException("Numeric separator cannot appear before BigInt suffix");
+                }
                 advance();
                 String bigintLexeme = source.substring(startPos, position);
                 return new Token(TokenType.NUMBER, bigintLexeme, "0x" + hexPart + "n", startLine, startColumn, startPos);
@@ -820,14 +913,28 @@ public class Lexer {
         } else if (peek() == '0' && (peekNext() == 'o' || peekNext() == 'O')) {
             advance(); // consume 0
             advance(); // consume o
+
+            // Check for leading separator after prefix
+            if (peek() == '_') {
+                throw new RuntimeException("Numeric separator cannot appear after prefix 0o");
+            }
+
+            int digitStart = position;
             while ((peek() >= '0' && peek() <= '7') || peek() == '_') {
                 advance();
             }
+            String octalDigits = source.substring(digitStart, position);
+            validateNumericSeparators(octalDigits, digitStart);
+
             String lexeme = source.substring(startPos, position);
-            String octalPart = lexeme.substring(2).replace("_", ""); // Remove "0o" and underscores
+            String octalPart = octalDigits.replace("_", "");
 
             // Check for BigInt suffix
             if (peek() == 'n') {
+                // Check for trailing separator before 'n'
+                if (!octalDigits.isEmpty() && octalDigits.charAt(octalDigits.length() - 1) == '_') {
+                    throw new RuntimeException("Numeric separator cannot appear before BigInt suffix");
+                }
                 advance();
                 String bigintLexeme = source.substring(startPos, position);
                 return new Token(TokenType.NUMBER, bigintLexeme, "0o" + octalPart + "n", startLine, startColumn, startPos);
@@ -852,11 +959,17 @@ public class Lexer {
                 }
             }
             return new Token(TokenType.NUMBER, lexeme, literal, startLine, startColumn, startPos);
-        } else if (peek() == '0' && peekNext() >= '0' && peekNext() <= '9' && peekNext() != '.') {
-            // Could be legacy octal (00-07) or NonOctalDecimalIntegerLiteral (08, 09, etc.)
+        } else if (peek() == '0' && ((peekNext() >= '0' && peekNext() <= '9') || peekNext() == '_') && peekNext() != '.') {
+            // Could be legacy octal (00-07), NonOctalDecimalIntegerLiteral (08, 09, etc.),
+            // or an invalid separator after leading zero
             advance(); // consume initial 0
 
-            // Scan all digits
+            // Check for separator immediately after leading 0 (not allowed)
+            if (peek() == '_') {
+                throw new RuntimeException("Numeric separator cannot appear after leading zero");
+            }
+
+            // Scan all digits (no underscores allowed in legacy octal/nonoctal)
             boolean hasNonOctalDigit = false;
             while (isDigit(peek())) {
                 char digit = peek();
@@ -864,12 +977,20 @@ public class Lexer {
                     hasNonOctalDigit = true;
                 }
                 advance();
+                // Check for separator in legacy octal/nonoctal (not allowed)
+                if (peek() == '_') {
+                    throw new RuntimeException("Numeric separator is not allowed in legacy octal literals");
+                }
             }
 
             String lexeme = source.substring(startPos, position);
 
             Object literal;
             if (hasNonOctalDigit) {
+                // NonOctalDecimalIntegerLiteral - not allowed in strict mode
+                if (strictMode) {
+                    throw new RuntimeException("Decimals with leading zeros are not allowed in strict mode");
+                }
                 // NonOctalDecimalIntegerLiteral - parse as decimal
                 try {
                     literal = Integer.parseInt(lexeme);
@@ -881,6 +1002,10 @@ public class Lexer {
                     }
                 }
             } else {
+                // Legacy octal integer literal - not allowed in strict mode
+                if (strictMode) {
+                    throw new RuntimeException("Octal literals are not allowed in strict mode");
+                }
                 // Legacy octal integer literal (allowed only in non-strict mode)
                 try {
                     literal = Integer.parseInt(lexeme, 8);
@@ -896,14 +1021,28 @@ public class Lexer {
         } else if (peek() == '0' && (peekNext() == 'b' || peekNext() == 'B')) {
             advance(); // consume 0
             advance(); // consume b
+
+            // Check for leading separator after prefix
+            if (peek() == '_') {
+                throw new RuntimeException("Numeric separator cannot appear after prefix 0b");
+            }
+
+            int digitStart = position;
             while (peek() == '0' || peek() == '1' || peek() == '_') {
                 advance();
             }
+            String binaryDigits = source.substring(digitStart, position);
+            validateNumericSeparators(binaryDigits, digitStart);
+
             String lexeme = source.substring(startPos, position);
-            String binaryPart = lexeme.substring(2).replace("_", ""); // Remove "0b" and underscores
+            String binaryPart = binaryDigits.replace("_", "");
 
             // Check for BigInt suffix
             if (peek() == 'n') {
+                // Check for trailing separator before 'n'
+                if (!binaryDigits.isEmpty() && binaryDigits.charAt(binaryDigits.length() - 1) == '_') {
+                    throw new RuntimeException("Numeric separator cannot appear before BigInt suffix");
+                }
                 advance();
                 String bigintLexeme = source.substring(startPos, position);
                 return new Token(TokenType.NUMBER, bigintLexeme, "0b" + binaryPart + "n", startLine, startColumn, startPos);
@@ -933,9 +1072,13 @@ public class Lexer {
         // Regular decimal number
         boolean isDecimal = false;
 
+        // Scan integer part
+        int integerPartStart = position;
         while (isDigit(peek()) || peek() == '_') {
             advance();
         }
+        String integerPart = source.substring(integerPartStart, position);
+        validateNumericSeparators(integerPart, integerPartStart);
 
         // Handle decimal
         // JavaScript allows numbers ending with '.': 1. is valid and equals 1.0
@@ -946,11 +1089,27 @@ public class Lexer {
                 // 1.5 - decimal with fractional part
                 isDecimal = true;
                 advance(); // consume '.'
+
+                // Check for leading separator after decimal point
+                if (peek() == '_') {
+                    throw new RuntimeException("Numeric separator cannot appear after decimal point");
+                }
+
+                int fractionalPartStart = position;
                 while (isDigit(peek()) || peek() == '_') {
                     advance();
                 }
+                String fractionalPart = source.substring(fractionalPartStart, position);
+                validateNumericSeparators(fractionalPart, fractionalPartStart);
+            } else if (nextChar == '_') {
+                // 1._ is invalid - separator right after dot
+                throw new RuntimeException("Numeric separator cannot appear after decimal point");
             } else {
                 // 1. or 1.. - number ending with decimal point
+                // Check for trailing separator before decimal point
+                if (!integerPart.isEmpty() && integerPart.charAt(integerPart.length() - 1) == '_') {
+                    throw new RuntimeException("Numeric separator cannot appear at the end of a number");
+                }
                 // Always consume the dot (even for 1..)
                 isDecimal = true;
                 advance(); // consume '.'
@@ -961,12 +1120,26 @@ public class Lexer {
         if (peek() == 'e' || peek() == 'E') {
             isDecimal = true;
             advance(); // consume e/E
+
+            // Check for separator immediately after e/E
+            if (peek() == '_') {
+                throw new RuntimeException("Numeric separator cannot appear after exponent indicator");
+            }
+
             if (peek() == '+' || peek() == '-') {
                 advance(); // consume sign
+                // Check for separator immediately after sign
+                if (peek() == '_') {
+                    throw new RuntimeException("Numeric separator cannot appear after exponent sign");
+                }
             }
+
+            int exponentPartStart = position;
             while (isDigit(peek()) || peek() == '_') {
                 advance();
             }
+            String exponentPart = source.substring(exponentPartStart, position);
+            validateNumericSeparators(exponentPart, exponentPartStart);
         }
 
         String lexeme = source.substring(startPos, position);
@@ -1021,11 +1194,38 @@ public class Lexer {
 
         // Check for BigInt suffix 'n'
         if (peek() == 'n') {
+            // BigInt literals cannot have an exponent part or decimal point
+            if (isDecimal) {
+                throw new RuntimeException("BigInt literals cannot contain decimal points or exponents");
+            }
+            // Check for trailing separator before 'n'
+            if (lexeme.length() > 0 && lexeme.charAt(lexeme.length() - 1) == '_') {
+                throw new RuntimeException("Numeric separator cannot appear before BigInt suffix");
+            }
             advance(); // consume 'n'
+            // Check that BigInt is not immediately followed by an identifier character
+            if (!isAtEnd()) {
+                char next = peek();
+                // Use isAsciiIdentifierStart for common ASCII case, Character.isUnicodeIdentifierStart for full Unicode
+                if (isAsciiIdentifierStart(next) || Character.isUnicodeIdentifierStart(next) || isDigit(next) || next == '\\') {
+                    throw new RuntimeException("Numeric literal cannot be immediately followed by an identifier");
+                }
+            }
             String bigintLexeme = source.substring(startPos, position);
             // For BigInt, keep the value as a string (remove underscores but keep the number)
             // The AST can represent it as a string since Java doesn't have native BigInt
             return new Token(TokenType.NUMBER, bigintLexeme, numberStr + "n", startLine, startColumn, startPos);
+        }
+
+        // Check that the number is not immediately followed by an identifier start character
+        // ECMAScript: "The source character immediately following a NumericLiteral must not
+        // be an IdentifierStart or DecimalDigit"
+        if (!isAtEnd()) {
+            char next = peek();
+            // Use isAsciiIdentifierStart for common ASCII case, Character.isUnicodeIdentifierStart for full Unicode
+            if (isAsciiIdentifierStart(next) || Character.isUnicodeIdentifierStart(next) || isDigit(next) || next == '\\') {
+                throw new RuntimeException("Numeric literal cannot be immediately followed by an identifier");
+            }
         }
 
         return new Token(TokenType.NUMBER, lexeme, literal, startLine, startColumn, startPos);
@@ -1162,7 +1362,13 @@ public class Lexer {
                 hasEscapes = true;
                 advance(); // consume \
                 advance(); // consume u
-                actualName.append(scanUnicodeEscape());
+                String escaped = scanUnicodeEscape();
+                // Validate that the escaped character is a valid identifier part
+                int codePoint = escaped.codePointAt(0);
+                if (isPatternSyntax(codePoint) || (!Character.isUnicodeIdentifierPart(codePoint) && codePoint != '$')) {
+                    throw new RuntimeException("Invalid Unicode escape sequence in identifier");
+                }
+                actualName.append(escaped);
             } else {
                 char c = advance();
                 actualName.append(c);
@@ -1191,7 +1397,13 @@ public class Lexer {
             hasEscapes = true;
             advance(); // consume \
             advance(); // consume u
-            actualName.append(scanUnicodeEscape());
+            String escaped = scanUnicodeEscape();
+            // Validate that the escaped character is a valid identifier start
+            int codePoint = escaped.codePointAt(0);
+            if (isPatternSyntax(codePoint) || (!Character.isUnicodeIdentifierStart(codePoint) && codePoint != '$' && codePoint != '_')) {
+                throw new RuntimeException("Invalid Unicode escape sequence in identifier");
+            }
+            actualName.append(escaped);
         } else {
             char c = advance();
             actualName.append(c);
@@ -1206,7 +1418,13 @@ public class Lexer {
                 hasEscapes = true;
                 advance(); // consume \
                 advance(); // consume u
-                actualName.append(scanUnicodeEscape());
+                String escaped = scanUnicodeEscape();
+                // Validate that the escaped character is a valid identifier part
+                int codePoint = escaped.codePointAt(0);
+                if (isPatternSyntax(codePoint) || (!Character.isUnicodeIdentifierPart(codePoint) && codePoint != '$')) {
+                    throw new RuntimeException("Invalid Unicode escape sequence in identifier");
+                }
+                actualName.append(escaped);
             } else {
                 char c = advance();
                 actualName.append(c);
@@ -1283,6 +1501,10 @@ public class Lexer {
             char c = peek();
 
             if (escaped) {
+                // Backslash cannot be followed by a line terminator in regex
+                if (c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029') {
+                    throw new RuntimeException("Invalid regex: backslash followed by line terminator");
+                }
                 pattern.append(c);
                 advance();
                 escaped = false;
@@ -1315,7 +1537,8 @@ public class Lexer {
                 break;
             }
 
-            if (c == '\n') {
+            // Regex literals cannot contain unescaped line terminators
+            if (c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029') {
                 throw new RuntimeException("Unterminated regex literal");
             }
 
@@ -1455,11 +1678,27 @@ public class Lexer {
         return c >= '0' && c <= '9';
     }
 
+    /**
+     * Check if a character is in Unicode's Pattern_Syntax property.
+     * ECMAScript excludes Pattern_Syntax characters from ID_Start and ID_Continue.
+     * This is a subset check for commonly problematic characters.
+     */
+    private boolean isPatternSyntax(int codePoint) {
+        // Pattern_Syntax includes various punctuation and symbol characters
+        // Key ranges that might overlap with Java's identifier detection:
+        // U+2E2F VERTICAL TILDE (Lm but Pattern_Syntax)
+        if (codePoint == 0x2E2F) return true;
+        // Add other Pattern_Syntax characters as needed
+        return false;
+    }
+
     private boolean isAlpha(char c) {
         // Support Unicode identifiers per ECMAScript spec
         // This includes letters from all languages (Greek µ, etc.)
         // Must explicitly include $ and _ as they're valid identifier starts
         // Also accept high surrogates as potential identifier starts
+        // Exclude Pattern_Syntax characters (like VERTICAL TILDE U+2E2F)
+        if (isPatternSyntax(c)) return false;
         return Character.isUnicodeIdentifierStart(c) || c == '$' || c == '_' || Character.isHighSurrogate(c);
     }
 
@@ -1467,6 +1706,14 @@ public class Lexer {
         // Support Unicode identifiers per ECMAScript spec
         // Must explicitly include $ as it's a valid identifier part
         // Also accept high surrogates as potential identifier parts
+        // Exclude Pattern_Syntax characters
+        if (isPatternSyntax(c)) return false;
+        // Exclude Format characters (Cf) except ZWNJ (U+200C) and ZWJ (U+200D)
+        // which are explicitly allowed by ECMAScript
+        // Java's isUnicodeIdentifierPart incorrectly allows Format characters like U+180E
+        if (Character.getType(c) == Character.FORMAT && c != '\u200C' && c != '\u200D') {
+            return false;
+        }
         return Character.isUnicodeIdentifierPart(c) || c == '$' || Character.isHighSurrogate(c);
     }
 

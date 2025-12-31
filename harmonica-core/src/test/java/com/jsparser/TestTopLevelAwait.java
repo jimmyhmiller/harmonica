@@ -82,13 +82,11 @@ public class TestTopLevelAwait {
 
     @Test
     public void testTopLevelAwaitStandalone() {
-        // await with no argument followed by semicolon
+        // await requires an operand - await; alone is a syntax error
         String code = "await;";
-        Program ast = Parser.parse(code, true);
-
-        ExpressionStatement stmt = (ExpressionStatement) ast.body().get(0);
-        AwaitExpression awaitExpr = (AwaitExpression) stmt.expression();
-        assertNull(awaitExpr.argument());
+        assertThrows(Exception.class, () -> {
+            Parser.parse(code, true);
+        });
     }
 
     @Test

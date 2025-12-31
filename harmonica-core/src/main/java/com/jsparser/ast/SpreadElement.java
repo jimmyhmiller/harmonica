@@ -7,8 +7,21 @@ public record SpreadElement(
     int startCol,
     int endLine,
     int endCol,
-    Expression argument
+    Expression argument,
+    boolean trailingComma  // True if this spread element was followed by a trailing comma
 ) implements Expression {
+    public SpreadElement(
+        int start,
+        int end,
+        int startLine,
+        int startCol,
+        int endLine,
+        int endCol,
+        Expression argument
+    ) {
+        this(start, end, startLine, startCol, endLine, endCol, argument, false);
+    }
+
     public SpreadElement(
         int start,
         int end,
@@ -21,7 +34,8 @@ public record SpreadElement(
              loc != null ? loc.start().column() : 0,
              loc != null ? loc.end().line() : 0,
              loc != null ? loc.end().column() : 0,
-             argument);
+             argument,
+             false);
     }
 
     @Override

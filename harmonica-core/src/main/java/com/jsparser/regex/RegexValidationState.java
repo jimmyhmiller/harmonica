@@ -24,6 +24,9 @@ public class RegexValidationState {
     private int maxBackReference;
     private boolean lastAssertionIsQuantifiable;
     private boolean inNegatedCharacterClass;
+    private java.util.Set<String> namedGroups = new java.util.HashSet<>();
+    private java.util.Set<String> referencedGroups = new java.util.HashSet<>();
+    private boolean hasIncompleteBackreference = false; // \k without <name>
 
     /**
      * Creates a new validation state.
@@ -61,6 +64,27 @@ public class RegexValidationState {
         if (!isAtEnd()) {
             throw error("Unexpected characters at end of pattern");
         }
+
+        // Validate that all referenced group names exist
+        // In non-unicode mode without named groups, \k<name> is literal text, not a reference
+        // Only validate when in unicode mode OR when the pattern has named groups
+        if (unicodeMode || unicodeSetsMode || !namedGroups.isEmpty()) {
+            for (String ref : referencedGroups) {
+                if (!namedGroups.contains(ref)) {
+                    throw error("Reference to undefined group '" + ref + "'");
+                }
+            }
+
+            // If the pattern has named groups and we saw \k without <name>, that's an error
+            if (hasIncompleteBackreference) {
+                throw error("\\k must be followed by a group name when named groups are present");
+            }
+        }
+
+        // In unicode mode, validate that all numeric backreferences are within bounds
+        if ((unicodeMode || unicodeSetsMode) && maxBackReference > groupCount) {
+            throw error("Backreference '" + maxBackReference + "' exceeds number of capturing groups (" + groupCount + ")");
+        }
     }
 
     // ========== ECMAScript Grammar Implementation ==========
@@ -70,12 +94,40 @@ public class RegexValidationState {
      * Disjunction ::
      *   Alternative
      *   Alternative | Disjunction
+     *
+     * ES2022+ allows duplicate named groups in different alternatives.
+     * Each alternative starts with a fresh set of names (duplicates within same alternative are still errors).
      */
     private void parseDisjunction() {
+        // Save the groups defined before this disjunction
+        java.util.Set<String> groupsBeforeDisjunction = new java.util.HashSet<>(namedGroups);
+        // Track all groups across all alternatives
+        java.util.Set<String> allGroupsInDisjunction = new java.util.HashSet<>();
+
+        // Parse first alternative
         parseAlternative();
-        while (match('|')) {
-            parseAlternative();
+        // Record groups added in this alternative
+        for (String g : namedGroups) {
+            if (!groupsBeforeDisjunction.contains(g)) {
+                allGroupsInDisjunction.add(g);
+            }
         }
+
+        while (match('|')) {
+            // Reset to groups before disjunction for new alternative
+            namedGroups = new java.util.HashSet<>(groupsBeforeDisjunction);
+            parseAlternative();
+            // Record groups added in this alternative
+            for (String g : namedGroups) {
+                if (!groupsBeforeDisjunction.contains(g)) {
+                    allGroupsInDisjunction.add(g);
+                }
+            }
+        }
+
+        // Merge all groups from all alternatives
+        namedGroups = groupsBeforeDisjunction;
+        namedGroups.addAll(allGroupsInDisjunction);
     }
 
     /**
@@ -99,12 +151,18 @@ public class RegexValidationState {
      *   Assertion
      *   Atom
      *   Atom Quantifier
+     *
+     * Note: In non-unicode mode, only QuantifiableAssertions (lookahead: (?=...) and (?!...))
+     * can be followed by a quantifier. Lookbehind assertions ((?<=...) and (?<!...))
+     * are NOT quantifiable in any mode. ^, $, \b, \B are also not quantifiable.
      */
     private void parseTerm() {
         if (parseAssertion()) {
-            // Assertions can be followed by quantifiers (though semantically meaningless for lookahead/lookbehind)
-            // We need to consume any quantifier to avoid infinite loops
+            // Only QuantifiableAssertions can have quantifiers, and only in non-unicode mode
             if (isQuantifierStart()) {
+                if (!lastAssertionIsQuantifiable) {
+                    throw error("Quantifier not allowed after assertion");
+                }
                 parseQuantifier();
             }
             return;
@@ -168,7 +226,8 @@ public class RegexValidationState {
                 if (!match(')')) {
                     throw error("Unclosed lookahead assertion");
                 }
-                lastAssertionIsQuantifiable = false;
+                // Lookahead assertions ARE quantifiable in non-unicode mode only
+                lastAssertionIsQuantifiable = !unicodeMode && !unicodeSetsMode;
                 return true;
             }
             if (lookahead == '<') {
@@ -183,6 +242,7 @@ public class RegexValidationState {
                     if (!match(')')) {
                         throw error("Unclosed lookbehind assertion");
                     }
+                    // Lookbehind assertions are NEVER quantifiable
                     lastAssertionIsQuantifiable = false;
                     return true;
                 }
@@ -241,10 +301,15 @@ public class RegexValidationState {
                     // Named capturing group
                     consume(); // ?
                     consume(); // <
-                    parseGroupName();
+                    String groupName = parseGroupName();
                     if (!match('>')) {
                         throw error("Expected '>' in named group");
                     }
+                    // Check for duplicate group name
+                    if (namedGroups.contains(groupName)) {
+                        throw error("Duplicate group name '" + groupName + "'");
+                    }
+                    namedGroups.add(groupName);
                     groupCount++;
                     parseDisjunction();
                 } else if (isModifierChar(next) || next == '-') {
@@ -268,6 +333,17 @@ public class RegexValidationState {
             if (!match(')')) {
                 throw error("Unclosed group");
             }
+            return true;
+        }
+
+        // Check for InvalidBracedQuantifier (Annex B)
+        // In non-unicode mode, {n}, {n,}, and {n,m} at atom position is invalid
+        if (c == '{') {
+            if (isInvalidBracedQuantifier()) {
+                throw error("Nothing to repeat");
+            }
+            // Otherwise treat { as a literal pattern character
+            consume();
             return true;
         }
 
@@ -322,30 +398,41 @@ public class RegexValidationState {
                 if (unicodeMode || unicodeSetsMode) {
                     throw error("Invalid escape sequence");
                 }
-                // In non-unicode mode, \k is a literal k
+                // In non-unicode mode, \k is a literal k only if there are no named groups
+                // If there ARE named groups defined, then \k must be followed by <name>
+                // Track this for validation at the end of parsing
+                hasIncompleteBackreference = true;
                 return;
             }
 
             // In non-unicode mode, malformed named backreferences are treated as literals
+            // UNLESS there are named groups, in which case \k<...> must be complete
             if (!(unicodeMode || unicodeSetsMode)) {
                 try {
-                    parseGroupName();
+                    String groupName = parseGroupName();
                     if (!match('>')) {
-                        // Missing '>', treat as literal in non-unicode mode
-                        pos = startPos;
+                        // Missing '>' - this is an incomplete backreference
+                        // If there are named groups, this is an error
+                        // Track it for later validation
+                        hasIncompleteBackreference = true;
                         return;
                     }
+                    // Track referenced group for later validation
+                    referencedGroups.add(groupName);
                 } catch (RegexSyntaxException e) {
-                    // Invalid group name in non-unicode mode, treat as literal
-                    pos = startPos;
+                    // Invalid group name in non-unicode mode
+                    // Track as incomplete backreference for later validation
+                    hasIncompleteBackreference = true;
                     return;
                 }
             } else {
                 // In unicode mode, errors are thrown
-                parseGroupName();
+                String groupName = parseGroupName();
                 if (!match('>')) {
                     throw error("Expected '>' in named backreference");
                 }
+                // Track referenced group for later validation
+                referencedGroups.add(groupName);
             }
             return;
         }
@@ -469,11 +556,21 @@ public class RegexValidationState {
             if (!isHexDigit(peek())) {
                 throw error("Invalid unicode escape");
             }
+            StringBuilder hexBuilder = new StringBuilder();
             while (!isAtEnd() && isHexDigit(peek())) {
-                consume();
+                hexBuilder.append(consume());
             }
             if (!match('}')) {
                 throw error("Unclosed unicode escape");
+            }
+            // Validate code point is within Unicode range
+            try {
+                long codePoint = Long.parseLong(hexBuilder.toString(), 16);
+                if (codePoint > 0x10FFFF) {
+                    throw error("Unicode escape sequence out of range");
+                }
+            } catch (NumberFormatException e) {
+                throw error("Invalid unicode escape");
             }
         } else {
             // backslash-u-HHHH
@@ -810,8 +907,11 @@ public class RegexValidationState {
 
     /**
      * Parse group name for named captures and backreferences.
+     * Returns the parsed group name.
      */
-    private void parseGroupName() {
+    private String parseGroupName() {
+        int startPos = pos;
+
         // Group name can start with identifier or Unicode escape
         if (isAtEnd()) {
             throw error("Invalid group name");
@@ -819,7 +919,7 @@ public class RegexValidationState {
 
         // First character - handle surrogate pairs for high Unicode
         if (peek() == '\\') {
-            parseGroupNameEscape();
+            parseGroupNameEscape(true); // isStart = true
         } else {
             int codePoint = getCodePointAt(pos);
             if (isIdentifierStartCodePoint(codePoint)) {
@@ -832,7 +932,7 @@ public class RegexValidationState {
         // Rest of name
         while (!isAtEnd() && peek() != '>') {
             if (peek() == '\\') {
-                parseGroupNameEscape();
+                parseGroupNameEscape(false); // isStart = false
             } else {
                 int codePoint = getCodePointAt(pos);
                 if (isIdentifierPartCodePoint(codePoint)) {
@@ -842,6 +942,8 @@ public class RegexValidationState {
                 }
             }
         }
+
+        return pattern.substring(startPos, pos);
     }
 
     private int getCodePointAt(int index) {
@@ -865,9 +967,11 @@ public class RegexValidationState {
     }
 
     /**
-     * Parse Unicode escape in group name: \\u{...} or \\uXXXX
+     * Parse Unicode escape in group name: backslash-u{...} or backslash-uXXXX
+     * Handles surrogate pairs: backslash-uD800 backslash-uDC00 combines to a single code point
+     * @param isStart true if this is the first character of the group name
      */
-    private void parseGroupNameEscape() {
+    private void parseGroupNameEscape(boolean isStart) {
         consume(); // consume backslash
         if (isAtEnd()) {
             throw error("Invalid escape in group name");
@@ -876,30 +980,93 @@ public class RegexValidationState {
         char c = peek();
         if (c == 'u') {
             consume(); // consume u
+            int codePoint;
             if (!isAtEnd() && peek() == '{') {
                 // \\u{XXXX} format
                 consume(); // consume {
+                StringBuilder hexBuilder = new StringBuilder();
                 while (!isAtEnd() && peek() != '}') {
                     if (!isHexDigit(peek())) {
                         throw error("Invalid hex digit in Unicode escape");
                     }
-                    consume();
+                    hexBuilder.append(consume());
                 }
                 if (!match('}')) {
                     throw error("Unclosed Unicode escape");
                 }
+                if (hexBuilder.length() == 0) {
+                    throw error("Empty Unicode escape");
+                }
+                codePoint = Integer.parseInt(hexBuilder.toString(), 16);
             } else {
-                // \\uXXXX format
+                // \\uXXXX format - may need to handle surrogate pairs
+                StringBuilder hexBuilder = new StringBuilder();
                 for (int i = 0; i < 4; i++) {
                     if (isAtEnd() || !isHexDigit(peek())) {
                         throw error("Invalid Unicode escape");
                     }
-                    consume();
+                    hexBuilder.append(consume());
+                }
+                codePoint = Integer.parseInt(hexBuilder.toString(), 16);
+
+                // Check for surrogate pair: high surrogate followed by backslash-uXXXX low surrogate
+                if (Character.isHighSurrogate((char) codePoint)) {
+                    // Check if followed by backslash-uXXXX (low surrogate)
+                    if (pos + 5 < pattern.length() &&
+                        pattern.charAt(pos) == '\\' &&
+                        pattern.charAt(pos + 1) == 'u') {
+                        // Try to parse next escape
+                        int savedPos = pos;
+                        pos += 2; // skip backslash-u
+                        StringBuilder lowHexBuilder = new StringBuilder();
+                        boolean validLow = true;
+                        for (int i = 0; i < 4; i++) {
+                            if (isAtEnd() || !isHexDigit(peek())) {
+                                validLow = false;
+                                break;
+                            }
+                            lowHexBuilder.append(consume());
+                        }
+                        if (validLow) {
+                            int lowSurrogate = Integer.parseInt(lowHexBuilder.toString(), 16);
+                            if (Character.isLowSurrogate((char) lowSurrogate)) {
+                                // Combine into single code point
+                                codePoint = Character.toCodePoint((char) codePoint, (char) lowSurrogate);
+                            } else {
+                                // Not a low surrogate, restore position
+                                pos = savedPos;
+                            }
+                        } else {
+                            pos = savedPos;
+                        }
+                    }
+                }
+            }
+
+            // Validate that the code point is a valid identifier character
+            // Lone surrogates (0xD800-0xDFFF) are not valid identifier characters
+            if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
+                throw error("Surrogate code point is not a valid identifier character");
+            }
+            if (isStart) {
+                if (!isIdentifierStartCodePoint(codePoint)) {
+                    throw error("Unicode escape does not produce a valid identifier start character");
+                }
+            } else {
+                if (!isIdentifierPartCodePoint(codePoint)) {
+                    throw error("Unicode escape does not produce a valid identifier character");
                 }
             }
         } else {
             throw error("Invalid escape in group name");
         }
+    }
+
+    /**
+     * Legacy overload for parseGroupNameEscape - assumes identifier part (not start)
+     */
+    private void parseGroupNameEscape() {
+        parseGroupNameEscape(false);
     }
 
     /**
@@ -1268,6 +1435,58 @@ public class RegexValidationState {
         return c == '*' || c == '+' || c == '?' || c == '{';
     }
 
+    /**
+     * Check if current position starts an InvalidBracedQuantifier (Annex B).
+     * InvalidBracedQuantifier matches: {DecimalDigits}, {DecimalDigits,}, or {DecimalDigits,DecimalDigits}
+     * This is called when { appears in atom position, to determine if it's an error or a literal.
+     */
+    private boolean isInvalidBracedQuantifier() {
+        if (peek() != '{') return false;
+
+        int savedPos = pos;
+        pos++; // skip {
+
+        // Must have at least one digit
+        if (isAtEnd() || !isDigit(peek())) {
+            pos = savedPos;
+            return false;
+        }
+
+        // Consume digits
+        while (!isAtEnd() && isDigit(peek())) {
+            pos++;
+        }
+
+        // Check for }, {n,}, or {n,m}
+        if (isAtEnd()) {
+            pos = savedPos;
+            return false;
+        }
+
+        char c = peek();
+        if (c == '}') {
+            // {n} form - this is an invalid braced quantifier
+            pos = savedPos;
+            return true;
+        }
+
+        if (c == ',') {
+            pos++; // skip ,
+            // Consume optional digits after comma
+            while (!isAtEnd() && isDigit(peek())) {
+                pos++;
+            }
+            // Must end with }
+            if (!isAtEnd() && peek() == '}') {
+                pos = savedPos;
+                return true;
+            }
+        }
+
+        pos = savedPos;
+        return false;
+    }
+
     private boolean isPatternCharacter(char c) {
         // Pattern characters are any characters except: ^ $ \ . * + ? ( ) [ |
         // Note: ] and } are allowed as literal pattern characters outside their closing context
@@ -1364,10 +1583,24 @@ public class RegexValidationState {
      * Parse modifier flags in a modifier group (?i:...) or (?-i:...) or (?i-m:...)
      * Format: ModifierFlags | ModifierFlags-ModifierFlags
      * Where ModifierFlags can be i, m, s in any combination
+     *
+     * Rules:
+     * - No duplicate flags in add section
+     * - No duplicate flags in remove section
+     * - No flag can appear in both add and remove sections
+     * - At least one modifier must be present ((?-:...) is invalid)
      */
     private void parseModifiers() {
+        java.util.Set<Character> addFlags = new java.util.HashSet<>();
+        java.util.Set<Character> removeFlags = new java.util.HashSet<>();
+
         // Parse add modifiers (before optional -)
         while (!isAtEnd() && isModifierChar(peek())) {
+            char flag = peek();
+            if (addFlags.contains(flag)) {
+                throw error("Duplicate modifier flag '" + flag + "'");
+            }
+            addFlags.add(flag);
             consume();
         }
 
@@ -1375,8 +1608,22 @@ public class RegexValidationState {
         if (peek() == '-') {
             consume(); // consume -
             while (!isAtEnd() && isModifierChar(peek())) {
+                char flag = peek();
+                if (removeFlags.contains(flag)) {
+                    throw error("Duplicate modifier flag '" + flag + "'");
+                }
+                if (addFlags.contains(flag)) {
+                    throw error("Modifier flag '" + flag + "' cannot be both added and removed");
+                }
+                removeFlags.add(flag);
                 consume();
             }
+        }
+
+        // Check that both add and remove are not empty
+        // (?:...) is handled separately as non-capturing group, so we should have at least one modifier
+        if (addFlags.isEmpty() && removeFlags.isEmpty()) {
+            throw error("Modifier group must have at least one modifier flag");
         }
 
         // Next character should be ':'

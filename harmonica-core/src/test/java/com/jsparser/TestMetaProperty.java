@@ -18,8 +18,9 @@ public class TestMetaProperty {
     @Test
     void testImportMeta() throws Exception {
         try {
+            // import.meta is only valid in module code
             String source = "var x = import.meta;";
-            Parser.parse(source);
+            Parser.parse(source, true);  // module mode required
             System.out.println("✓ import.meta works");
         } catch (Exception e) {
             System.out.println("✗ import.meta failed: " + e.getMessage());

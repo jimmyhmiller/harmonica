@@ -31,7 +31,7 @@ public class Test262Utils {
         // Check multiline format:
         //   flags:
         //     - module
-        if (yaml.matches("(?sm).*^flags:\\s*\\n(?:\\s+-\\s+\\w+\\s*\\n)*?\\s+-\\s+module\\s*(?:\\n|$).*")) {
+        if (yaml.contains("- module")) {
             return true;
         }
 
@@ -76,7 +76,7 @@ public class Test262Utils {
         // Check multiline format:
         //   flags:
         //     - onlyStrict
-        if (yaml.matches("(?sm).*^flags:\\s*\\n(?:\\s+-\\s+\\w+\\s*\\n)*?\\s+-\\s+onlyStrict\\s*(?:\\n|$).*")) {
+        if (yaml.contains("- onlyStrict")) {
             return true;
         }
 

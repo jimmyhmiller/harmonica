@@ -7,12 +7,15 @@ public class TestMultilineTemplate {
 
     @Test
     public void testMultilineTemplateColumns() throws Exception {
-        String source = "const checksum = \"abc\";\n" +
+        // Wrap code in a function since return is only valid inside functions
+        String source = "function f() {\n" +
+                       "const checksum = \"abc\";\n" +
                        "const content = \"xyz\";\n" +
                        "return `\\\n" +
                        "${content}\n" +
                        "module.exports.__checksum = ${JSON.stringify(checksum)}\n" +
-                       "`;";
+                       "`;\n" +
+                       "}";
 
         System.out.println("=== Source ===");
         System.out.println(source);
@@ -20,8 +23,9 @@ public class TestMultilineTemplate {
 
         Program ast = Parser.parse(source, false);
 
-        // Navigate to the template literal's second expression
-        ReturnStatement returnStmt = (ReturnStatement) ast.body().get(2);
+        // Navigate to the template literal's second expression (inside function body)
+        FunctionDeclaration fn = (FunctionDeclaration) ast.body().get(0);
+        ReturnStatement returnStmt = (ReturnStatement) fn.body().body().get(2);
         TemplateLiteral template = (TemplateLiteral) returnStmt.argument();
         Expression expr1 = template.expressions().get(1); // Second expression (JSON.stringify)
 

@@ -32,7 +32,8 @@ import java.util.Set;
 public class AstModule extends SimpleModule {
 
     // Fields to exclude from serialization (we use loc instead)
-    private static final Set<String> EXCLUDED_FIELDS = Set.of("startLine", "startCol", "endLine", "endCol");
+    // Also exclude internal parser state fields like trailingComma on SpreadElement
+    private static final Set<String> EXCLUDED_FIELDS = Set.of("startLine", "startCol", "endLine", "endCol", "trailingComma");
 
     public AstModule() {
         super("AstModule", new Version(1, 0, 0, null, "com.jsparser", "harmonica-jackson"));

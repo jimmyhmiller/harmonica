@@ -1,0 +1,9 @@
+{
+  "name": "parser-oracle",
+  "version": "1.0.0",
+  "description": "Oracle parser for testing",
+  "dependencies": {
+    "acorn": "^8.15.0",
+    "esprima": "^4.0.1"
+  }
+}

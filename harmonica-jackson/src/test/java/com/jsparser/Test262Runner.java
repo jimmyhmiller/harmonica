@@ -393,42 +393,34 @@ public class Test262Runner {
             System.err.println("Failed to write JSON failures file: " + e.getMessage());
         }
 
-        // Assert that we have zero failures and zero mismatches
-        // Note: Negative tests that pass are tracked but not treated as failures for now,
-        // as the parser doesn't yet implement all JavaScript early error/validation rules.
-        // This is a known limitation that would require significant work to address.
-        if (failed.get() > 0 || mismatched.get() > 0) {
-            String errorMsg = String.format(
-                "\n❌ Test262 oracle comparison FAILED:\n" +
-                "  Parse failures: %d\n" +
-                "  AST mismatches: %d\n" +
-                "  Total issues: %d out of %d files\n" +
-                "See /tmp/all_test262_failures.txt and /tmp/all_test262_failures.json for details.",
-                failed.get(), mismatched.get(),
-                failed.get() + mismatched.get(), totalWithCache
-            );
-            System.err.println(errorMsg);
+        // Fail if any negative tests incorrectly passed - this is critical
+        assertEquals(0, negativeTestsPassed.get(),
+            "Negative tests incorrectly passed (parser should reject invalid syntax)");
 
-            // Fail the test
-            assertEquals(0, failed.get(), "Should have zero parse failures");
-            assertEquals(0, mismatched.get(), "Should have zero AST mismatches");
-        }
+        // Fail if there are any AST mismatches
+        assertEquals(0, mismatched.get(),
+            "AST mismatches found - parser output differs from expected");
 
-        // Report on negative tests (informational only, not a failure)
-        if (negativeTestsPassed.get() > 0) {
-            System.out.println(String.format(
-                "\n⚠️  Note: %d negative tests incorrectly passed (parser doesn't implement all validation rules yet)",
-                negativeTestsPassed.get()
-            ));
-        }
+        // Fail if there are any parse failures
+        assertEquals(0, failed.get(),
+            "Parse failures found - parser failed on files it should handle");
 
-        System.out.println("\n✅ All test262 oracle comparisons passed!");
+        System.out.println("\n✅ All test262 tests passed!");
     }
 
+    // Cache the JDK major version for skip checks
+    private static final int JDK_VERSION = Runtime.version().feature();
+
     private boolean shouldSkip(String source, Path path) {
-        // The cache generation script does all filtering
-        // We simply run whatever has a cache file
-        // No filtering needed here
+        // Skip Unicode 15.1.0 and 16.0.0 identifier tests on JDK < 25
+        // These tests use new Unicode characters that are only recognized in JDK 25+
+        if (JDK_VERSION < 25) {
+            String pathStr = path.toString();
+            if (pathStr.contains("language/identifiers/") &&
+                (pathStr.contains("unicode-15.1") || pathStr.contains("unicode-16.0"))) {
+                return true;
+            }
+        }
         return false;
     }
 

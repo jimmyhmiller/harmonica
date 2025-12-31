@@ -78,7 +78,8 @@ public class TestImportExport {
     @Test
     void testExportList() throws Exception {
         try {
-            String source = "export { foo, bar };";
+            // Export list requires the names to be declared in the module
+            String source = "const foo = 1; const bar = 2; export { foo, bar };";
             Parser.parse(source, true);
             System.out.println("✓ export list works");
         } catch (Exception e) {

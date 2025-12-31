@@ -46,27 +46,8 @@ function isCacheValid(sourceFile, cacheFile) {
 }
 
 function shouldSkip(filePath) {
-    // Skip staging directory - experimental/non-standard tests
-    if (filePath.includes('/staging/')) {
-        return true;
-    }
-
-    // Skip annexB directory - legacy/deprecated/web-compat edge cases that Acorn rejects
-    if (filePath.includes('/annexB/')) {
-        return true;
-    }
-
-    // Skip decorator tests - Acorn doesn't support decorators
-    if (filePath.includes('/decorator/')) {
-        return true;
-    }
-
-    // Skip files with 'accessor' in the name - Acorn doesn't support auto-accessors
-    if (filePath.includes('accessor')) {
-        return true;
-    }
-
     // Skip negative parse tests - they are expected to fail parsing
+    // This is the ONLY thing we should categorically skip
     return shouldSkipNegativeTest(filePath);
 }
 
