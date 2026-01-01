@@ -2,7 +2,11 @@ package com.jsparser.ast;
 
 import java.util.List;
 
-public record PropertyDefinition(
+/**
+ * Represents an auto-accessor class field: accessor foo = 1;
+ * This creates a getter/setter pair with private backing storage.
+ */
+public record ClassAccessorProperty(
     int start,
     int end,
     int startLine,
@@ -15,29 +19,8 @@ public record PropertyDefinition(
     boolean isStatic,
     List<Decorator> decorators // Can be empty
 ) implements Node {
-    public PropertyDefinition(
-        int start,
-        int end,
-        SourceLocation loc,
-        Expression key,
-        Expression value,
-        boolean computed,
-        boolean isStatic
-    ) {
-        this(start,
-             end,
-             loc != null ? loc.start().line() : 0,
-             loc != null ? loc.start().column() : 0,
-             loc != null ? loc.end().line() : 0,
-             loc != null ? loc.end().column() : 0,
-             key,
-             value,
-             computed,
-             isStatic,
-             List.of());
-    }
 
-    public PropertyDefinition(
+    public ClassAccessorProperty(
         int start,
         int end,
         int startLine,
@@ -62,6 +45,6 @@ public record PropertyDefinition(
 
     @Override
     public String type() {
-        return "PropertyDefinition";
+        return "ClassAccessorProperty";
     }
 }

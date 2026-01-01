@@ -12,6 +12,13 @@ RESULTS_DIR="benchmark-results"
 mkdir -p "$RESULTS_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
+# Check for real-world test libraries
+if [ ! -d "benchmarks/real-world-libs" ] || [ -z "$(ls -A benchmarks/real-world-libs 2>/dev/null)" ]; then
+    echo "Downloading real-world JavaScript libraries for benchmarking..."
+    ./benchmarks/download-real-world-libs.sh
+    echo ""
+fi
+
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Running Cross-Language Real-World Benchmarks (Rust)"
 echo "═══════════════════════════════════════════════════════════════"
@@ -29,6 +36,10 @@ echo "════════════════════════�
 echo ""
 echo "🏃 Running JavaScript benchmarks (Babel, Acorn)..."
 cd benchmarks/javascript
+if [ ! -d "node_modules" ]; then
+    echo "Installing npm dependencies..."
+    npm install
+fi
 node benchmark-real-world.js 2>&1 | tee "../../$RESULTS_DIR/js_realworld_${TIMESTAMP}.txt"
 cd ../..
 echo ""

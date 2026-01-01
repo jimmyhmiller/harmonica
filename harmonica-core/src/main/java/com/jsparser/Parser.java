@@ -84,6 +84,11 @@ public class Parser {
     // so conflicts with lexical declarations are allowed (function just doesn't hoist)
     private boolean inAnnexBSingleStatementContext = false;
 
+    // Using declaration context tracking
+    // using/await using are only allowed inside blocks, function bodies, for statements, etc.
+    // NOT allowed at script top level or as single-statement body (if/while/for body)
+    private boolean allowUsingDeclaration = false;
+
     // Pratt parser context - tracks outer expression start for proper location
     private int exprStartPos = 0;
     private SourceLocation.Position exprStartLoc = null;
@@ -113,16 +118,44 @@ public class Parser {
     // ========================================================================
     // Tracks declared names within block scopes for duplicate detection
     private static class Scope {
-        final java.util.Set<String> lexicalDeclarations = new java.util.HashSet<>();
-        final java.util.Set<String> varDeclarations = new java.util.HashSet<>();
-        final java.util.Set<String> functionDeclarations = new java.util.HashSet<>();
-        // Track names that were declared by "plain" FunctionDeclarations (not generators/async)
-        // Per AnnexB, in sloppy mode, duplicate plain function declarations are allowed
-        final java.util.Set<String> plainFunctionDeclarations = new java.util.HashSet<>();
+        // Lazy-initialized sets to avoid allocating HashSets that are never used
+        private java.util.Set<String> lexicalDeclarations;
+        private java.util.Set<String> varDeclarations;
+        private java.util.Set<String> functionDeclarations;
+        private java.util.Set<String> plainFunctionDeclarations;
         final boolean isFunctionScope; // True for function/program scope, false for block scope
 
         Scope(boolean isFunctionScope) {
             this.isFunctionScope = isFunctionScope;
+        }
+
+        boolean hasLexical(String name) {
+            return lexicalDeclarations != null && lexicalDeclarations.contains(name);
+        }
+        boolean hasVar(String name) {
+            return varDeclarations != null && varDeclarations.contains(name);
+        }
+        boolean hasFunction(String name) {
+            return functionDeclarations != null && functionDeclarations.contains(name);
+        }
+        boolean hasPlainFunction(String name) {
+            return plainFunctionDeclarations != null && plainFunctionDeclarations.contains(name);
+        }
+        void addLexical(String name) {
+            if (lexicalDeclarations == null) lexicalDeclarations = new java.util.HashSet<>();
+            lexicalDeclarations.add(name);
+        }
+        void addVar(String name) {
+            if (varDeclarations == null) varDeclarations = new java.util.HashSet<>();
+            varDeclarations.add(name);
+        }
+        void addFunction(String name) {
+            if (functionDeclarations == null) functionDeclarations = new java.util.HashSet<>();
+            functionDeclarations.add(name);
+        }
+        void addPlainFunction(String name) {
+            if (plainFunctionDeclarations == null) plainFunctionDeclarations = new java.util.HashSet<>();
+            plainFunctionDeclarations.add(name);
         }
     }
     private final java.util.ArrayDeque<Scope> scopeStack = new java.util.ArrayDeque<>();
@@ -146,30 +179,30 @@ public class Parser {
         if (scope == null) return;
 
         // Check if already declared as lexical in same scope
-        if (scope.lexicalDeclarations.contains(name)) {
+        if (scope.hasLexical(name)) {
             throw new ExpectedTokenException("Identifier '" + name + "' has already been declared", token);
         }
         // Check if declared as var in same scope (var/let conflict)
-        if (scope.varDeclarations.contains(name)) {
+        if (scope.hasVar(name)) {
             throw new ExpectedTokenException("Identifier '" + name + "' has already been declared", token);
         }
         // Check if there's a function declaration in the same block scope
-        if (scope.functionDeclarations.contains(name)) {
+        if (scope.hasFunction(name)) {
             throw new ExpectedTokenException("Identifier '" + name + "' has already been declared", token);
         }
-        scope.lexicalDeclarations.add(name);
+        scope.addLexical(name);
     }
 
     private void declareVarName(String name, Token token) {
         // Var declarations need to check against lexical declarations in ALL scopes
         // up to (but not including) the nearest function scope
         for (Scope scope : scopeStack) {
-            if (scope.lexicalDeclarations.contains(name)) {
+            if (scope.hasLexical(name)) {
                 throw new ExpectedTokenException("Identifier '" + name + "' has already been declared", token);
             }
             // In block scopes, also check against function declarations
             // (per ES6: LexicallyDeclaredNames and VarDeclaredNames must be disjoint)
-            if (!scope.isFunctionScope && scope.functionDeclarations.contains(name)) {
+            if (!scope.isFunctionScope && scope.hasFunction(name)) {
                 throw new ExpectedTokenException("Identifier '" + name + "' has already been declared", token);
             }
             if (scope.isFunctionScope) {
@@ -179,7 +212,7 @@ public class Parser {
         // Record in ALL scopes up to function boundary (to simulate var hoisting)
         // This allows subsequent lexical declarations to detect the conflict
         for (Scope scope : scopeStack) {
-            scope.varDeclarations.add(name);
+            scope.addVar(name);
             if (scope.isFunctionScope) {
                 break;
             }
@@ -192,7 +225,7 @@ public class Parser {
 
         // Block-scoped function declarations (in strict mode or blocks)
         // behave like let declarations for redeclaration purposes
-        if (scope.lexicalDeclarations.contains(name)) {
+        if (scope.hasLexical(name)) {
             // In sloppy mode with AnnexB single-statement context (if/while/for/labeled body),
             // function declarations that conflict with lexical declarations are allowed.
             // The function just doesn't get hoisted. This is NOT a syntax error.
@@ -203,11 +236,11 @@ public class Parser {
             // In AnnexB context, don't add to functionDeclarations (no hoisting) but don't throw
             return;
         }
-        if (scope.functionDeclarations.contains(name)) {
+        if (scope.hasFunction(name)) {
             // AnnexB B.3.3.4/B.3.3.5: In sloppy mode, duplicate entries in LexicallyDeclaredNames
             // are allowed if they are "only bound by FunctionDeclarations" (not generators/async)
             // So duplicates are allowed only if BOTH the existing and new declarations are plain functions
-            boolean existingIsPlain = scope.plainFunctionDeclarations.contains(name);
+            boolean existingIsPlain = scope.hasPlainFunction(name);
             if (!strictMode && existingIsPlain && isPlainFunction) {
                 // Both are plain function declarations - allowed in sloppy mode
                 // No need to add again since it's already in functionDeclarations
@@ -218,12 +251,12 @@ public class Parser {
         }
         // Also check against var declarations in the same block scope
         // (per ES6: LexicallyDeclaredNames and VarDeclaredNames must be disjoint)
-        if (scope.varDeclarations.contains(name)) {
+        if (scope.hasVar(name)) {
             throw new ExpectedTokenException("Identifier '" + name + "' has already been declared", token);
         }
-        scope.functionDeclarations.add(name);
+        scope.addFunction(name);
         if (isPlainFunction) {
-            scope.plainFunctionDeclarations.add(name);
+            scope.addPlainFunction(name);
         }
     }
 
@@ -361,9 +394,9 @@ public class Parser {
         for (var binding : pendingExportBindings) {
             String name = binding.localName();
             // Check if name is declared in the module scope (var, let, const, function, class, or import)
-            if (!moduleScope.lexicalDeclarations.contains(name) &&
-                !moduleScope.varDeclarations.contains(name) &&
-                !moduleScope.functionDeclarations.contains(name)) {
+            if (!moduleScope.hasLexical(name) &&
+                !moduleScope.hasVar(name) &&
+                !moduleScope.hasFunction(name)) {
                 throw new ExpectedTokenException("Export '" + name + "' is not defined", binding.token());
             }
         }
@@ -658,6 +691,9 @@ public class Parser {
         // In module mode, top-level code allows await
         atModuleTopLevel = forceModuleMode;
 
+        // using/await using are allowed at module top level but NOT at script top level
+        allowUsingDeclaration = forceModuleMode;
+
         // Enable directive context for program body
         inDirectiveContext = true;
         boolean inPrologue = true;
@@ -751,6 +787,7 @@ public class Parser {
             // Declarations
             case FUNCTION -> parseFunctionDeclaration(false);
             case CLASS -> parseClassDeclaration();
+            case AT -> parseDecoratedDeclaration();
 
             // Module declarations
             case EXPORT -> parseExportDeclaration();
@@ -861,6 +898,28 @@ public class Parser {
                         }
                     }
                 }
+                // Check for 'using' declarations (not allowed in single-statement context)
+                if (currentToken.type() == TokenType.IDENTIFIER && currentToken.lexeme().equals("using") &&
+                    !tokenContainsEscapes(currentToken) && this.current + 1 < tokens.size()) {
+                    Token next = tokens.get(this.current + 1);
+                    if (next.type() == TokenType.IDENTIFIER && !next.lexeme().equals("in") && !next.lexeme().equals("of") &&
+                        currentToken.line() == next.line()) {
+                        throw new ExpectedTokenException("'using' declarations are not allowed here", currentToken);
+                    }
+                }
+                // Check for 'await using' declarations (not allowed in single-statement context)
+                if (currentToken.type() == TokenType.IDENTIFIER && currentToken.lexeme().equals("await") &&
+                    !tokenContainsEscapes(currentToken) && this.current + 1 < tokens.size()) {
+                    Token next = tokens.get(this.current + 1);
+                    if (next.type() == TokenType.IDENTIFIER && next.lexeme().equals("using") &&
+                        !tokenContainsEscapes(next) && currentToken.line() == next.line() &&
+                        this.current + 2 < tokens.size()) {
+                        Token afterUsing = tokens.get(this.current + 2);
+                        if (afterUsing.type() == TokenType.IDENTIFIER && next.line() == afterUsing.line()) {
+                            throw new ExpectedTokenException("'await using' declarations are not allowed here", currentToken);
+                        }
+                    }
+                }
             }
             // Set Statement-only context when lexical declarations are not allowed
             // This affects how 'let\nidentifier' is parsed in parseLetStatementOrExpression
@@ -966,8 +1025,10 @@ public class Parser {
     }
 
     /**
-     * Handle IDENTIFIER which can be async function, labeled statement, or expression.
+     * Handle IDENTIFIER which can be async function, using declaration, labeled statement, or expression.
      * - async function foo() {}  → FunctionDeclaration
+     * - await using x = ...      → VariableDeclaration (kind="await using")
+     * - using x = ...            → VariableDeclaration (kind="using")
      * - label: statement         → LabeledStatement
      * - expression;              → ExpressionStatement
      */
@@ -983,6 +1044,27 @@ public class Parser {
                 throw new ExpectedTokenException("'async' keyword must not contain Unicode escape sequences", asyncToken);
             }
             return parseFunctionDeclaration(true);
+        }
+
+        // Check for 'await using' declaration (async contexts only)
+        // await using x = ...
+        if (token.lexeme().equals("await") && !tokenContainsEscapes(token) &&
+            current + 1 < tokens.size() &&
+            tokens.get(current + 1).type() == TokenType.IDENTIFIER &&
+            tokens.get(current + 1).lexeme().equals("using") &&
+            !tokenContainsEscapes(tokens.get(current + 1)) &&
+            token.line() == tokens.get(current + 1).line()) {
+            // Check if followed by a binding identifier (not 'in', 'of', ';', '=')
+            if (current + 2 < tokens.size() && isUsingDeclarationStart(current + 2, true)) {
+                return parseAwaitUsingDeclaration();
+            }
+        }
+
+        // Check for 'using' declaration
+        // using x = ...
+        if (token.lexeme().equals("using") && !tokenContainsEscapes(token) &&
+            current + 1 < tokens.size() && isUsingDeclarationStart(current + 1)) {
+            return parseUsingDeclaration();
         }
 
         // Parse as expression first
@@ -1151,10 +1233,15 @@ public class Parser {
         boolean oldAllowIn = allowIn;
         allowIn = false;
 
+        // Enable using declarations in for statement init
+        boolean oldAllowUsingDeclaration = allowUsingDeclaration;
+        allowUsingDeclaration = true;
+
         Node initOrLeft = null;
         Token kindToken = null;
+        int initStartTokenIndex = current; // Save token index before parsing init clause
         if (!check(TokenType.SEMICOLON)) {
-            // Check for var/let/const
+            // Check for var/let/const/using/await using
             // BUT: 'let' is treated as identifier (not declaration keyword) when followed by:
             // - 'in' (for-in loop): for (let in obj)
             // - 'of' (for-of loop): for (let of arr)
@@ -1169,7 +1256,27 @@ public class Parser {
                 (check(TokenType.LET) && !checkAhead(1, TokenType.IN) && !checkAhead(1, TokenType.SEMICOLON) &&
                  !checkAhead(1, TokenType.ASSIGN) && !isOfKeywordAhead);
 
-            if (isDeclaration && match(TokenType.VAR, TokenType.LET, TokenType.CONST)) {
+            // Check for 'using' declaration
+            boolean isUsingDeclaration = check(TokenType.IDENTIFIER) &&
+                peek().lexeme().equals("using") && !tokenContainsEscapes(peek()) &&
+                current + 1 < tokens.size() && isUsingDeclarationStart(current + 1);
+
+            // Check for 'await using' declaration
+            boolean isAwaitUsingDeclaration = check(TokenType.IDENTIFIER) &&
+                peek().lexeme().equals("await") && !tokenContainsEscapes(peek()) &&
+                current + 1 < tokens.size() &&
+                tokens.get(current + 1).type() == TokenType.IDENTIFIER &&
+                tokens.get(current + 1).lexeme().equals("using") &&
+                !tokenContainsEscapes(tokens.get(current + 1)) &&
+                current + 2 < tokens.size() && isUsingDeclarationStart(current + 2, true);
+
+            if (isAwaitUsingDeclaration) {
+                // Parse 'await using' declaration for for-of
+                initOrLeft = parseForAwaitUsingDeclaration();
+            } else if (isUsingDeclaration) {
+                // Parse 'using' declaration for for-of
+                initOrLeft = parseForUsingDeclaration();
+            } else if (isDeclaration && match(TokenType.VAR, TokenType.LET, TokenType.CONST)) {
                 // Variable declaration - support destructuring patterns
                 kindToken = previous();
                 String kind = kindToken.lexeme();
@@ -1230,34 +1337,17 @@ public class Parser {
         boolean lhsIsLiteralAsyncOf = false;
         if (!check(TokenType.SEMICOLON) && !check(TokenType.IN)) {
             // We're about to check for 'of' - see if the first token after '(' was 'async of'
-            // Look at the token that was at position right after the opening '('
-            // That token's position would match the start position of initOrLeft
-            if (initOrLeft != null && current > 0 && current < tokens.size()) {
-                // The first token of initOrLeft is at the position where parsing started
-                int initStart = -1;
-                if (initOrLeft instanceof Expression expr) {
-                    initStart = expr.start();
-                } else if (initOrLeft instanceof VariableDeclaration varDecl) {
-                    initStart = varDecl.start();
-                }
-                if (initStart >= 0) {
-                    // Find the token at that position
-                    for (int i = 0; i < tokens.size(); i++) {
-                        Token t = tokens.get(i);
-                        if (t.position() == initStart) {
-                            // This was the first token after '('
-                            // Check if it's literally 'async' (not escaped) AND the expression is just this identifier
-                            if (t.lexeme().equals("async") && !tokenContainsEscapes(t) &&
-                                initOrLeft instanceof Identifier) {
-                                // And check if the NEXT token in the stream was 'of'
-                                if (i + 1 < tokens.size()) {
-                                    Token next = tokens.get(i + 1);
-                                    if (next.lexeme().equals("of") && !tokenContainsEscapes(next)) {
-                                        lhsIsLiteralAsyncOf = true;
-                                    }
-                                }
-                            }
-                            break;
+            // Use the saved token index instead of scanning all tokens (O(1) instead of O(n))
+            if (initOrLeft != null && initStartTokenIndex < tokens.size()) {
+                Token t = tokens.get(initStartTokenIndex);
+                // Check if it's literally 'async' (not escaped) AND the expression is just this identifier
+                if (t.lexeme().equals("async") && !tokenContainsEscapes(t) &&
+                    initOrLeft instanceof Identifier) {
+                    // And check if the NEXT token in the stream was 'of'
+                    if (initStartTokenIndex + 1 < tokens.size()) {
+                        Token next = tokens.get(initStartTokenIndex + 1);
+                        if (next.lexeme().equals("of") && !tokenContainsEscapes(next)) {
+                            lhsIsLiteralAsyncOf = true;
                         }
                     }
                 }
@@ -1266,6 +1356,9 @@ public class Parser {
 
         // Restore allowIn flag
         allowIn = oldAllowIn;
+
+        // Restore allowUsingDeclaration flag
+        allowUsingDeclaration = oldAllowUsingDeclaration;
 
         // Check for for-in or for-of
         // Note: 'of' is a contextual keyword (IDENTIFIER token with lexeme "of")
@@ -1279,8 +1372,15 @@ public class Parser {
             // 1. Assignment expressions are never allowed: for (a = 0 in obj)
             // 2. Variable declaration initializers are only allowed in sloppy mode (Annex B): for (var a = 0 in obj)
             // 3. Only single binding allowed: for (let x, y in obj) is invalid
+            // 4. using/await using are NOT allowed in for-in (only for-of)
             if (initOrLeft instanceof VariableDeclaration) {
                 VariableDeclaration varDecl = (VariableDeclaration) initOrLeft;
+
+                // using/await using are not allowed in for-in
+                if (varDecl.kind().equals("using") || varDecl.kind().equals("await using")) {
+                    throw new ParseException("SyntaxError", peek(), null, "for-in statement",
+                        "'" + varDecl.kind() + "' declarations are not allowed in for-in loops");
+                }
 
                 // For-in/for-of only allows a single binding
                 if (varDecl.declarations().size() > 1) {
@@ -1412,7 +1512,8 @@ public class Parser {
 
                 // Check for bound name conflicts: lexical declarations in head vs var declarations in body
                 if (initOrLeft instanceof VariableDeclaration varDecl &&
-                    (varDecl.kind().equals("let") || varDecl.kind().equals("const"))) {
+                    (varDecl.kind().equals("let") || varDecl.kind().equals("const") ||
+                     varDecl.kind().equals("using") || varDecl.kind().equals("await using"))) {
                     java.util.Set<String> boundNames = new java.util.HashSet<>();
                     for (VariableDeclarator declarator : varDecl.declarations()) {
                         java.util.List<String> names = new ArrayList<>();
@@ -1642,9 +1743,16 @@ public class Parser {
                 // Lexical declarations and function declarations are allowed since switch body is a block scope
                 // Note: We pass (true, false) - allowing lexical declarations but NOT treating as AnnexB context
                 // Switch cases are NOT single-statement contexts for redeclaration purposes
+                // However, using/await using declarations are NOT allowed directly in case clause statement lists
+                boolean oldAllowUsingDeclaration = allowUsingDeclaration;
+                allowUsingDeclaration = false;
                 List<Statement> consequent = new ArrayList<>();
-                while (!check(TokenType.CASE) && !check(TokenType.DEFAULT) && !check(TokenType.RBRACE) && !isAtEnd()) {
-                    consequent.add(parseNestedStatement(true, false));
+                try {
+                    while (!check(TokenType.CASE) && !check(TokenType.DEFAULT) && !check(TokenType.RBRACE) && !isAtEnd()) {
+                        consequent.add(parseNestedStatement(true, false));
+                    }
+                } finally {
+                    allowUsingDeclaration = oldAllowUsingDeclaration;
                 }
 
                 Token caseEnd = previous();
@@ -1664,9 +1772,16 @@ public class Parser {
                 // Lexical declarations and function declarations are allowed since switch body is a block scope
                 // Note: We pass (true, false) - allowing lexical declarations but NOT treating as AnnexB context
                 // Switch cases are NOT single-statement contexts for redeclaration purposes
+                // However, using/await using declarations are NOT allowed directly in case clause statement lists
+                boolean oldAllowUsingDeclaration = allowUsingDeclaration;
+                allowUsingDeclaration = false;
                 List<Statement> consequent = new ArrayList<>();
-                while (!check(TokenType.CASE) && !check(TokenType.DEFAULT) && !check(TokenType.RBRACE) && !isAtEnd()) {
-                    consequent.add(parseNestedStatement(true, false));
+                try {
+                    while (!check(TokenType.CASE) && !check(TokenType.DEFAULT) && !check(TokenType.RBRACE) && !isAtEnd()) {
+                        consequent.add(parseNestedStatement(true, false));
+                    }
+                } finally {
+                    allowUsingDeclaration = oldAllowUsingDeclaration;
                 }
 
                 Token caseEnd = previous();
@@ -1900,7 +2015,8 @@ public class Parser {
         boolean savedAtModuleTopLevel = atModuleTopLevel;
         int savedLoopDepth = loopDepth;
         int savedSwitchDepth = switchDepth;
-        java.util.Map<String, Boolean> savedLabelMap = new java.util.HashMap<>(labelMap);
+        // Only copy labelMap if non-empty (common case is empty)
+        java.util.Map<String, Boolean> savedLabelMap = labelMap.isEmpty() ? null : new java.util.HashMap<>(labelMap);
         inGenerator = isGenerator;
         inAsyncContext = isAsync;
         inClassFieldInitializer = false; // Function bodies are never class field initializers
@@ -1911,7 +2027,7 @@ public class Parser {
         atModuleTopLevel = false; // Functions don't inherit top-level await
         loopDepth = 0; // break/continue don't cross function boundaries
         switchDepth = 0;
-        labelMap.clear(); // Labels don't cross function boundaries
+        if (savedLabelMap != null) labelMap.clear(); // Labels don't cross function boundaries
 
         // Push a function scope before parsing parameters
         pushScope(true);
@@ -1990,18 +2106,164 @@ public class Parser {
         atModuleTopLevel = savedAtModuleTopLevel;
         loopDepth = savedLoopDepth;
         switchDepth = savedSwitchDepth;
-        labelMap.clear();
-        labelMap.putAll(savedLabelMap);
+        if (savedLabelMap != null) {
+            labelMap.clear();
+            labelMap.putAll(savedLabelMap);
+        }
 
         Token endToken = previous();
         return new FunctionDeclaration(getStart(startToken), getEnd(endToken), startToken.line(), startToken.column(), endToken.endLine(), endToken.endColumn(), id, false, isGenerator, isAsync, params, body);
     }
 
+    /**
+     * Parse a statement starting with '@' - decorators followed by class declaration.
+     */
+    private Statement parseDecoratedDeclaration() {
+        List<Decorator> decorators = parseDecorators();
+
+        // After decorators, must have 'class' (or 'export' with class)
+        if (check(TokenType.CLASS)) {
+            return parseClassDeclaration(false, decorators);
+        } else if (check(TokenType.EXPORT)) {
+            // Decorators can precede exported class declarations
+            throw new ExpectedTokenException("Decorated export not yet supported", peek());
+        } else {
+            throw new ExpectedTokenException("'class' after decorators", peek());
+        }
+    }
+
+    /**
+     * Parse a list of decorators.
+     * Decorator[Yield, Await] :
+     *   @ DecoratorMemberExpression[?Yield, ?Await]
+     *   @ DecoratorParenthesizedExpression[?Yield, ?Await]
+     *   @ DecoratorCallExpression[?Yield, ?Await]
+     */
+    private List<Decorator> parseDecorators() {
+        List<Decorator> decorators = new ArrayList<>();
+        while (check(TokenType.AT)) {
+            Token atToken = advance(); // consume '@'
+            decorators.add(parseDecorator(atToken));
+        }
+        return decorators;
+    }
+
+    /**
+     * Parse a single decorator (after the @ has been consumed).
+     */
+    private Decorator parseDecorator(Token atToken) {
+        Token startToken = peek();
+        Expression expr;
+
+        if (check(TokenType.LPAREN)) {
+            // DecoratorParenthesizedExpression: ( Expression )
+            advance(); // consume '('
+            expr = parseExpression();
+            consume(TokenType.RPAREN, "Expected ')' after decorator expression");
+        } else {
+            // DecoratorMemberExpression or DecoratorCallExpression
+            // First parse the identifier (possibly with member access)
+            expr = parseDecoratorMemberExpression();
+
+            // Check for call expression (DecoratorCallExpression)
+            if (check(TokenType.LPAREN)) {
+                advance(); // consume '('
+                List<Expression> args = parseArgumentList();
+                consume(TokenType.RPAREN, "Expected ')' after decorator arguments");
+                Token endToken = previous();
+                expr = new CallExpression(
+                    expr.start(), getEnd(endToken),
+                    startToken.line(), startToken.column(),
+                    endToken.endLine(), endToken.endColumn(),
+                    expr, args, false
+                );
+            }
+        }
+
+        Token endToken = previous();
+        return new Decorator(
+            getStart(atToken), getEnd(endToken),
+            atToken.line(), atToken.column(), endToken.endLine(), endToken.endColumn(),
+            expr
+        );
+    }
+
+    /**
+     * Parse a decorator member expression (identifier with optional .property chain).
+     * DecoratorMemberExpression:
+     *   IdentifierReference
+     *   DecoratorMemberExpression . IdentifierName
+     *   DecoratorMemberExpression . PrivateIdentifier
+     */
+    private Expression parseDecoratorMemberExpression() {
+        // Start with an identifier
+        if (!check(TokenType.IDENTIFIER)) {
+            throw new ExpectedTokenException("decorator name", peek());
+        }
+
+        Token idToken = advance();
+        Expression expr = new Identifier(
+            getStart(idToken), getEnd(idToken),
+            idToken.line(), idToken.column(),
+            idToken.endLine(), idToken.endColumn(),
+            idToken.lexeme()
+        );
+
+        // Allow .property access
+        while (check(TokenType.DOT)) {
+            advance(); // consume '.'
+            Token propToken = peek();
+
+            if (check(TokenType.HASH)) {
+                // Private identifier: .#property
+                advance(); // consume '#'
+                if (!check(TokenType.IDENTIFIER)) {
+                    throw new ExpectedTokenException("private identifier name", peek());
+                }
+                propToken = advance();
+                PrivateIdentifier prop = new PrivateIdentifier(
+                    getStart(propToken) - 1, getEnd(propToken), // -1 to include #
+                    propToken.line(), propToken.column() - 1,
+                    propToken.endLine(), propToken.endColumn(),
+                    propToken.lexeme()
+                );
+                expr = new MemberExpression(
+                    expr.start(), getEnd(propToken),
+                    expr.loc().start().line(), expr.loc().start().column(),
+                    propToken.endLine(), propToken.endColumn(),
+                    expr, prop, false, false
+                );
+            } else if (check(TokenType.IDENTIFIER)) {
+                propToken = advance();
+                Identifier prop = new Identifier(
+                    getStart(propToken), getEnd(propToken),
+                    propToken.line(), propToken.column(),
+                    propToken.endLine(), propToken.endColumn(),
+                    propToken.lexeme()
+                );
+                expr = new MemberExpression(
+                    expr.start(), getEnd(propToken),
+                    expr.loc().start().line(), expr.loc().start().column(),
+                    propToken.endLine(), propToken.endColumn(),
+                    expr, prop, false, false
+                );
+            } else {
+                throw new ExpectedTokenException("property name after '.'", peek());
+            }
+        }
+
+        return expr;
+    }
+
     private ClassDeclaration parseClassDeclaration() {
-        return parseClassDeclaration(false);
+        return parseClassDeclaration(false, List.of());
     }
 
     private ClassDeclaration parseClassDeclaration(boolean allowAnonymous) {
+        return parseClassDeclaration(allowAnonymous, List.of());
+    }
+
+    private ClassDeclaration parseClassDeclaration(boolean allowAnonymous, List<Decorator> decorators) {
         Token startToken = peek();
         advance(); // consume 'class'
 
@@ -2073,7 +2335,11 @@ public class Parser {
         strictMode = savedStrictMode;
 
         Token endToken = previous();
-        return new ClassDeclaration(getStart(startToken), getEnd(endToken), startToken.line(), startToken.column(), endToken.endLine(), endToken.endColumn(), id, superClass, body);
+        // If decorators are present, start position is from first decorator
+        int declStart = decorators.isEmpty() ? getStart(startToken) : decorators.get(0).start();
+        int declStartLine = decorators.isEmpty() ? startToken.line() : decorators.get(0).startLine();
+        int declStartCol = decorators.isEmpty() ? startToken.column() : decorators.get(0).startCol();
+        return new ClassDeclaration(declStart, getEnd(endToken), declStartLine, declStartCol, endToken.endLine(), endToken.endColumn(), id, superClass, body, decorators);
     }
 
     private ClassBody parseClassBody() {
@@ -2106,6 +2372,9 @@ public class Parser {
             if (match(TokenType.SEMICOLON)) {
                 continue;
             }
+
+            // Parse any decorators for this class element
+            List<Decorator> elementDecorators = parseDecorators();
 
             // Track the start of the member (before any modifiers)
             Token memberStart = peek();
@@ -2143,7 +2412,7 @@ public class Parser {
                         boolean savedInStaticBlock = inStaticBlock;
                         int savedLoopDepth = loopDepth;
                         int savedSwitchDepth = switchDepth;
-                        java.util.Map<String, Boolean> savedLabelMap = new java.util.HashMap<>(labelMap);
+                        java.util.Map<String, Boolean> savedLabelMap = labelMap.isEmpty() ? null : new java.util.HashMap<>(labelMap);
                         inFunction = false;      // Static blocks do NOT allow return
                         allowNewTarget = true;   // Static blocks allow new.target
                         allowSuperProperty = true;
@@ -2152,7 +2421,7 @@ public class Parser {
                         inStaticBlock = true;    // Track that we're in a static block
                         loopDepth = 0;           // Break/continue can't cross static block boundaries
                         switchDepth = 0;
-                        labelMap.clear();        // Labels don't cross static block boundaries
+                        if (savedLabelMap != null) labelMap.clear();        // Labels don't cross static block boundaries
 
                         // Push a function scope for the static block
                         // Static blocks have their own lexical scope
@@ -2175,14 +2444,38 @@ public class Parser {
                         inStaticBlock = savedInStaticBlock;
                         loopDepth = savedLoopDepth;
                         switchDepth = savedSwitchDepth;
-                        labelMap.clear();
-                        labelMap.putAll(savedLabelMap);
+                        if (savedLabelMap != null) {
+                            labelMap.clear();
+                            labelMap.putAll(savedLabelMap);
+                        }
 
                         Token blockEnd = peek();
                         consume(TokenType.RBRACE, "Expected '}' after static block body");
 
                         bodyElements.add(new StaticBlock(getStart(blockStart), getEnd(blockEnd), blockStart.line(), blockStart.column(), blockEnd.endLine(), blockEnd.endColumn(), blockBody));
                         continue;
+                    }
+                }
+            }
+
+            // Check for 'accessor' keyword for auto-accessor class fields
+            boolean isAccessor = false;
+            if (check(TokenType.IDENTIFIER) && peek().lexeme().equals("accessor") && !tokenContainsEscapes(peek())) {
+                // Look ahead to see if this is "accessor()" (method name), "accessor;" or "accessor =" (field),
+                // or "accessor something" (modifier)
+                if (current + 1 < tokens.size()) {
+                    Token accessorToken = peek();
+                    Token nextToken = tokens.get(current + 1);
+                    TokenType nextType = nextToken.type();
+
+                    // accessor is NOT a modifier if followed by ( ; = or if there's a line break
+                    if (nextType != TokenType.LPAREN && nextType != TokenType.SEMICOLON &&
+                        nextType != TokenType.ASSIGN) {
+                        boolean hasLineBreak = nextToken.line() > accessorToken.line();
+                        if (!hasLineBreak) {
+                            advance();
+                            isAccessor = true;
+                        }
                     }
                 }
             }
@@ -2504,15 +2797,20 @@ public class Parser {
                     }
                 }
 
+                // Adjust start position if decorators are present
+                int methodStartPos = elementDecorators.isEmpty() ? getStart(memberStart) : elementDecorators.get(0).start();
+                int methodStartLine = elementDecorators.isEmpty() ? memberStart.line() : elementDecorators.get(0).startLine();
+                int methodStartCol = elementDecorators.isEmpty() ? memberStart.column() : elementDecorators.get(0).startCol();
                 MethodDefinition method = new MethodDefinition(
-                    getStart(memberStart),
+                    methodStartPos,
                     getEnd(methodEnd),
-                    memberStart.line(), memberStart.column(), methodEnd.endLine(), methodEnd.endColumn(),
+                    methodStartLine, methodStartCol, methodEnd.endLine(), methodEnd.endColumn(),
                     key,
                     fnExpr,
                     kind,
                     computed,
-                    isStatic
+                    isStatic,
+                    elementDecorators
                 );
 
                 // Check for duplicate private names
@@ -2592,15 +2890,35 @@ public class Parser {
                 }
 
                 Token propertyEnd = previous();
-                PropertyDefinition property = new PropertyDefinition(
-                    getStart(memberStart),
-                    getEnd(propertyEnd),
-                    memberStart.line(), memberStart.column(), propertyEnd.endLine(), propertyEnd.endColumn(),
-                    key,
-                    value,
-                    computed,
-                    isStatic
-                );
+                // Adjust start position if decorators are present
+                int propStartPos = elementDecorators.isEmpty() ? getStart(memberStart) : elementDecorators.get(0).start();
+                int propStartLine = elementDecorators.isEmpty() ? memberStart.line() : elementDecorators.get(0).startLine();
+                int propStartCol = elementDecorators.isEmpty() ? memberStart.column() : elementDecorators.get(0).startCol();
+
+                Node property;
+                if (isAccessor) {
+                    property = new ClassAccessorProperty(
+                        propStartPos,
+                        getEnd(propertyEnd),
+                        propStartLine, propStartCol, propertyEnd.endLine(), propertyEnd.endColumn(),
+                        key,
+                        value,
+                        computed,
+                        isStatic,
+                        elementDecorators
+                    );
+                } else {
+                    property = new PropertyDefinition(
+                        propStartPos,
+                        getEnd(propertyEnd),
+                        propStartLine, propStartCol, propertyEnd.endLine(), propertyEnd.endColumn(),
+                        key,
+                        value,
+                        computed,
+                        isStatic,
+                        elementDecorators
+                    );
+                }
 
                 // Check for duplicate private names
                 if (key instanceof PrivateIdentifier pid) {
@@ -3211,6 +3529,10 @@ public class Parser {
         boolean oldAllowIn = allowIn;
         allowIn = true;
 
+        // Enable using declarations inside blocks
+        boolean oldAllowUsingDeclaration = allowUsingDeclaration;
+        allowUsingDeclaration = true;
+
         // Enable directive context for function bodies
         boolean oldDirectiveContext = inDirectiveContext;
         boolean oldStrictMode = strictMode;
@@ -3264,6 +3586,9 @@ public class Parser {
 
         // Restore allowIn
         allowIn = oldAllowIn;
+
+        // Restore allowUsingDeclaration
+        allowUsingDeclaration = oldAllowUsingDeclaration;
 
         return new BlockStatement(getStart(startToken), getEnd(endToken), startToken.line(), startToken.column(), endToken.endLine(), endToken.endColumn(), statements);
     }
@@ -3476,6 +3801,252 @@ public class Parser {
         } while (match(TokenType.COMMA));
 
         consumeSemicolon("Expected ';' after variable declaration");
+
+        Token endToken = previous();
+        return new VariableDeclaration(getStart(startToken), getEnd(endToken), startToken.line(), startToken.column(), endToken.endLine(), endToken.endColumn(), declarators, kind);
+    }
+
+    /**
+     * Check if the token at the given position can start a using declaration.
+     * A using declaration starts when we see an identifier that's NOT:
+     * - 'in', 'of' (for-in/for-of)
+     * - followed by ';' (expression statement)
+     * - followed by '=' (assignment expression)
+     * - followed by ',' (comma expression)
+     * - followed by ')' (for loop)
+     */
+    /**
+     * Check if position starts a using declaration binding.
+     * @param position The position of the potential binding identifier
+     * @param isAwaitUsing True if we're checking for 'await using', false for plain 'using'
+     */
+    private boolean isUsingDeclarationStart(int position, boolean isAwaitUsing) {
+        if (position >= tokens.size()) return false;
+        Token token = tokens.get(position);
+
+        // Must be an identifier (the binding name)
+        if (token.type() != TokenType.IDENTIFIER) return false;
+
+        String lexeme = token.lexeme();
+        // If followed by 'in', it's a for-in with 'using' as the identifier
+        if (lexeme.equals("in")) return false;
+
+        // 'of' is tricky - it could be:
+        // 1. for (using of iterable) - for-of loop where 'using' is identifier (not a declaration)
+        // 2. for (using of = null;;) - regular for loop with 'using of = null' declaration
+        // 3. for (using of of []) - could be:
+        //    a. for-of loop where 'of' is the variable name: for ((using of) of iterable)
+        //    b. for-of with element access: for (using of of[0, 1, 2]) where 'using' is identifier
+        // For 'await using', we KNOW it's a declaration, so 'of' is always a valid variable name
+        if (lexeme.equals("of")) {
+            if (position + 1 < tokens.size()) {
+                Token afterOf = tokens.get(position + 1);
+                // If followed by '=' or ',', it's a using declaration with 'of' as the variable name
+                if (afterOf.type() == TokenType.ASSIGN || afterOf.type() == TokenType.COMMA) {
+                    return true; // using declaration: using of = ...
+                }
+                // If followed by another 'of', need to look at what comes after THAT
+                if (afterOf.type() == TokenType.IDENTIFIER && afterOf.lexeme().equals("of") &&
+                    !tokenContainsEscapes(afterOf)) {
+                    // For 'await using', we know it's a declaration, so 'of of []' means
+                    // 'of' is the variable, second 'of' is keyword, '[]' is iterable
+                    if (isAwaitUsing) {
+                        return true; // await using of of iterable
+                    }
+                    // For plain 'using', check what comes after the second 'of'
+                    // for (using of of []) - if second 'of' is followed by '[', it's element access
+                    if (position + 2 < tokens.size()) {
+                        Token afterSecondOf = tokens.get(position + 2);
+                        // If followed by '[', it's element access (of[...]), not a declaration
+                        if (afterSecondOf.type() == TokenType.LBRACKET) {
+                            return false; // for (using of of[...]) - 'using' is identifier
+                        }
+                    }
+                    return true; // using declaration: using of of iterable
+                }
+            }
+            return false; // for-of loop: for (using of iterable)
+        }
+
+        return true;
+    }
+
+    // Convenience overload for backward compatibility
+    private boolean isUsingDeclarationStart(int position) {
+        return isUsingDeclarationStart(position, false);
+    }
+
+    /**
+     * Parse a 'using' declaration: using x = expr;
+     */
+    private VariableDeclaration parseUsingDeclaration() {
+        Token startToken = peek();
+
+        // using declarations are only allowed inside blocks, function bodies, for statements, or at module top level
+        if (!allowUsingDeclaration) {
+            throw new ExpectedTokenException("'using' declarations are not allowed here", startToken);
+        }
+
+        Token usingToken = advance(); // consume 'using'
+        String kind = "using";
+
+        List<VariableDeclarator> declarators = new ArrayList<>();
+
+        do {
+            Token patternStart = peek();
+            // using only supports simple identifiers, not destructuring
+            if (!check(TokenType.IDENTIFIER)) {
+                throw new ExpectedTokenException("identifier in using declaration", peek());
+            }
+            Token idToken = advance();
+            validateIdentifier(idToken.lexeme(), idToken);
+            validateBindingName(idToken.lexeme(), idToken);
+            Pattern pattern = new Identifier(getStart(idToken), getEnd(idToken), idToken.line(), idToken.column(), idToken.endLine(), idToken.endColumn(), idToken.lexeme());
+
+            // Register as lexical declaration
+            declareLexicalName(idToken.lexeme(), patternStart);
+
+            // using requires an initializer
+            if (!match(TokenType.ASSIGN)) {
+                throw new ExpectedTokenException("'=' in using declaration", peek());
+            }
+            Expression init = parseExpr(BP_ASSIGNMENT);
+
+            Token declaratorEnd = previous();
+            int declaratorStart = getStart(patternStart);
+            int declaratorEndPos = getEnd(declaratorEnd);
+
+            declarators.add(new VariableDeclarator(declaratorStart, declaratorEndPos, patternStart.line(), patternStart.column(), declaratorEnd.endLine(), declaratorEnd.endColumn(), pattern, init));
+
+        } while (match(TokenType.COMMA));
+
+        consumeSemicolon("Expected ';' after using declaration");
+
+        Token endToken = previous();
+        return new VariableDeclaration(getStart(startToken), getEnd(endToken), startToken.line(), startToken.column(), endToken.endLine(), endToken.endColumn(), declarators, kind);
+    }
+
+    /**
+     * Parse an 'await using' declaration: await using x = expr;
+     */
+    private VariableDeclaration parseAwaitUsingDeclaration() {
+        Token startToken = peek();
+
+        // await using declarations are only allowed inside blocks, function bodies, for statements, or at module top level
+        if (!allowUsingDeclaration) {
+            throw new ExpectedTokenException("'await using' declarations are not allowed here", startToken);
+        }
+
+        advance(); // consume 'await'
+        advance(); // consume 'using'
+        String kind = "await using";
+
+        List<VariableDeclarator> declarators = new ArrayList<>();
+
+        do {
+            Token patternStart = peek();
+            // await using only supports simple identifiers, not destructuring
+            if (!check(TokenType.IDENTIFIER)) {
+                throw new ExpectedTokenException("identifier in await using declaration", peek());
+            }
+            Token idToken = advance();
+            validateIdentifier(idToken.lexeme(), idToken);
+            validateBindingName(idToken.lexeme(), idToken);
+            Pattern pattern = new Identifier(getStart(idToken), getEnd(idToken), idToken.line(), idToken.column(), idToken.endLine(), idToken.endColumn(), idToken.lexeme());
+
+            // Register as lexical declaration
+            declareLexicalName(idToken.lexeme(), patternStart);
+
+            // await using requires an initializer
+            if (!match(TokenType.ASSIGN)) {
+                throw new ExpectedTokenException("'=' in await using declaration", peek());
+            }
+            Expression init = parseExpr(BP_ASSIGNMENT);
+
+            Token declaratorEnd = previous();
+            int declaratorStart = getStart(patternStart);
+            int declaratorEndPos = getEnd(declaratorEnd);
+
+            declarators.add(new VariableDeclarator(declaratorStart, declaratorEndPos, patternStart.line(), patternStart.column(), declaratorEnd.endLine(), declaratorEnd.endColumn(), pattern, init));
+
+        } while (match(TokenType.COMMA));
+
+        consumeSemicolon("Expected ';' after await using declaration");
+
+        Token endToken = previous();
+        return new VariableDeclaration(getStart(startToken), getEnd(endToken), startToken.line(), startToken.column(), endToken.endLine(), endToken.endColumn(), declarators, kind);
+    }
+
+    /**
+     * Parse a 'using' declaration in a for statement context (no semicolon consumption).
+     * for (using x of iterable) {}
+     */
+    private VariableDeclaration parseForUsingDeclaration() {
+        Token startToken = peek();
+        advance(); // consume 'using'
+        String kind = "using";
+
+        List<VariableDeclarator> declarators = new ArrayList<>();
+        Token patternStart = peek();
+
+        // using only supports simple identifiers, not destructuring
+        if (!check(TokenType.IDENTIFIER)) {
+            throw new ExpectedTokenException("identifier in using declaration", peek());
+        }
+        Token idToken = advance();
+        validateIdentifier(idToken.lexeme(), idToken);
+        validateBindingName(idToken.lexeme(), idToken);
+        Pattern pattern = new Identifier(getStart(idToken), getEnd(idToken), idToken.line(), idToken.column(), idToken.endLine(), idToken.endColumn(), idToken.lexeme());
+
+        // Check for initializer (for regular for loop, not for-of)
+        Expression initExpr = null;
+        if (match(TokenType.ASSIGN)) {
+            initExpr = parseExpr(BP_ASSIGNMENT);
+        }
+
+        Token declaratorEnd = previous();
+        int declaratorStart = getStart(patternStart);
+        int declaratorEndPos = getEnd(declaratorEnd);
+
+        declarators.add(new VariableDeclarator(declaratorStart, declaratorEndPos, patternStart.line(), patternStart.column(), declaratorEnd.endLine(), declaratorEnd.endColumn(), pattern, initExpr));
+
+        Token endToken = previous();
+        return new VariableDeclaration(getStart(startToken), getEnd(endToken), startToken.line(), startToken.column(), endToken.endLine(), endToken.endColumn(), declarators, kind);
+    }
+
+    /**
+     * Parse an 'await using' declaration in a for statement context (no semicolon consumption).
+     * for await (await using x of iterable) {}
+     */
+    private VariableDeclaration parseForAwaitUsingDeclaration() {
+        Token startToken = peek();
+        advance(); // consume 'await'
+        advance(); // consume 'using'
+        String kind = "await using";
+
+        List<VariableDeclarator> declarators = new ArrayList<>();
+        Token patternStart = peek();
+
+        // await using only supports simple identifiers, not destructuring
+        if (!check(TokenType.IDENTIFIER)) {
+            throw new ExpectedTokenException("identifier in await using declaration", peek());
+        }
+        Token idToken = advance();
+        validateIdentifier(idToken.lexeme(), idToken);
+        validateBindingName(idToken.lexeme(), idToken);
+        Pattern pattern = new Identifier(getStart(idToken), getEnd(idToken), idToken.line(), idToken.column(), idToken.endLine(), idToken.endColumn(), idToken.lexeme());
+
+        // Check for initializer (for regular for loop, not for-of)
+        Expression initExpr = null;
+        if (match(TokenType.ASSIGN)) {
+            initExpr = parseExpr(BP_ASSIGNMENT);
+        }
+
+        Token declaratorEnd = previous();
+        int declaratorStart = getStart(patternStart);
+        int declaratorEndPos = getEnd(declaratorEnd);
+
+        declarators.add(new VariableDeclarator(declaratorStart, declaratorEndPos, patternStart.line(), patternStart.column(), declaratorEnd.endLine(), declaratorEnd.endColumn(), pattern, initExpr));
 
         Token endToken = previous();
         return new VariableDeclaration(getStart(startToken), getEnd(endToken), startToken.line(), startToken.column(), endToken.endLine(), endToken.endColumn(), declarators, kind);
@@ -3824,6 +4395,9 @@ public class Parser {
                 // Special
                 case IMPORT -> prefixImport(this, prevToken);
                 case HASH -> prefixPrivateIdentifier(this, prevToken);
+
+                // Decorated class expression
+                case AT -> prefixDecoratedClass(this, prevToken);
 
                 default -> throw new UnexpectedTokenException(token, "expression");
             };
@@ -4281,6 +4855,29 @@ public class Parser {
         // Record private name reference for AllPrivateNamesValid validation
         p.recordPrivateNameReference(nameToken.lexeme(), token);
         return new PrivateIdentifier(p.getStart(token), p.getEnd(nameToken), token.line(), token.column(), nameToken.endLine(), nameToken.endColumn(), nameToken.lexeme());
+    }
+
+    private static Expression prefixDecoratedClass(Parser p, Token atToken) {
+        // The @ was already consumed; we need to back up for parseDecorators to work correctly
+        // Or we can parse the first decorator manually and then continue
+        List<Decorator> decorators = new ArrayList<>();
+
+        // Parse first decorator (@ was already consumed)
+        decorators.add(p.parseDecorator(atToken));
+
+        // Parse any additional decorators
+        while (p.check(TokenType.AT)) {
+            Token nextAt = p.advance();
+            decorators.add(p.parseDecorator(nextAt));
+        }
+
+        // Must be followed by 'class'
+        if (!p.check(TokenType.CLASS)) {
+            throw new ExpectedTokenException("'class' after decorators", p.peek());
+        }
+
+        Token classToken = p.advance();
+        return p.parseClassExpression(classToken, decorators);
     }
 
     // ========================================================================
@@ -4895,7 +5492,7 @@ public class Parser {
         boolean savedAtModuleTopLevel = atModuleTopLevel;
         int savedLoopDepth = loopDepth;
         int savedSwitchDepth = switchDepth;
-        java.util.Map<String, Boolean> savedLabelMap = new java.util.HashMap<>(labelMap);
+        java.util.Map<String, Boolean> savedLabelMap = labelMap.isEmpty() ? null : new java.util.HashMap<>(labelMap);
         inGenerator = isGenerator;
         inAsyncContext = true;
         inClassFieldInitializer = false;
@@ -4906,7 +5503,7 @@ public class Parser {
         atModuleTopLevel = false; // Functions don't inherit top-level await
         loopDepth = 0; // break/continue don't cross function boundaries
         switchDepth = 0;
-        labelMap.clear(); // Labels don't cross function boundaries
+        if (savedLabelMap != null) labelMap.clear(); // Labels don't cross function boundaries
 
         // Push a function scope for the async function expression
         pushScope(true);
@@ -4958,8 +5555,10 @@ public class Parser {
         atModuleTopLevel = savedAtModuleTopLevel;
         loopDepth = savedLoopDepth;
         switchDepth = savedSwitchDepth;
-        labelMap.clear();
-        labelMap.putAll(savedLabelMap);
+        if (savedLabelMap != null) {
+            labelMap.clear();
+            labelMap.putAll(savedLabelMap);
+        }
 
         Token endToken = previous();
         return new FunctionExpression(getStart(asyncToken), getEnd(endToken), asyncToken.line(), asyncToken.column(), endToken.endLine(), endToken.endColumn(), id, false, isGenerator, true, params, body);
@@ -5185,7 +5784,7 @@ public class Parser {
         boolean savedAtModuleTopLevel = atModuleTopLevel;
         int savedLoopDepth = loopDepth;
         int savedSwitchDepth = switchDepth;
-        java.util.Map<String, Boolean> savedLabelMap = new java.util.HashMap<>(labelMap);
+        java.util.Map<String, Boolean> savedLabelMap = labelMap.isEmpty() ? null : new java.util.HashMap<>(labelMap);
         inGenerator = isGenerator;
         inAsyncContext = false;
         inClassFieldInitializer = false;
@@ -5196,7 +5795,7 @@ public class Parser {
         atModuleTopLevel = false; // Functions don't inherit top-level await
         loopDepth = 0; // break/continue don't cross function boundaries
         switchDepth = 0;
-        labelMap.clear(); // Labels don't cross function boundaries
+        if (savedLabelMap != null) labelMap.clear(); // Labels don't cross function boundaries
 
         // Push a function scope for the function expression
         pushScope(true);
@@ -5258,14 +5857,20 @@ public class Parser {
         atModuleTopLevel = savedAtModuleTopLevel;
         loopDepth = savedLoopDepth;
         switchDepth = savedSwitchDepth;
-        labelMap.clear();
-        labelMap.putAll(savedLabelMap);
+        if (savedLabelMap != null) {
+            labelMap.clear();
+            labelMap.putAll(savedLabelMap);
+        }
 
         Token endToken = previous();
         return new FunctionExpression(getStart(functionToken), getEnd(endToken), functionToken.line(), functionToken.column(), endToken.endLine(), endToken.endColumn(), id, false, isGenerator, false, params, body);
     }
 
     private Expression parseClassExpression(Token classToken) {
+        return parseClassExpression(classToken, List.of());
+    }
+
+    private Expression parseClassExpression(Token classToken, List<Decorator> decorators) {
         // Optional class name - but NOT if the next token is 'extends' (contextual keyword)
         Identifier id = null;
         if (check(TokenType.IDENTIFIER) && !peek().lexeme().equals("extends")) {
@@ -5328,7 +5933,11 @@ public class Parser {
         strictMode = savedStrictMode;
 
         Token endToken = previous();
-        return new ClassExpression(getStart(classToken), getEnd(endToken), classToken.line(), classToken.column(), endToken.endLine(), endToken.endColumn(), id, superClass, body);
+        // Start position is from decorators if present
+        int startPos = decorators.isEmpty() ? getStart(classToken) : decorators.get(0).start();
+        int startLine = decorators.isEmpty() ? classToken.line() : decorators.get(0).startLine();
+        int startCol = decorators.isEmpty() ? classToken.column() : decorators.get(0).startCol();
+        return new ClassExpression(startPos, getEnd(endToken), startLine, startCol, endToken.endLine(), endToken.endColumn(), id, superClass, body, decorators);
     }
 
     private Expression parseArrayLiteral(Token lbracket) {
@@ -6076,29 +6685,44 @@ public class Parser {
         return token.endPosition();
     }
 
-    // Build line offset index once during construction (O(n) operation)
+    // Build line offset index (O(n) operation)
     private int[] buildLineOffsetIndex() {
-        List<Integer> offsets = new ArrayList<>();
-        offsets.add(0); // Line 1 starts at offset 0
-
+        // First pass: count lines to pre-allocate array (avoids ArrayList boxing overhead)
+        int lineCount = 1;
         for (int i = 0; i < sourceLength; i++) {
             char ch = sourceBuf[i];
-            // Handle all line terminators: LF, CR, CRLF, LS, PS
             if (ch == '\n') {
-                offsets.add(i + 1);
+                lineCount++;
             } else if (ch == '\r') {
-                // Check for CRLF (skip the LF if present)
                 if (i + 1 < sourceLength && sourceBuf[i + 1] == '\n') {
-                    i++; // Skip the LF
+                    i++; // Skip LF in CRLF
                 }
-                offsets.add(i + 1);
+                lineCount++;
             } else if (ch == '\u2028' || ch == '\u2029') {
-                // Line Separator (LS) and Paragraph Separator (PS)
-                offsets.add(i + 1);
+                lineCount++;
             }
         }
 
-        return offsets.stream().mapToInt(Integer::intValue).toArray();
+        // Second pass: fill array directly
+        int[] offsets = new int[lineCount];
+        offsets[0] = 0; // Line 1 starts at offset 0
+        int idx = 1;
+
+        for (int i = 0; i < sourceLength; i++) {
+            char ch = sourceBuf[i];
+            if (ch == '\n') {
+                offsets[idx++] = i + 1;
+            } else if (ch == '\r') {
+                if (i + 1 < sourceLength && sourceBuf[i + 1] == '\n') {
+                    i++; // Skip LF in CRLF
+                }
+                offsets[idx++] = i + 1;
+            } else if (ch == '\u2028' || ch == '\u2029') {
+                offsets[idx++] = i + 1;
+            }
+        }
+
+        return offsets;
     }
 
     // Helper method to compute line and column from a position in source (O(log n) operation)
@@ -6106,14 +6730,16 @@ public class Parser {
         // Clamp offset to valid range
         offset = Math.max(0, Math.min(offset, sourceLength));
 
+        int[] offsets = lineOffsets;
+
         // Binary search to find the line
         int low = 0;
-        int high = lineOffsets.length - 1;
+        int high = offsets.length - 1;
         int line = 1;
 
         while (low <= high) {
             int mid = (low + high) / 2;
-            if (lineOffsets[mid] <= offset) {
+            if (offsets[mid] <= offset) {
                 line = mid + 1; // Lines are 1-indexed
                 low = mid + 1;
             } else {
@@ -6122,7 +6748,7 @@ public class Parser {
         }
 
         // Calculate column as offset from start of line
-        int lineStartOffset = lineOffsets[line - 1];
+        int lineStartOffset = offsets[line - 1];
         int column = offset - lineStartOffset;
 
         return new SourceLocation.Position(line, column);
@@ -6353,6 +6979,16 @@ public class Parser {
             throw new ExpectedTokenException("Invalid left-hand side in assignment: optional chain", operatorToken);
         }
 
+        // AnnexB: In sloppy mode, call expressions are allowed as assignment targets
+        // (they'll fail at runtime with ReferenceError, not at parse time)
+        // BUT this does NOT apply to logical assignment operators (&&=, ||=, ??=)
+        if (expr instanceof CallExpression && !strictMode) {
+            TokenType opType = operatorToken.type();
+            if (opType != TokenType.AND_ASSIGN && opType != TokenType.OR_ASSIGN && opType != TokenType.QUESTION_QUESTION_ASSIGN) {
+                return; // AnnexB extension - allowed in sloppy mode
+            }
+        }
+
         // Everything else is invalid
         String exprType = getAssignmentTargetErrorDescription(expr);
         throw new ExpectedTokenException("Invalid left-hand side in assignment: " + exprType, operatorToken);
@@ -6521,6 +7157,12 @@ public class Parser {
             return;
         }
 
+        // AnnexB: In sloppy mode, call expressions are allowed as assignment targets
+        // (they'll fail at runtime with ReferenceError, not at parse time)
+        if (left instanceof CallExpression && !strictMode) {
+            return; // AnnexB extension - allowed in sloppy mode
+        }
+
         // Everything else is invalid
         String exprType = getAssignmentTargetErrorDescription(left);
         throw new ExpectedTokenException("Invalid left-hand side in assignment: " + exprType, operatorToken);
@@ -6555,10 +7197,14 @@ public class Parser {
                 "Invalid left-hand side in " + loopType + " loop: optional chain");
         }
 
-        // CallExpression is invalid (strict mode always, sloppy mode at runtime, but we reject at parse time)
+        // AnnexB: In sloppy mode, call expressions are allowed as assignment targets
+        // (they'll fail at runtime with ReferenceError, not at parse time)
         if (expr instanceof CallExpression) {
-            throw new ParseException("SyntaxError", token, null, loopType + " statement",
-                "Invalid left-hand side in " + loopType + " loop: call expression");
+            if (strictMode) {
+                throw new ParseException("SyntaxError", token, null, loopType + " statement",
+                    "Invalid left-hand side in " + loopType + " loop: call expression");
+            }
+            return; // AnnexB extension - allowed in sloppy mode
         }
 
         // Everything else is invalid

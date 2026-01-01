@@ -13,7 +13,8 @@ public record MethodDefinition(
     FunctionExpression value,
     String kind,          // "constructor" | "method" | "get" | "set"
     boolean computed,
-    boolean isStatic
+    boolean isStatic,
+    List<Decorator> decorators // Can be empty
 ) implements Node {
     public MethodDefinition(
         int start,
@@ -35,7 +36,24 @@ public record MethodDefinition(
              value,
              kind,
              computed,
-             isStatic);
+             isStatic,
+             List.of());
+    }
+
+    public MethodDefinition(
+        int start,
+        int end,
+        int startLine,
+        int startCol,
+        int endLine,
+        int endCol,
+        Expression key,
+        FunctionExpression value,
+        String kind,
+        boolean computed,
+        boolean isStatic
+    ) {
+        this(start, end, startLine, startCol, endLine, endCol, key, value, kind, computed, isStatic, List.of());
     }
 
     @Override

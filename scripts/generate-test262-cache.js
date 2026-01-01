@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const acorn = require('acorn');
+const babelParser = require('@babel/parser');
 const os = require('os');
 
 const TEST262_DIR = path.join(__dirname, '..', 'test-oracles', 'test262', 'test');
@@ -140,6 +141,32 @@ function serializeAST(ast) {
     }, 2);
 }
 
+// Try parsing with Babel (ESTree mode) as fallback
+function parseWithBabel(source, isModule) {
+    const ast = babelParser.parse(source, {
+        sourceType: isModule ? 'module' : 'script',
+        plugins: [
+            'estree',  // Output ESTree-compatible AST
+            ['decorators', { decoratorsBeforeExport: true }],
+            'decoratorAutoAccessors',
+            'classProperties',
+            'classPrivateProperties',
+            'classPrivateMethods',
+            'classStaticBlock',
+            'importMeta',
+            'dynamicImport',
+            'exportDefaultFrom',
+            'exportNamespaceFrom',
+            'bigInt',
+            'nullishCoalescingOperator',
+            'optionalChaining',
+            'asyncGenerators',
+            'objectRestSpread',
+        ]
+    });
+    return ast;
+}
+
 // Process a single file
 function processFile(filePath) {
     const relativePath = path.relative(TEST262_DIR, filePath);
@@ -150,18 +177,31 @@ function processFile(filePath) {
         return { success: true, cached: true };
     }
 
-    try {
-        const source = fs.readFileSync(filePath, 'utf-8');
+    const source = fs.readFileSync(filePath, 'utf-8');
+    const isModule = shouldUseModuleMode(filePath);
+    let ast = null;
+    let parser = 'acorn';
 
-        // Parse with Acorn using same options as CLI
+    // Try Acorn first
+    try {
         const options = {
             ecmaVersion: 2025,
             locations: true,
-            sourceType: shouldUseModuleMode(filePath) ? 'module' : 'script'
+            sourceType: isModule ? 'module' : 'script'
         };
+        ast = acorn.parse(source, options);
+    } catch (acornError) {
+        // Acorn failed, try Babel as fallback
+        try {
+            ast = parseWithBabel(source, isModule);
+            parser = 'babel';
+        } catch (babelError) {
+            // Both parsers failed
+            return { success: false, error: `Acorn: ${acornError.message}, Babel: ${babelError.message}` };
+        }
+    }
 
-        const ast = acorn.parse(source, options);
-
+    try {
         const cacheFileDir = path.dirname(cacheFilePath);
 
         if (!fs.existsSync(cacheFileDir)) {
@@ -172,7 +212,8 @@ function processFile(filePath) {
         ast._metadata = {
             sourceHash: getFileHash(filePath),
             generatedAt: new Date().toISOString(),
-            acornVersion: acorn.version,
+            parser: parser,
+            parserVersion: parser === 'acorn' ? acorn.version : babelParser.version,
             sourceFile: relativePath
         };
 
@@ -180,7 +221,7 @@ function processFile(filePath) {
         const jsonOutput = serializeAST(ast);
 
         fs.writeFileSync(cacheFilePath, jsonOutput, 'utf8');
-        return { success: true, cached: false };
+        return { success: true, cached: false, parser };
     } catch (e) {
         return { success: false, error: e.message };
     }
@@ -204,7 +245,8 @@ const BATCH_SIZE = 100;
 let processed = 0;
 let successful = 0;
 let cached = 0;
-let regenerated = 0;
+let regeneratedAcorn = 0;
+let regeneratedBabel = 0;
 let failed = 0;
 const failedFiles = [];
 
@@ -219,8 +261,10 @@ for (let i = 0; i < allFiles.length; i += BATCH_SIZE) {
             successful++;
             if (result.cached) {
                 cached++;
+            } else if (result.parser === 'babel') {
+                regeneratedBabel++;
             } else {
-                regenerated++;
+                regeneratedAcorn++;
             }
         } else {
             failed++;
@@ -230,14 +274,15 @@ for (let i = 0; i < allFiles.length; i += BATCH_SIZE) {
         }
     }
 
-    console.log(`Progress: ${processed}/${allFiles.length} files, ${cached} cached, ${regenerated} regenerated, ${failed} failed`);
+    console.log(`Progress: ${processed}/${allFiles.length} files, ${cached} cached, ${regeneratedAcorn + regeneratedBabel} regenerated (${regeneratedBabel} babel), ${failed} failed`);
 }
 
 console.log('\n=== Cache Generation Results ===');
 console.log(`Total files: ${allFiles.length}`);
 console.log(`Successfully processed: ${successful} (${(successful * 100 / allFiles.length).toFixed(2)}%)`);
 console.log(`  - Used existing cache: ${cached}`);
-console.log(`  - Regenerated: ${regenerated}`);
+console.log(`  - Regenerated (Acorn): ${regeneratedAcorn}`);
+console.log(`  - Regenerated (Babel fallback): ${regeneratedBabel}`);
 console.log(`Failed to parse: ${failed} (${(failed * 100 / allFiles.length).toFixed(2)}%)`);
 
 if (failedFiles.length > 0) {

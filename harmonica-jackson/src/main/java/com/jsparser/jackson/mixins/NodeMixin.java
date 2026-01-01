@@ -83,6 +83,8 @@ import com.jsparser.ast.*;
     @JsonSubTypes.Type(value = StaticBlock.class, name = "StaticBlock"),
     @JsonSubTypes.Type(value = ImportAttribute.class, name = "ImportAttribute"),
     @JsonSubTypes.Type(value = VariableDeclarator.class, name = "VariableDeclarator"),
+    @JsonSubTypes.Type(value = Decorator.class, name = "Decorator"),
+    @JsonSubTypes.Type(value = ClassAccessorProperty.class, name = "ClassAccessorProperty"),
 })
 public abstract class NodeMixin {
     @JsonProperty("loc")

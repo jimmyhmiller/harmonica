@@ -35,6 +35,9 @@ public class AstModule extends SimpleModule {
     // Also exclude internal parser state fields like trailingComma on SpreadElement
     private static final Set<String> EXCLUDED_FIELDS = Set.of("startLine", "startCol", "endLine", "endCol", "trailingComma");
 
+    // Fields that should be excluded when they're empty collections
+    private static final Set<String> EXCLUDE_WHEN_EMPTY_FIELDS = Set.of("decorators");
+
     public AstModule() {
         super("AstModule", new Version(1, 0, 0, null, "com.jsparser", "harmonica-jackson"));
     }
@@ -57,11 +60,13 @@ public class AstModule extends SimpleModule {
         context.setMixInAnnotations(ImportNamespaceSpecifier.class, NodeMixin.class);
         context.setMixInAnnotations(ExportSpecifier.class, NodeMixin.class);
         context.setMixInAnnotations(ExportAllDeclaration.class, ExportAllDeclarationMixin.class);
+        context.setMixInAnnotations(Decorator.class, DecoratorMixin.class);
 
         // Add serialization mixins for special cases
         context.setMixInAnnotations(Literal.class, LiteralMixin.class);
         context.setMixInAnnotations(MethodDefinition.class, MethodDefinitionMixin.class);
         context.setMixInAnnotations(PropertyDefinition.class, PropertyDefinitionMixin.class);
+        context.setMixInAnnotations(ClassAccessorProperty.class, PropertyDefinitionMixin.class);
         // VariableDeclarator doesn't implement Node, so it needs explicit type property
         context.setMixInAnnotations(VariableDeclarator.class, TypedSerializationMixin.class);
         // Add mixins for classes that need certain null fields to be serialized
@@ -245,6 +250,12 @@ public class AstModule extends SimpleModule {
         abstract String cooked();
     }
 
+    // Mixin for Decorator - needs explicit type property since it's in typed List<Decorator>
+    private abstract static class DecoratorMixin extends SerializationMixin {
+        @JsonProperty("type")
+        abstract String type();
+    }
+
     // ==================== Serializer Modifier ====================
 
     private static class AstSerializerModifier extends BeanSerializerModifier {
@@ -268,7 +279,12 @@ public class AstModule extends SimpleModule {
                 if ("loc".equals(prop.getName())) {
                     hasLoc = true;
                 }
-                filtered.add(prop);
+                // For fields that should be excluded when empty, wrap them
+                if (EXCLUDE_WHEN_EMPTY_FIELDS.contains(prop.getName())) {
+                    filtered.add(new EmptyCollectionFilteringPropertyWriter(prop));
+                } else {
+                    filtered.add(prop);
+                }
             }
 
             // If loc is not present in properties (mixin didn't work), add it manually
@@ -326,6 +342,28 @@ public class AstModule extends SimpleModule {
                 gen.writeFieldName("loc");
                 prov.defaultSerializeValue(value, gen);
             }
+        }
+    }
+
+    /**
+     * A property writer wrapper that skips empty collections.
+     */
+    private static class EmptyCollectionFilteringPropertyWriter extends BeanPropertyWriter {
+        private final BeanPropertyWriter delegate;
+
+        EmptyCollectionFilteringPropertyWriter(BeanPropertyWriter delegate) {
+            super(delegate);
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void serializeAsField(Object bean, JsonGenerator gen, SerializerProvider prov) throws Exception {
+            Object value = delegate.get(bean);
+            // Skip empty collections
+            if (value instanceof java.util.Collection && ((java.util.Collection<?>) value).isEmpty()) {
+                return;
+            }
+            delegate.serializeAsField(bean, gen, prov);
         }
     }
 

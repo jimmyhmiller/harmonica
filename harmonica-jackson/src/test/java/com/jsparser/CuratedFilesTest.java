@@ -120,6 +120,13 @@ public class CuratedFilesTest {
                     mismatched++;
                     mismatchedFiles.add(relativePath);
                     System.out.println("✗ " + relativePath + " (AST mismatch)");
+                    // Print the difference for debugging
+                    com.fasterxml.jackson.databind.ObjectMapper prettyMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                    prettyMapper.enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
+                    System.out.println("=== EXPECTED ===");
+                    System.out.println(prettyMapper.writeValueAsString(expectedObj));
+                    System.out.println("=== ACTUAL ===");
+                    System.out.println(prettyMapper.writeValueAsString(actualObj));
                 }
             } catch (ParseException e) {
                 failed++;

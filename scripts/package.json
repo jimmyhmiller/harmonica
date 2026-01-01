@@ -4,7 +4,8 @@
   "description": "JavaScript parser with Java implementation",
   "private": true,
   "dependencies": {
-    "acorn": "^8.14.0"
+    "acorn": "^8.14.0",
+    "@babel/parser": "^7.28.0"
   },
   "scripts": {
     "generate-cache": "node scripts/generate-test262-cache.js"

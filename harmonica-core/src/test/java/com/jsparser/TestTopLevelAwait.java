@@ -104,4 +104,25 @@ public class TestTopLevelAwait {
     // the primary use case (actual top-level await in modules).
     // The production bug is about top-level await followed by semicolons,
     // which is now fixed by the other test cases.
+
+    @Test
+    public void testForAwaitUsingOfOf() {
+        // This tests the edge case: for (await using of of []) { }
+        // where 'of' is the variable name in the await using declaration
+        String code = "async function f() { for (await using of of []) { } }";
+        // Test in script mode (as test262 uses for this test)
+        Program ast = Parser.parse(code, false);
+        assertNotNull(ast);
+
+        // The for-of should have an await using declaration with 'of' as the variable
+        FunctionDeclaration fn = (FunctionDeclaration) ast.body().get(0);
+        ForOfStatement forOf = (ForOfStatement) fn.body().body().get(0);
+
+        assertTrue(forOf.left() instanceof VariableDeclaration);
+        VariableDeclaration varDecl = (VariableDeclaration) forOf.left();
+        assertEquals("await using", varDecl.kind());
+
+        Identifier id = (Identifier) varDecl.declarations().get(0).id();
+        assertEquals("of", id.name());
+    }
 }

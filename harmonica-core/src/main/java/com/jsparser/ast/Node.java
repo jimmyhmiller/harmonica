@@ -13,6 +13,7 @@ public sealed interface Node permits
     ClassBody,
     MethodDefinition,
     PropertyDefinition,
+    ClassAccessorProperty,
     StaticBlock,
     ImportAttribute,
     ImportSpecifier,
@@ -20,7 +21,8 @@ public sealed interface Node permits
     ImportNamespaceSpecifier,
     ExportSpecifier,
     CatchClause,
-    SwitchCase {
+    SwitchCase,
+    Decorator {
 
     String type();
     int start();
