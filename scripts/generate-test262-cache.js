@@ -291,7 +291,8 @@ if (failedFiles.length > 0) {
 }
 
 console.log('\nCache generation complete!');
-if (!FORCE_REGENERATE && regenerated > 0) {
-    console.log(`\nNote: ${regenerated} files were regenerated due to hash mismatches.`);
+const totalRegenerated = regeneratedAcorn + regeneratedBabel;
+if (!FORCE_REGENERATE && totalRegenerated > 0) {
+    console.log(`\nNote: ${totalRegenerated} files were regenerated due to hash mismatches.`);
     console.log('To force regeneration of all files, run with --force flag.');
 }
