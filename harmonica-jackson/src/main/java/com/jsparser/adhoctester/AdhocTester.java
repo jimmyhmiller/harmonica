@@ -444,7 +444,7 @@ public class AdhocTester {
 
                 String moduleFlag = isModule ? "--module" : "";
                 ProcessBuilder pb = new ProcessBuilder(
-                    "npx", "acorn", "--ecma2022", "--locations", moduleFlag, tempFile.toString()
+                    "npx", "acorn", "--ecma2025", "--locations", moduleFlag, tempFile.toString()
                 );
                 pb.directory(getAcornWorkingDir().toFile());
                 pb.redirectErrorStream(true);
@@ -476,7 +476,7 @@ public class AdhocTester {
                 List<String> command = new ArrayList<>();
                 command.add("npx");
                 command.add("acorn");
-                command.add("--ecma2022");
+                command.add("--ecma2025");
                 command.add("--locations");
                 if (isModule) {
                     command.add("--module");
