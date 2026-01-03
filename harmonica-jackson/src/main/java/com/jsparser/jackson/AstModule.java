@@ -36,7 +36,7 @@ public class AstModule extends SimpleModule {
     private static final Set<String> EXCLUDED_FIELDS = Set.of("startLine", "startCol", "endLine", "endCol", "trailingComma");
 
     // Fields that should be excluded when they're empty collections
-    private static final Set<String> EXCLUDE_WHEN_EMPTY_FIELDS = Set.of("decorators");
+    private static final Set<String> EXCLUDE_WHEN_EMPTY_FIELDS = Set.of("decorators", "attributes");
 
     public AstModule() {
         super("AstModule", new Version(1, 0, 0, null, "com.jsparser", "harmonica-jackson"));
@@ -86,7 +86,7 @@ public class AstModule extends SimpleModule {
         context.setMixInAnnotations(BreakStatement.class, BreakContinueMixin.class);
         context.setMixInAnnotations(ContinueStatement.class, BreakContinueMixin.class);
         context.setMixInAnnotations(SwitchCase.class, SwitchCaseMixin.class);
-        context.setMixInAnnotations(ImportExpression.class, ImportExpressionMixin.class);
+        // ImportExpression.options should NOT always be included - Acorn omits it when null
         context.setMixInAnnotations(YieldExpression.class, YieldExpressionMixin.class);
         context.setMixInAnnotations(ThrowStatement.class, ThrowStatementMixin.class);
         context.setMixInAnnotations(TemplateElement.TemplateElementValue.class, TemplateElementValueMixin.class);
@@ -218,12 +218,6 @@ public class AstModule extends SimpleModule {
     private abstract static class SwitchCaseMixin extends SerializationMixin {
         @JsonInclude(JsonInclude.Include.ALWAYS)
         abstract Expression test();
-    }
-
-    // Mixin for ImportExpression - options can be null
-    private abstract static class ImportExpressionMixin extends SerializationMixin {
-        @JsonInclude(JsonInclude.Include.ALWAYS)
-        abstract Expression options();
     }
 
     // Mixin for YieldExpression - argument can be null

@@ -27,6 +27,7 @@ npm-debug.log*
 Thumbs.db
 
 # Project-specific
+adhoc-tester-output/
 temp-packages/
 test-oracles/adhoc-cache/
 test-oracles/adhoc-cache-backup-test/
