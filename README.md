@@ -1,5 +1,7 @@
 # Harmonica
 
+[![Maven Central](https://img.shields.io/maven-central/v/com.jimmyhmiller.harmonica/harmonica-core)](https://central.sonatype.com/namespace/com.jimmyhmiller.harmonica)
+
 A standards-compliant JavaScript parser written in Java. Produces ESTree-compatible ASTs validated against Acorn.
 
 ## Status
