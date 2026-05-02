@@ -28,8 +28,8 @@ echo ""
 
 # Create a simple Java program to run parsing multiple times with JFR
 cat > /tmp/AllocProfile.java << 'JAVA_EOF'
-import com.jsparser.Parser;
-import com.jsparser.ast.Program;
+import com.jimmyhmiller.harmonica.Parser;
+import com.jimmyhmiller.harmonica.ast.Program;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -193,10 +193,10 @@ echo "────────────────────────�
 
 # Look for our parser's allocations specifically
 echo ""
-echo "Parser-related allocations (com.jsparser):"
+echo "Parser-related allocations (com.jimmyhmiller.harmonica):"
 echo ""
-grep -A 30 "com.jsparser" /tmp/alloc_samples.txt 2>/dev/null | head -100 || \
-grep -A 30 "com.jsparser" /tmp/alloc_tlab.txt 2>/dev/null | head -100 || \
+grep -A 30 "com.jimmyhmiller.harmonica" /tmp/alloc_samples.txt 2>/dev/null | head -100 || \
+grep -A 30 "com.jimmyhmiller.harmonica" /tmp/alloc_tlab.txt 2>/dev/null | head -100 || \
 echo "  No parser-specific allocations found in samples"
 
 echo ""

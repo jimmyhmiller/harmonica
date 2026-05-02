@@ -101,7 +101,7 @@ function parseWithJava(source, isModule, filePath) {
         fs.writeFileSync(tempFile, source);
 
         // Call Java parser via Maven
-        const command = `mvn exec:java -Dexec.mainClass="com.jsparser.Parser" -Dexec.args="${tempFile} ${isModule ? 'module' : 'script'}" -q 2>&1`;
+        const command = `mvn exec:java -Dexec.mainClass="com.jimmyhmiller.harmonica.Parser" -Dexec.args="${tempFile} ${isModule ? 'module' : 'script'}" -q 2>&1`;
         const output = execSync(command, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
 
         // Clean up

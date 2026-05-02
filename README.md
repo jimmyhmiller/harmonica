@@ -32,8 +32,8 @@ Use `harmonica-core` alone if you only need to parse JavaScript and work with th
 ### Parsing JavaScript
 
 ```java
-import com.jsparser.Parser;
-import com.jsparser.ast.Program;
+import com.jimmyhmiller.harmonica.Parser;
+import com.jimmyhmiller.harmonica.ast.Program;
 
 String source = "const add = (a, b) => a + b;";
 Program ast = Parser.parse(source);
@@ -44,7 +44,7 @@ Program ast = Parser.parse(source);
 Add `harmonica-jackson` to your dependencies, then use either the high-level API:
 
 ```java
-import com.jsparser.json.AstJsonProvider;
+import com.jimmyhmiller.harmonica.json.AstJsonProvider;
 
 // Provider is auto-discovered via ServiceLoader
 AstJsonProvider provider = AstJsonProvider.getProvider();
@@ -55,7 +55,7 @@ Program parsed = provider.getDeserializer().deserializeProgram(json);
 Or use Jackson's ObjectMapper directly:
 
 ```java
-import com.jsparser.jackson.HarmonicaJackson;
+import com.jimmyhmiller.harmonica.jackson.HarmonicaJackson;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 ObjectMapper mapper = HarmonicaJackson.createObjectMapper();

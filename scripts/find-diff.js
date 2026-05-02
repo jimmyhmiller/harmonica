@@ -22,7 +22,7 @@ try {
 
   // Parse with Java (via DirectoryTester approach)
   const javaOutput = execSync(
-    `cd .. && mvn exec:java -Dexec.mainClass="com.jsparser.ASTComparator" -Dexec.args="${filePath}" -q 2>&1`,
+    `cd .. && mvn exec:java -Dexec.mainClass="com.jimmyhmiller.harmonica.ASTComparator" -Dexec.args="${filePath}" -q 2>&1`,
     { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
   );
 

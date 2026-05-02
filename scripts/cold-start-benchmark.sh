@@ -26,7 +26,7 @@ trap "rm -rf $TEMP_DIR" EXIT
 
 # Java one-shot parser
 cat > "$TEMP_DIR/JavaParse.java" << 'JAVA'
-import com.jsparser.Parser;
+import com.jimmyhmiller.harmonica.Parser;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 public class JavaParse {
@@ -78,11 +78,11 @@ echo ""
 echo -n "  Java (Our Parser)...      "
 cd "$PROJECT_DIR"
 mvn compile -q -DskipTests 2>/dev/null
-JAVA_TIME=$(time_cmd "mvn exec:java -q -Dexec.mainClass='com.jsparser.benchmarks.OneShotParse' -Dexec.args='$TS_FILE' 2>/dev/null || java -cp target/classes com.jsparser.benchmarks.OneShotParse '$TS_FILE' 2>/dev/null" || echo "0")
+JAVA_TIME=$(time_cmd "mvn exec:java -q -Dexec.mainClass='com.jimmyhmiller.harmonica.benchmarks.OneShotParse' -Dexec.args='$TS_FILE' 2>/dev/null || java -cp target/classes com.jimmyhmiller.harmonica.benchmarks.OneShotParse '$TS_FILE' 2>/dev/null" || echo "0")
 # Fallback: create and run inline
 if [ "$JAVA_TIME" = "0" ] || [ -z "$JAVA_TIME" ]; then
     JAVA_TIME=$(time_cmd "java -cp target/classes:. -Dfile.encoding=UTF-8 --enable-preview -XX:+UseParallelGC -e \"
-        import com.jsparser.Parser;
+        import com.jimmyhmiller.harmonica.Parser;
         import java.nio.file.Files;
         import java.nio.file.Paths;
         String code = Files.readString(Paths.get(\\\"$TS_FILE\\\"));
@@ -91,11 +91,11 @@ if [ "$JAVA_TIME" = "0" ] || [ -z "$JAVA_TIME" ]; then
 fi
 if [ "$JAVA_TIME" = "0" ] || [ -z "$JAVA_TIME" ]; then
     # Direct execution
-    JAVA_TIME=$( { time java -cp target/classes com.jsparser.Parser "$TS_FILE" 2>/dev/null; } 2>&1 | grep real | awk '{print $2}' | sed 's/m/*60000+/;s/s/*1000/' | bc 2>/dev/null || echo "N/A" )
+    JAVA_TIME=$( { time java -cp target/classes com.jimmyhmiller.harmonica.Parser "$TS_FILE" 2>/dev/null; } 2>&1 | grep real | awk '{print $2}' | sed 's/m/*60000+/;s/s/*1000/' | bc 2>/dev/null || echo "N/A" )
 fi
 # Simple approach - just time mvn exec
 START=$(python3 -c 'import time; print(int(time.time() * 1000))')
-mvn exec:java -q -Dexec.mainClass="com.jsparser.benchmarks.SimpleBenchmark" -Dexec.args="0 1" 2>/dev/null | grep -q "TypeScript" || true
+mvn exec:java -q -Dexec.mainClass="com.jimmyhmiller.harmonica.benchmarks.SimpleBenchmark" -Dexec.args="0 1" 2>/dev/null | grep -q "TypeScript" || true
 END=$(python3 -c 'import time; print(int(time.time() * 1000))')
 JAVA_TIME=$((END - START))
 echo "${JAVA_TIME} ms"

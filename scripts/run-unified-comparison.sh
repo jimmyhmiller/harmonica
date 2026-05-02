@@ -59,7 +59,7 @@ echo "[1/4] Running Our Java Parser..."
 echo "  Building..."
 mvn compile -q -DskipTests
 echo "  Running benchmark..."
-mvn exec:java -q -Dexec.mainClass="com.jsparser.benchmarks.SimpleBenchmark" \
+mvn exec:java -q -Dexec.mainClass="com.jimmyhmiller.harmonica.benchmarks.SimpleBenchmark" \
     -Dexec.args="$WARMUP_ITERATIONS $MEASUREMENT_ITERATIONS" \
     2>&1 | tee "$RESULTS_DIR/java_our_${TIMESTAMP}.txt"
 echo "  ✓ Java benchmarks complete"

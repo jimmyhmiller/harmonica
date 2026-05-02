@@ -1,5 +1,5 @@
-import com.jsparser.Parser;
-import com.jsparser.ast.Program;
+import com.jimmyhmiller.harmonica.Parser;
+import com.jimmyhmiller.harmonica.ast.Program;
 
 public class test_parser {
     public static void main(String[] args) {

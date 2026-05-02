@@ -26,7 +26,7 @@ console.log();
 
 // Parse with our Java parser
 const isModule = metadata.sourceType === 'module';
-const javaCmd = `mvn exec:java -Dexec.mainClass="com.jsparser.ParserCLI" -Dexec.args="'${metadata.sourceFile}' ${isModule}" -q 2>&1 | grep -v "WARNING:"`;
+const javaCmd = `mvn exec:java -Dexec.mainClass="com.jimmyhmiller.harmonica.ParserCLI" -Dexec.args="'${metadata.sourceFile}' ${isModule}" -q 2>&1 | grep -v "WARNING:"`;
 
 let actualAst;
 try {

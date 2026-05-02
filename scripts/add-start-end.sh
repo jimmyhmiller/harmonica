@@ -2,7 +2,7 @@
 
 # Script to add start/end fields to AST node records
 
-for file in src/main/java/com/jsparser/ast/*.java; do
+for file in src/main/java/com/jimmyhmiller/harmonica/ast/*.java; do
     if grep -q "public record.*implements.*Node" "$file" || grep -q "public record.*implements.*Statement" "$file" || grep -q "public record.*implements.*Expression" "$file"; then
         echo "Processing: $file"
 

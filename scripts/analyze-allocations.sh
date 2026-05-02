@@ -35,8 +35,8 @@ echo "----------------------------------------------|------------|-------------"
 
 # Extract counts for jsparser types
 for type in "Token" "SourceLocation\$Position" "SourceLocation" "Identifier" "MemberExpression" "CallExpression" "Literal" "BinaryExpression"; do
-    tlab_count=$(grep -c "com.jsparser.*$type" "$TLAB_FILE" 2>/dev/null || echo "0")
-    sample_count=$(grep -c "com.jsparser.*$type" "$SAMPLES_FILE" 2>/dev/null || echo "0")
+    tlab_count=$(grep -c "com.jimmyhmiller.harmonica.*$type" "$TLAB_FILE" 2>/dev/null || echo "0")
+    sample_count=$(grep -c "com.jimmyhmiller.harmonica.*$type" "$SAMPLES_FILE" 2>/dev/null || echo "0")
     printf "%-45s | %10s | %12s\n" "$type" "$tlab_count" "$sample_count"
 done
 
@@ -74,7 +74,7 @@ echo "├───────────────────────�
 echo "│ Finding: Token is the most allocated type                                   │"
 echo "│                                                                              │"
 echo "│ Locations:                                                                   │"
-grep -A20 "objectClass = com.jsparser.Token" "$SAMPLES_FILE" 2>/dev/null | \
+grep -A20 "objectClass = com.jimmyhmiller.harmonica.Token" "$SAMPLES_FILE" 2>/dev/null | \
     grep "line:" | head -5 | sed 's/^/│   /' || echo "│   (See JFR file for details)"
 echo "│                                                                              │"
 echo "│ Recommendations:                                                             │"
