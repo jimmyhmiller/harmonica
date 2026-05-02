@@ -31,8 +31,11 @@ class ParserTest {
         // Ensure oracle dependencies are installed
         ProcessBuilder pb = new ProcessBuilder("npm", "install");
         pb.directory(new java.io.File("src/test/resources"));
-        pb.inheritIO();
+        pb.redirectErrorStream(true);
         Process process = pb.start();
+        java.io.InputStream out = process.getInputStream();
+        byte[] buf = new byte[4096];
+        while (out.read(buf) != -1) { /* drain */ }
         int exitCode = process.waitFor();
         if (exitCode != 0) {
             throw new RuntimeException("Failed to install oracle dependencies");
