@@ -2,7 +2,6 @@ package com.jimmyhmiller.harmonica.bytecode;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -21,28 +20,31 @@ import static org.junit.jupiter.api.Assertions.fail;
  * test262 paths that currently pass and re-runs each one — any test in the
  * baseline that no longer passes makes the build fail.
  *
- * <p>Off by default in {@code mvn test} because re-running the full baseline
- * takes ~30s. Opt in with:
- *
- * <pre>{@code
- *   ./mvnw -pl harmonica-core test -Dtest=Test262SnapshotTest -DrunTest262Snapshot=true
- * }</pre>
+ * <p>Runs by default in {@code mvn test}. Re-verifying the full baseline
+ * takes ~7s on Java 25 (one Future.get-bound interpret per test, no real
+ * parallelism); fast enough that paying it on every run is the right
+ * trade for catching regressions immediately.
  *
  * <h3>Updating the baseline</h3>
  * After intentionally fixing or breaking tests, regenerate via:
  *
  * <pre>{@code
  *   ./mvnw -pl harmonica-core test -Dtest=Test262SnapshotTest \
- *       -DrunTest262Snapshot=true -Dtest262.snapshot.update=true
+ *       -Dtest262.snapshot.update=true
  * }</pre>
  *
  * Update mode runs the full test262 corpus (not just the existing baseline),
  * collects every {@code PASS}, and rewrites
  * {@code src/test/resources/test262-passing-baseline.txt}. Inspect the diff
  * before committing — you should see only the tests you intended to flip.
+ *
+ * <p>The Unicode database visible to {@link Character#isUnicodeIdentifierPart}
+ * differs between JDK releases, so a handful of {@code identifiers/*-unicode-*}
+ * tests can swing pass/fail depending on the JDK's Unicode level. The project
+ * pins Java 25 (see {@code .java-version} and {@code maven.compiler.target}
+ * in the root pom); running on an older JDK will surface those as regressions.
  */
 @Tag("test262")
-@EnabledIfSystemProperty(named = "runTest262Snapshot", matches = "true")
 class Test262SnapshotTest {
 
     private static final String BASELINE_RESOURCE = "/test262-passing-baseline.txt";
