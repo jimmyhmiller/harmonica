@@ -111,7 +111,11 @@ public final class Interpreter {
             try { return fn.nativeBody().call(thisVal, args, callerCtx); }
             finally { CURRENT_NEW_TARGET.set(priorNT); }
         }
-        InterpContext callCtx = new InterpContext(fn.body(), args, fn.localCount(), callerCtx.globals());
+        // Acquire a context from the per-Executable pool (or allocate fresh
+        // if pool is empty). Profile (lodash 5K workload) showed
+        // InterpContext + its registers/locals arrays were 68% of all bytes
+        // allocated; pooling cuts most of that.
+        InterpContext callCtx = InterpContext.acquire(fn.body(), args, fn.localCount(), callerCtx.globals());
         if (fn.capturedCells() != null) {
             for (int k = 0; k < fn.captureCount(); k++) {
                 callCtx.installCapturedCell(fn.captureDestSlots()[k], fn.capturedCells()[k]);
@@ -174,6 +178,7 @@ public final class Interpreter {
                 Realm.rejectPromise(promise, ac.value());
             } finally {
                 CURRENT_NEW_TARGET.set(priorNT);
+                callCtx.release();
             }
             return promise;
         }
@@ -184,16 +189,23 @@ public final class Interpreter {
         if (newTarget == Undefined.VALUE) {
             Object priorNT = CURRENT_NEW_TARGET.get();
             if (priorNT == Undefined.VALUE) {
-                return interpret(fn.body(), callCtx);
+                try { return interpret(fn.body(), callCtx); }
+                finally { callCtx.release(); }
             }
             CURRENT_NEW_TARGET.set(Undefined.VALUE);
             try { return interpret(fn.body(), callCtx); }
-            finally { CURRENT_NEW_TARGET.set(priorNT); }
+            finally {
+                CURRENT_NEW_TARGET.set(priorNT);
+                callCtx.release();
+            }
         }
         Object priorNT = CURRENT_NEW_TARGET.get();
         CURRENT_NEW_TARGET.set(newTarget);
         try { return interpret(fn.body(), callCtx); }
-        finally { CURRENT_NEW_TARGET.set(priorNT); }
+        finally {
+            CURRENT_NEW_TARGET.set(priorNT);
+            callCtx.release();
+        }
     }
 
     /**

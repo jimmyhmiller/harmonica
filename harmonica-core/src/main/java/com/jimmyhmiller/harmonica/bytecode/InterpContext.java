@@ -36,8 +36,8 @@ public final class InterpContext {
     private final Executable executable;
     private final Object[] registers;
     private final Object[] locals;
-    private final Object[] args;
-    private final Map<String, Object> globals;
+    private Object[] args;
+    private Map<String, Object> globals;
 
     /** Per-frame {@code new.target} — the constructor passed to {@code new}, or undefined. */
     private Object newTarget = Undefined.VALUE;
@@ -115,6 +115,63 @@ public final class InterpContext {
         // slots (lodash makes millions of calls into helpers whose locals[]
         // is non-empty only because the generator pre-reserved slots).
         java.util.Arrays.fill(registers, Undefined.VALUE);
+    }
+
+    /**
+     * Per-thread pool of recyclable contexts, keyed by Executable identity.
+     * Each Executable always allocates an Object[] of the same length for
+     * registers and locals — so a pool keyed by Executable can hand back a
+     * matching context without re-sizing arrays.
+     *
+     * <p>Bounded at {@link #POOL_PER_EXE} per executable to prevent runaway
+     * growth in pathological workloads. Single-threaded for now (lodash /
+     * SunSpider / Octane don't run multi-threaded JS) — if we ever ship a
+     * Worker-style API, switch to a ThreadLocal pool.
+     */
+    private static final int POOL_PER_EXE = 8;
+    private static final java.util.IdentityHashMap<Executable, java.util.ArrayDeque<InterpContext>> POOL =
+        new java.util.IdentityHashMap<>();
+
+    /**
+     * Borrow a context for {@code executable}, reusing a pooled instance if
+     * one is available. The caller must replace per-call mutable state
+     * (args, globals, the THIS register, etc.) before running. Always pair
+     * with {@link #release()} on a normal completion path.
+     */
+    public static InterpContext acquire(Executable executable, Object[] args,
+                                        int numberOfLocals, Map<String, Object> globals) {
+        var pool = POOL.get(executable);
+        if (pool != null) {
+            InterpContext ctx = pool.pollLast();
+            if (ctx != null) {
+                ctx.args = args;
+                ctx.globals = globals;
+                ctx.newTarget = Undefined.VALUE;
+                ctx.superConstructor = null;
+                ctx.directEvalScope = null;
+                ctx.yieldedValue = Undefined.VALUE;
+                ctx.yieldResumePc = 0;
+                ctx.yieldResumeDst = null;
+                ctx.lastResumedValue = Undefined.VALUE;
+                ctx.delegatedIterator = null;
+                ctx.delegatedNext = null;
+                java.util.Arrays.fill(ctx.registers, Undefined.VALUE);
+                if (ctx.locals.length > 0) java.util.Arrays.fill(ctx.locals, null);
+                return ctx;
+            }
+        }
+        return new InterpContext(executable, args, numberOfLocals, globals);
+    }
+
+    /** Return this context to the per-Executable pool for reuse. */
+    public void release() {
+        var pool = POOL.computeIfAbsent(executable, e -> new java.util.ArrayDeque<>());
+        if (pool.size() < POOL_PER_EXE) {
+            // Drop heavy refs so the pool doesn't pin caller-frame data.
+            this.args = null;
+            this.globals = null;
+            pool.offerLast(this);
+        }
     }
 
     /**
