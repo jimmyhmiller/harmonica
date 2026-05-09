@@ -340,10 +340,18 @@ public final class Realm {
             for (int i = 1; i < a.length; i++) presetArgs[i - 1] = a[i];
             String name = target.name() != null ? "bound " + target.name() : "bound";
             return nativeFn(name, target.paramCount(), (callerThis, callArgs, c2) -> {
-                Object[] combined = new Object[presetArgs.length + callArgs.length];
+                int total = presetArgs.length + callArgs.length;
+                if (total == 0) {
+                    return Interpreter.invokeFunction(target, boundThis, Interpreter.acquireArgs(0), c2);
+                }
+                Object[] combined = Interpreter.acquireArgs(total);
                 System.arraycopy(presetArgs, 0, combined, 0, presetArgs.length);
                 System.arraycopy(callArgs, 0, combined, presetArgs.length, callArgs.length);
-                return Interpreter.invokeFunction(target, boundThis, combined, c2);
+                try {
+                    return Interpreter.invokeFunction(target, boundThis, combined, c2);
+                } finally {
+                    Interpreter.releaseArgs(combined);
+                }
             });
         }));
         functionPrototype.set("toString", nativeFn("toString", 0, (thisVal, a, c) -> {
