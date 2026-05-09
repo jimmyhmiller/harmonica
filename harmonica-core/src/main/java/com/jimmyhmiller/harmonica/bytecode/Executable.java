@@ -14,6 +14,27 @@ package com.jimmyhmiller.harmonica.bytecode;
  */
 public final class Executable {
 
+    /**
+     * Per-Executable pool of recyclable {@link InterpContext}s. Held as a
+     * direct field rather than a per-thread map keyed by executable identity
+     * — saves the IdentityHashMap lookup that showed up at 13% of lodash CPU.
+     * Single-threaded workloads (lodash bench) only; if multi-threaded JS
+     * lands, switch to a per-thread holder. Bounded to a small fixed size
+     * to keep memory tight.
+     */
+    private final InterpContext[] ctxPool = new InterpContext[8];
+    private int ctxPoolSize = 0;
+    /** Pool API — package-private; only InterpContext.acquire/release use. */
+    InterpContext popPooledCtx() {
+        if (ctxPoolSize == 0) return null;
+        InterpContext ctx = ctxPool[--ctxPoolSize];
+        ctxPool[ctxPoolSize] = null;
+        return ctx;
+    }
+    void pushPooledCtx(InterpContext ctx) {
+        if (ctxPoolSize < ctxPool.length) ctxPool[ctxPoolSize++] = ctx;
+    }
+
     private final Op[] ops;
     private final int numberOfRegisters;
     private final int numberOfLocals;
