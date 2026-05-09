@@ -13,7 +13,15 @@ import java.util.Map;
  */
 public final class JSObject {
 
-    private final Map<String, Object> properties = new LinkedHashMap<>();
+    /**
+     * Property storage. Lazy-allocated — many short-lived JSObjects (cloneDeep
+     * intermediate dictionaries, error proto-chain stubs, etc.) never get a
+     * single {@code set}, so the LinkedHashMap header was wasted on those
+     * (~12% of allocated bytes in lodash workload before this change).
+     * Allocated on the first write or the first {@link #properties()} call.
+     */
+    private Map<String, Object> properties;
+    private static final Map<String, Object> EMPTY = java.util.Collections.emptyMap();
     /**
      * Sidecar for non-default property attributes. Default for any key is
      * `{writable, enumerable, configurable}` all true. When any of those
@@ -55,11 +63,11 @@ public final class JSObject {
 
     public Object get(String key) {
         // Own property?
-        if (properties.containsKey(key)) return properties.get(key);
+        if (properties != null && properties.containsKey(key)) return properties.get(key);
         // Walk proto chain.
         JSObject cursor = proto;
         while (cursor != null) {
-            if (cursor.properties.containsKey(key)) return cursor.properties.get(key);
+            if (cursor.properties != null && cursor.properties.containsKey(key)) return cursor.properties.get(key);
             cursor = cursor.proto;
         }
         return Undefined.VALUE;
@@ -68,14 +76,15 @@ public final class JSObject {
     public void set(String key, Object value) {
         // Spec: setting a property always writes on the receiver (own slot),
         // even if a proto has it.
+        if (properties == null) properties = new LinkedHashMap<>();
         properties.put(key, value);
     }
 
     public boolean has(String key) {
-        if (properties.containsKey(key)) return true;
+        if (properties != null && properties.containsKey(key)) return true;
         JSObject cursor = proto;
         while (cursor != null) {
-            if (cursor.properties.containsKey(key)) return true;
+            if (cursor.properties != null && cursor.properties.containsKey(key)) return true;
             cursor = cursor.proto;
         }
         return false;
@@ -85,7 +94,8 @@ public final class JSObject {
     public void setProto(JSObject p) { this.proto = p; }
 
     public Object delete(String key) {
-        if (properties.containsKey(key) && !isConfigurable(key)) {
+        if (properties == null || !properties.containsKey(key)) return Boolean.TRUE;
+        if (!isConfigurable(key)) {
             // ECMA-262 § 10.1.10.1 [[Delete]]: returns false on a
             // non-configurable own property. The caller (Op.DeleteByValue,
             // delete operator) is responsible for throwing TypeError in
@@ -97,7 +107,22 @@ public final class JSObject {
         return Boolean.TRUE;
     }
 
-    public Map<String, Object> properties() { return properties; }
+    /**
+     * Mutable property map. Lazy-allocates on first call so empty objects
+     * stay header-only. Callers that only read (containsKey / get) should
+     * prefer the get / has methods above to avoid forcing allocation; the
+     * built-ins use this directly because they need a stable Map reference
+     * (e.g. for putIfAbsent or entrySet iteration).
+     */
+    public Map<String, Object> properties() {
+        if (properties == null) properties = new LinkedHashMap<>();
+        return properties;
+    }
+
+    /** Read-only view; never allocates. Returns empty map when no properties are set. */
+    public Map<String, Object> propertiesIfPresent() {
+        return properties == null ? EMPTY : properties;
+    }
 
     @Override
     public String toString() {
