@@ -87,7 +87,7 @@ public final class JSFunction {
      */
     private java.util.LinkedHashMap<String, Object> properties;
     public java.util.Map<String, Object> properties() {
-        if (properties == null) properties = new java.util.LinkedHashMap<>();
+        if (properties == null) properties = new java.util.LinkedHashMap<>(4);
         return properties;
     }
     /** Read-only view; never allocates. Returns empty map if no statics set. */

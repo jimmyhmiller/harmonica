@@ -76,7 +76,12 @@ public final class JSObject {
     public void set(String key, Object value) {
         // Spec: setting a property always writes on the receiver (own slot),
         // even if a proto has it.
-        if (properties == null) properties = new LinkedHashMap<>();
+        // Initial capacity 4 (rather than the JDK default 16) — most JS
+        // objects on the benchmark workloads carry 3-6 properties, and the
+        // 16-bucket Node[] dominated allocation profiling. JDK rounds up to
+        // power of two and applies load factor 0.75: cap=4 → table size 8,
+        // resize at 6 entries.
+        if (properties == null) properties = new LinkedHashMap<>(4);
         properties.put(key, value);
     }
 
@@ -115,7 +120,7 @@ public final class JSObject {
      * (e.g. for putIfAbsent or entrySet iteration).
      */
     public Map<String, Object> properties() {
-        if (properties == null) properties = new LinkedHashMap<>();
+        if (properties == null) properties = new LinkedHashMap<>(4);
         return properties;
     }
 
