@@ -295,7 +295,7 @@ public final class Test262ExecRunner {
         return new TestResult(file, Outcome.PASS, "");
     }
 
-    private static String shouldSkip(Frontmatter fm, Path file) {
+    static String shouldSkip(Frontmatter fm, Path file) {
         // Per-user directive (2026-05-08): don't skip — let everything run.
         // The per-test timeout bounds the cost; failure messages are far
         // more useful than skip counts.

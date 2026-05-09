@@ -703,15 +703,41 @@ public final class Realm {
             JSArray out = new JSArray();
             if (arg(a, 0) == Undefined.VALUE) { out.push(s); return out; }
             Object sep0 = a[0];
-            String[] parts;
+            // ECMA-262 § 22.1.3.21 step 8: limit is a Uint32 cap on the
+            // returned array's length. undefined → 2^32 - 1 (effectively
+            // unbounded). Caught by RegexDifferentialTest "split-limit".
+            long limit;
+            if (a.length < 2 || a[1] == Undefined.VALUE) {
+                limit = Long.MAX_VALUE;
+            } else {
+                double d = AbstractOps.toNumber(a[1]);
+                if (Double.isNaN(d) || d <= 0) limit = 0;
+                else limit = (long) d;
+            }
+            if (limit == 0) return out;
+            // ECMA-262 § 22.1.3.21 SplitMatch: the spec is fiddly about
+            // zero-width matches. Java's Pattern.split({s, -1}) keeps too
+            // many empties; .split(s) strips all trailing empties; neither
+            // matches JS exactly. Roll our own:
+            //   - Non-zero-width match: emit pre-match slice, advance past
+            //   - Zero-width match at start of input: skip, advance by 1
+            //   - Zero-width match at current pos (no progress): advance by 1
+            //   - Zero-width match at end of input: stop
+            //   - Final tail: always emitted (yields trailing empty if a
+            //     non-zero-width match landed at end of string)
             if (asRegExpSource(sep0) != null) {
                 java.util.regex.Pattern p = compileJsRegex(asRegExpSource(sep0), asRegExpFlags(sep0));
-                parts = p.split(s, -1);
+                splitJs(s, p, limit, out);
             } else {
                 String sep = AbstractOps.toString(sep0);
-                parts = sep.isEmpty() ? s.split("") : s.split(java.util.regex.Pattern.quote(sep), -1);
+                if (sep.isEmpty()) {
+                    // Empty literal separator: split into individual chars.
+                    int len = (int) Math.min(limit, s.length());
+                    for (int i = 0; i < len; i++) out.push(String.valueOf(s.charAt(i)));
+                } else {
+                    splitJs(s, java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(sep)), limit, out);
+                }
             }
-            for (String pp : parts) out.push(pp);
             return out;
         }));
         stringPrototype.set("trim", nativeFn("trim", 0,
@@ -806,6 +832,11 @@ public final class Realm {
             for (int gi = 1; gi <= m.groupCount(); gi++) {
                 out.push(m.group(gi) == null ? Undefined.VALUE : m.group(gi));
             }
+            // ECMA-262 § 22.1.3.13 String.prototype.match: when not global,
+            // the result is exec()'s — index/input/groups are all set.
+            out.setExtraProperty("index", (double) m.start());
+            out.setExtraProperty("input", s);
+            attachNamedGroups(out, p, m, src);
             return out;
         }));
         stringPrototype.set("search", nativeFn("search", 1, (t, a, c) -> {
@@ -2621,8 +2652,29 @@ public final class Realm {
                 if (src == null) return null;
                 String flags = asRegExpFlags(t);
                 String input = AbstractOps.toString(arg(a, 0));
-                java.util.regex.Matcher m = compileJsRegex(src, flags).matcher(input);
-                if (!m.find()) return null;
+                java.util.regex.Pattern p = compileJsRegex(src, flags);
+                java.util.regex.Matcher m = p.matcher(input);
+                // ECMA-262 § 22.2.5.6 RegExpExec: with the `g` or `y` flag,
+                // start the search at lastIndex and reset it to the match's
+                // end position (or 0 on no match). Without those flags,
+                // lastIndex is ignored.
+                boolean stickyOrGlobal = flags.contains("g") || flags.contains("y");
+                int startAt = 0;
+                if (stickyOrGlobal && t instanceof JSObject reObj) {
+                    Object li = reObj.properties().get("lastIndex");
+                    if (li instanceof Number nli) startAt = (int) nli.doubleValue();
+                    if (startAt < 0 || startAt > input.length()) {
+                        reObj.set("lastIndex", 0.0);
+                        return null;
+                    }
+                }
+                boolean found = m.find(startAt);
+                // Sticky requires the match to start exactly at lastIndex.
+                if (found && flags.contains("y") && m.start() != startAt) found = false;
+                if (!found) {
+                    if (stickyOrGlobal && t instanceof JSObject reObj) reObj.set("lastIndex", 0.0);
+                    return null;
+                }
                 JSArray out = new JSArray();
                 out.push(m.group());
                 for (int gi = 1; gi <= m.groupCount(); gi++) {
@@ -2630,6 +2682,10 @@ public final class Realm {
                 }
                 out.setExtraProperty("index", (double) m.start());
                 out.setExtraProperty("input", input);
+                attachNamedGroups(out, p, m, src);
+                if (stickyOrGlobal && t instanceof JSObject reObj) {
+                    reObj.set("lastIndex", (double) m.end());
+                }
                 return out;
             }));
             regExpPrototype.set("test", nativeFn("test", 1, (t, a, c) -> {
@@ -2661,6 +2717,7 @@ public final class Realm {
                 JSObject re = new JSObject(regExpProto);
                 re.set("source", arg(a, 0) == Undefined.VALUE ? "" : AbstractOps.toString(a[0]));
                 re.set("flags", arg(a, 1) == Undefined.VALUE ? "" : AbstractOps.toString(a[1]));
+                re.set("lastIndex", 0.0);   // ECMA-262 § 22.2.4.1 step 3
                 return re;
             });
             regExpCtor.setPrototypeObject(regExpProto);
@@ -2914,6 +2971,110 @@ public final class Realm {
      *   - JS allows lone `]` and `}` as literals outside a class; Java accepts.
      *   - We pass through the rest unchanged.
      */
+    /**
+     * Populate the {@code groups} property on a regex result array with each
+     * named capture's value (or undefined if the named group didn't match).
+     * Java 20+ exposes {@code Pattern.namedGroups()}; we fall back to scanning
+     * the source for {@code (?<name>} syntax on older JDKs.
+     */
+    private static void attachNamedGroups(JSArray result, java.util.regex.Pattern p,
+                                          java.util.regex.Matcher m, String source) {
+        java.util.Map<String, Integer> named;
+        try {
+            // Java 20+: Pattern.namedGroups() returns Map<String, Integer>.
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Integer> ng =
+                (java.util.Map<String, Integer>) java.util.regex.Pattern.class
+                    .getMethod("namedGroups").invoke(p);
+            named = ng;
+        } catch (Throwable t) {
+            named = scanNamedGroupsFromSource(source);
+        }
+        if (named == null || named.isEmpty()) return;
+        JSObject groups = new JSObject();
+        for (var entry : named.entrySet()) {
+            String name = entry.getKey();
+            Object val;
+            try {
+                String s = m.group(name);
+                val = s == null ? Undefined.VALUE : s;
+            } catch (IllegalArgumentException iae) {
+                val = Undefined.VALUE;
+            }
+            groups.set(name, val);
+        }
+        result.setExtraProperty("groups", groups);
+    }
+
+    /** Fallback name-extractor for JDKs without Pattern.namedGroups(). */
+    private static java.util.Map<String, Integer> scanNamedGroupsFromSource(String src) {
+        java.util.Map<String, Integer> out = new java.util.LinkedHashMap<>();
+        int idx = 0;
+        int groupNum = 0;
+        boolean inClass = false;
+        while (idx < src.length()) {
+            char c = src.charAt(idx);
+            if (c == '\\' && idx + 1 < src.length()) { idx += 2; continue; }
+            if (c == '[') inClass = true;
+            else if (c == ']') inClass = false;
+            else if (!inClass && c == '(') {
+                // Decide whether this opens a capture group, a non-capture
+                // (?:...), an assertion (?=...) (?!...) (?<=...) (?<!...),
+                // or a named group (?<name>...).
+                if (idx + 1 < src.length() && src.charAt(idx + 1) == '?') {
+                    if (idx + 2 < src.length() && src.charAt(idx + 2) == '<'
+                        && idx + 3 < src.length()
+                        && src.charAt(idx + 3) != '=' && src.charAt(idx + 3) != '!') {
+                        // Named capture (?<name>
+                        groupNum++;
+                        int end = src.indexOf('>', idx + 3);
+                        if (end > idx + 3) {
+                            out.put(src.substring(idx + 3, end), groupNum);
+                        }
+                    }
+                    // Non-capture / assertion — no group number bump.
+                } else {
+                    groupNum++;   // anonymous capture group
+                }
+            }
+            idx++;
+        }
+        return out;
+    }
+
+    /**
+     * JS-spec-faithful String.prototype.split with a regex
+     * (ECMA-262 § 22.1.3.21). Walks position-by-position and tries an
+     * <em>anchored</em> match at each position (not Java's next-find
+     * semantics). Emits the substring between the prior match-end (p)
+     * and the current cursor (q) when a non-zero-width-from-p match
+     * lands; advances q past zero-width matches that haven't progressed.
+     */
+    private static void splitJs(String s, java.util.regex.Pattern pat, long limit, JSArray out) {
+        int size = s.length();
+        java.util.regex.Matcher m = pat.matcher(s);
+        int p = 0;   // last emit-end position
+        int q = 0;   // current cursor
+        while (q < size) {
+            if (out.length() >= limit) return;
+            // Anchored match at q: find with the region restricted to start=q,
+            // and require the match to actually begin at q.
+            m.region(q, size);
+            m.useAnchoringBounds(false);
+            m.useTransparentBounds(true);
+            boolean found = m.lookingAt();
+            if (!found) { q++; continue; }
+            int e = m.end();
+            if (e == p) { q++; continue; }
+            // Emit the substring [p, q] then jump to e.
+            out.push(s.substring(p, q));
+            if (out.length() >= limit) return;
+            p = e;
+            q = e;
+        }
+        if (out.length() < limit) out.push(s.substring(p));
+    }
+
     private static String translateJsRegexToJava(String src) {
         StringBuilder sb = new StringBuilder(src.length());
         boolean inClass = false;
@@ -2975,7 +3136,16 @@ public final class Realm {
                     int two = idx * 10 + (repl.charAt(i + 2) - '0');
                     if (two <= m.groupCount()) { idx = two; consumed = 3; }
                 }
-                if (idx >= 1 && idx <= m.groupCount() && m.group(idx) != null) out.append(m.group(idx));
+                // ECMA-262 § 22.1.3.18 GetSubstitution table 67: when N
+                // exceeds the number of capture groups, leave $N literal in
+                // the output (matches V8/SpiderMonkey).
+                if (idx >= 1 && idx <= m.groupCount()) {
+                    String g = m.group(idx);
+                    if (g != null) out.append(g);
+                } else {
+                    out.append('$');
+                    out.append((char) ('0' + idx));   // single-digit case only
+                }
                 i += consumed;
             } else { out.append(ch); i++; }
         }

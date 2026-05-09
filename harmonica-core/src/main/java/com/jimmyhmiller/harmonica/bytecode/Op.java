@@ -1602,6 +1602,7 @@ public sealed interface Op {
                 : new JSObject();
             re.set("source", pattern);
             re.set("flags", flags);
+            re.set("lastIndex", 0.0);   // ECMA-262 § 22.2.4.1 step 3
             dst.store(ctx, re);
             return pc + 1;
         }
