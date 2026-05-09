@@ -2950,18 +2950,42 @@ public final class Realm {
      * Differences left unhandled: JS-only escapes ($&, $`, $'), Unicode
      * property escapes \p{...} (in u-mode), JS-style backref-without-group.
      */
+    /**
+     * Compiled-Pattern cache keyed by (source, flags). RegExp literals inside
+     * a hot loop (sunspider's string-validate-input does 4000 iterations
+     * each calling {@code /.../.test(s)}) re-create the JSObject each time,
+     * but the source+flags pair almost always points at the same compiled
+     * Pattern. Capping at ~256 keeps the worst case bounded for adversarial
+     * code that builds dynamic patterns; ConcurrentHashMap so callers from
+     * multiple realms / threads stay safe.
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<String, java.util.regex.Pattern>
+        REGEX_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int REGEX_CACHE_LIMIT = 256;
+
     private static java.util.regex.Pattern compileJsRegex(String source, String flags) {
+        // Cache key encodes both source and flags. The pipe is illegal as
+        // the leading flag char (flags are [gimsuy]+) and never appears
+        // unescaped at the start of source for non-disjunction patterns —
+        // even when present, its position after the marker keeps the key
+        // deterministic.
+        String key = flags + " " + source;
+        java.util.regex.Pattern cached = REGEX_CACHE.get(key);
+        if (cached != null) return cached;
         int f = 0;
         if (flags.contains("i")) f |= java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CASE;
         if (flags.contains("m")) f |= java.util.regex.Pattern.MULTILINE;
         if (flags.contains("s")) f |= java.util.regex.Pattern.DOTALL;
         if (flags.contains("u")) f |= java.util.regex.Pattern.UNICODE_CHARACTER_CLASS;
         String translated = translateJsRegexToJava(source);
+        java.util.regex.Pattern p;
         try {
-            return java.util.regex.Pattern.compile(translated, f);
+            p = java.util.regex.Pattern.compile(translated, f);
         } catch (java.util.regex.PatternSyntaxException pse) {
-            return java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(source), f);
+            p = java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(source), f);
         }
+        if (REGEX_CACHE.size() < REGEX_CACHE_LIMIT) REGEX_CACHE.putIfAbsent(key, p);
+        return p;
     }
 
     /**
