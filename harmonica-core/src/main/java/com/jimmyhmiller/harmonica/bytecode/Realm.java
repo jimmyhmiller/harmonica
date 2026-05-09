@@ -312,9 +312,12 @@ public final class Realm {
             Object[] callArgs;
             Object listArg = arg(a, 1);
             if (listArg == Undefined.VALUE || listArg == null) {
-                callArgs = new Object[0];
+                callArgs = Interpreter.acquireArgs(0);
             } else if (listArg instanceof JSArray arr) {
-                callArgs = arr.elements().toArray();
+                int len = arr.length();
+                callArgs = Interpreter.acquireArgs(len);
+                java.util.List<Object> el = arr.elements();
+                for (int i = 0; i < len; i++) callArgs[i] = el.get(i);
             } else if (listArg instanceof JSObject jo) {
                 // ECMA-262 § 7.3.18 CreateListFromArrayLike: any object with
                 // a numeric `length` is acceptable. The `arguments` object
@@ -322,14 +325,18 @@ public final class Realm {
                 // path.
                 Object lenVal = AbstractOps.getProperty(jo, "length");
                 int len = (int) AbstractOps.toInt32(lenVal);
-                callArgs = new Object[Math.max(0, len)];
+                callArgs = Interpreter.acquireArgs(Math.max(0, len));
                 for (int i = 0; i < len; i++) {
                     callArgs[i] = AbstractOps.getProperty(jo, Integer.toString(i));
                 }
             } else {
                 throw AbruptCompletion.typeError("Function.prototype.apply args must be array-like or null");
             }
-            return Interpreter.invokeFunction(fn, newThis, callArgs, c);
+            try {
+                return Interpreter.invokeFunction(fn, newThis, callArgs, c);
+            } finally {
+                Interpreter.releaseArgs(callArgs);
+            }
         }));
         functionPrototype.set("bind", nativeFn("bind", 1, (thisVal, a, c) -> {
             if (!(thisVal instanceof JSFunction target)) {
