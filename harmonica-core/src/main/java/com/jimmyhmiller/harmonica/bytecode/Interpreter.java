@@ -112,9 +112,17 @@ public final class Interpreter {
         final int[] sizes = new int[MAX_POOLED_ARITY + 1];
     }
     private static final ThreadLocal<ArgsPool> ARGS_POOL = ThreadLocal.withInitial(ArgsPool::new);
+    /**
+     * Shared empty-args array. Lodash makes thousands of zero-arg calls
+     * per workload (e.g. iteratee invocations with the receiver already
+     * bound, accessor-only getters); short-circuiting the pool path here
+     * avoids two ThreadLocal lookups per Call op.
+     */
+    private static final Object[] EMPTY_ARGS = new Object[0];
 
     /** Acquire an {@code Object[length]} buffer, reusing a pooled one if possible. */
     public static Object[] acquireArgs(int length) {
+        if (length == 0) return EMPTY_ARGS;
         if (length > MAX_POOLED_ARITY) return new Object[length];
         ArgsPool pool = ARGS_POOL.get();
         int sz = pool.sizes[length];
@@ -129,6 +137,7 @@ public final class Interpreter {
     /** Return an args buffer to the pool. Caller must drop all references. */
     public static void releaseArgs(Object[] args) {
         int len = args.length;
+        if (len == 0) return;                          // EMPTY_ARGS — no-op
         if (len > MAX_POOLED_ARITY) return;
         ArgsPool pool = ARGS_POOL.get();
         int sz = pool.sizes[len];
