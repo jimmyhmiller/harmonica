@@ -32,7 +32,12 @@ temp-packages/
 test-oracles/adhoc-cache/
 test-oracles/adhoc-cache-backup-test/
 test-oracles/test262-cache/
+test-oracles/test262/
 test-oracles/curated-cache/
+test-oracles/curated/
+test-oracles/ecma262/
+test-oracles/TEST262_VERSION.txt
+test-oracles/package-lock.json
 benchmark-results/
 async-profiler/
 async-profiler-3.0-macos/

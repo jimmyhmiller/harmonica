@@ -1,0 +1,150 @@
+package com.jimmyhmiller.harmonica.bytecode;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * Per-frame state visible to the interpreter and to operands' {@code retrieve}
+ * / {@code store}. Allocated on call entry, lives for one Java-frame's worth
+ * of {@code Interpreter.interpret(...)}.
+ *
+ * <p>Skeleton. Real version will hold lexical environment, realm, generator
+ * suspend point, debugger info, etc.
+ */
+public final class InterpContext {
+
+    /** Sentinel held in the globals map for declared-but-not-initialized lexical bindings (TDZ). */
+    public static final Object TDZ = new Object() {
+        @Override public String toString() { return "<tdz>"; }
+    };
+
+    /**
+     * Per-thread current context. Set on entry to the top-level interpret loop
+     * and restored on exit. Used by {@link AbstractOps} to call back into the
+     * interpreter (e.g. for {@code ToPrimitive}'s {@code valueOf}/{@code toString}
+     * lookups) without threading the context through every static helper.
+     */
+    private static final ThreadLocal<InterpContext> CURRENT = new ThreadLocal<>();
+    public static InterpContext current() { return CURRENT.get(); }
+    public static InterpContext setCurrent(InterpContext ctx) {
+        InterpContext prior = CURRENT.get();
+        if (ctx == null) CURRENT.remove();
+        else CURRENT.set(ctx);
+        return prior;
+    }
+
+    private final Executable executable;
+    private final Object[] registers;
+    private final Object[] locals;
+    private final Object[] args;
+    private final Map<String, Object> globals;
+
+    /** Per-frame {@code new.target} — the constructor passed to {@code new}, or undefined. */
+    private Object newTarget = Undefined.VALUE;
+    public Object newTarget() { return newTarget; }
+    public void setNewTarget(Object v) { this.newTarget = v; }
+
+    /** The super-constructor for derived class constructors, or null. */
+    private Object superConstructor;
+    public Object superConstructor() { return superConstructor; }
+    public void setSuperConstructor(Object v) { this.superConstructor = v; }
+
+    /**
+     * Outer-scope chain for code running inside a direct {@code eval(...)}.
+     * Each map binds a name to the caller-frame {@link Cell} that backs that
+     * binding — eval'd code's name lookups walk this chain (innermost first)
+     * before falling through to {@link #globals}. {@code null} for normal
+     * (non-eval) frames so we don't pay the lookup cost.
+     */
+    private DirectEvalScope directEvalScope;
+    public DirectEvalScope directEvalScope() { return directEvalScope; }
+    public void setDirectEvalScope(DirectEvalScope s) { this.directEvalScope = s; }
+
+    /** Linked-list of name→Cell maps. Innermost (most recent caller) first. */
+    public record DirectEvalScope(java.util.Map<String, Cell> bindings, DirectEvalScope outer) {
+        public Cell lookup(String name) {
+            DirectEvalScope cursor = this;
+            while (cursor != null) {
+                Cell c = cursor.bindings.get(name);
+                if (c != null) return c;
+                cursor = cursor.outer;
+            }
+            return null;
+        }
+    }
+
+    // --- Generator suspension state (ECMA-262 § 27.5.3.7 GeneratorYield) ---
+    private Object yieldedValue = Undefined.VALUE;
+    private int yieldResumePc = 0;
+    private Variable yieldResumeDst;
+    /** The argument passed to {@code generator.next(value)} on resume.
+     *  Made available to yield* (§ 27.5.3.8.1 step 7.b.i), which forwards
+     *  it as the argument to the inner iterator's {@code next}. Distinct
+     *  from {@link #yieldResumeDst} because yield* re-enters the same op
+     *  rather than storing into a destination operand. */
+    private Object lastResumedValue = Undefined.VALUE;
+    /** Active inner iterator object during {@code yield*}, or null. */
+    private Object delegatedIterator;
+    /** Cached {@code next} method of the active inner iterator, or null. */
+    private Object delegatedNext;
+    public Object yieldedValue() { return yieldedValue; }
+    public void setYieldedValue(Object v) { this.yieldedValue = v; }
+    public int yieldResumePc() { return yieldResumePc; }
+    public void setYieldResumePc(int pc) { this.yieldResumePc = pc; }
+    public Variable yieldResumeDst() { return yieldResumeDst; }
+    public void setYieldResumeDst(Variable v) { this.yieldResumeDst = v; }
+    public Object lastResumedValue() { return lastResumedValue; }
+    public void setLastResumedValue(Object v) { this.lastResumedValue = v; }
+    public Object delegatedIterator() { return delegatedIterator; }
+    public void setDelegatedIterator(Object v) { this.delegatedIterator = v; }
+    public Object delegatedNext() { return delegatedNext; }
+    public void setDelegatedNext(Object v) { this.delegatedNext = v; }
+
+    public InterpContext(Executable executable, Object[] args, int numberOfLocals) {
+        this(executable, args, numberOfLocals, new HashMap<>());
+    }
+
+    public InterpContext(Executable executable, Object[] args, int numberOfLocals, Map<String, Object> globals) {
+        this.executable = executable;
+        this.registers = new Object[executable.numberOfRegisters()];
+        this.locals = new Object[numberOfLocals];
+        this.args = args;
+        this.globals = globals;
+        // Registers hold raw values; locals hold Cells (shared with closures).
+        // Cell allocation is lazy — most call frames never touch the Local
+        // slots (lodash makes millions of calls into helpers whose locals[]
+        // is non-empty only because the generator pre-reserved slots).
+        java.util.Arrays.fill(registers, Undefined.VALUE);
+    }
+
+    /**
+     * Replace the Cell at the given local slot with an externally-provided
+     * one. Used by the function-call path when binding captured cells: the
+     * caller pre-allocated cells for the captured names; the callee installs
+     * those same cell references into its own locals[] so reads/writes alias.
+     */
+    public void installCapturedCell(int slot, Cell sharedCell) {
+        this.locals[slot] = sharedCell;
+    }
+
+    /**
+     * Return the Cell at the given local slot, allocating it lazily on first
+     * access. NewFunction captures use this to obtain the shared Cell — once
+     * a closure has the Cell, the parent's Variable.Local writes go through
+     * the same instance so reads from either side observe the updates.
+     */
+    public Cell cellAt(int slot) {
+        Cell c = (Cell) this.locals[slot];
+        if (c == null) {
+            c = new Cell(Undefined.VALUE);
+            this.locals[slot] = c;
+        }
+        return c;
+    }
+
+    public Executable           executable() { return executable; }
+    public Object[]             registers()  { return registers; }
+    public Object[]             locals()     { return locals; }
+    public Object[]             args()       { return args; }
+    public Map<String, Object>  globals()    { return globals; }
+}
