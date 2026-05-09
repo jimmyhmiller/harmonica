@@ -22,6 +22,12 @@ node_modules/
 dist/
 npm-debug.log*
 
+# Module loader test fixtures use synthetic node_modules trees as part of
+# the test inputs (package main/exports/imports resolution). These are
+# checked-in fixtures, not installed dependencies.
+!harmonica-core/src/test/resources/modules/**/node_modules/
+!harmonica-core/src/test/resources/modules/**/node_modules/**
+
 # OS
 .DS_Store
 Thumbs.db
