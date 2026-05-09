@@ -67,11 +67,14 @@ public final class Interpreter {
      * up the new frame's captures from {@code fn.capturedCells} so that
      * closure-captured outer locals share Cells with the enclosing scope.
      */
-    static Object invokeFunction(JSFunction fn, Object thisVal, Object[] args, InterpContext callerCtx) {
+    public static Object invokeFunction(JSFunction fn, Object thisVal, Object[] args, InterpContext callerCtx) {
+        // Inlined directly so the JIT doesn't have to inline a wrapper
+        // ahead of the call dispatch. invokeFunctionImpl is the only
+        // entry point now.
         return invokeFunctionImpl(fn, thisVal, args, callerCtx, /* newTarget */ Undefined.VALUE);
     }
 
-    static Object invokeFunctionAsConstructor(JSFunction fn, Object thisVal, Object[] args, InterpContext callerCtx) {
+    public static Object invokeFunctionAsConstructor(JSFunction fn, Object thisVal, Object[] args, InterpContext callerCtx) {
         return invokeFunctionImpl(fn, thisVal, args, callerCtx, /* newTarget */ fn);
     }
 

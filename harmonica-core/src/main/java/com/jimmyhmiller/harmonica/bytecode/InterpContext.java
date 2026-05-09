@@ -153,7 +153,11 @@ public final class InterpContext {
         this.globals = null;
         this.directEvalScope = null;          // must clear — next call may not be eval
         this.superConstructor = null;         // cheap, keeps `super` resolvable correctly
-        java.util.Arrays.fill(this.registers, Undefined.VALUE);
+        // Skip Arrays.fill(registers, Undefined.VALUE) — the generator
+        // discipline is "write-before-read", so the next frame's body
+        // initializes any register it consumes. Verified by running the
+        // smoke + regex differential + lodash benchmark (all green).
+        // Keep the locals fill: lazy Cell promotion relies on null entries.
         if (this.locals.length > 0) java.util.Arrays.fill(this.locals, null);
         executable.pushPooledCtx(this);
     }
