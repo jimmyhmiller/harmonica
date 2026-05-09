@@ -248,7 +248,7 @@ public final class Realm {
             }
             if (thisVal instanceof JSFunction fn) {
                 if ("name".equals(key) || "length".equals(key)) return true;
-                if (fn.properties().containsKey(key)) return true;
+                if (fn.hasOwnStatic(key)) return true;
                 if ("prototype".equals(key) && fn.prototypeObject() != null) return true;
                 return false;
             }
@@ -2426,8 +2426,8 @@ public final class Realm {
                     desc.set("configurable", false);
                     return desc;
                 }
-                if (fn.properties().containsKey(key)) {
-                    Object val = fn.properties().get(key);
+                if (fn.hasOwnStatic(key)) {
+                    Object val = fn.getOwnStatic(key);
                     if (val instanceof Accessor acc) {
                         desc.set("get", acc.getter() == null ? Undefined.VALUE : acc.getter());
                         desc.set("set", acc.setter() == null ? Undefined.VALUE : acc.setter());

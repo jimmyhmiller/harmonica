@@ -368,7 +368,7 @@ public final class AbstractOps {
         }
         if (base instanceof JSFunction fn) {
             // Static-style properties live on the function itself.
-            if (fn.properties().containsKey(prop)) return fn.properties().get(prop);
+            if (fn.hasOwnStatic(prop)) return fn.getOwnStatic(prop);
             // Spec virtual properties: name, length.
             if ("name".equals(prop)) return fn.name() != null ? fn.name() : "";
             if ("length".equals(prop)) return boxDouble(fn.paramCount());
@@ -417,7 +417,7 @@ public final class AbstractOps {
     public static Object getOwnPropertyRaw(Object base, String key) {
         if (base instanceof JSObject obj) return obj.get(key);
         if (base instanceof JSFunction fn) {
-            if (fn.properties().containsKey(key)) return fn.properties().get(key);
+            if (fn.hasOwnStatic(key)) return fn.getOwnStatic(key);
         }
         return Undefined.VALUE;
     }

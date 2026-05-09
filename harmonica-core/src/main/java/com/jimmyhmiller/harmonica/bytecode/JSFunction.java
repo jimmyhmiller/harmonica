@@ -79,8 +79,29 @@ public final class JSFunction {
     public void setSuperConstructor(JSFunction s) { this.superConstructor = s; }
 
     /** Static-style properties accessed via {@code Foo.bar} on the constructor. */
-    private final java.util.LinkedHashMap<String, Object> properties = new java.util.LinkedHashMap<>();
-    public java.util.Map<String, Object> properties() { return properties; }
+    /**
+     * Static-style properties on the function (Foo.bar = …, plus class
+     * static methods). Lazy because most function values don't have any —
+     * lambda callbacks created in tight loops just sit in registers / pass
+     * through and never get a property write.
+     */
+    private java.util.LinkedHashMap<String, Object> properties;
+    public java.util.Map<String, Object> properties() {
+        if (properties == null) properties = new java.util.LinkedHashMap<>();
+        return properties;
+    }
+    /** Read-only view; never allocates. Returns empty map if no statics set. */
+    public java.util.Map<String, Object> propertiesIfPresent() {
+        return properties == null ? java.util.Collections.emptyMap() : properties;
+    }
+    /** Cheap null-safe key check — preferred to {@code properties().containsKey(k)} on hot paths. */
+    public boolean hasOwnStatic(String key) {
+        return properties != null && properties.containsKey(key);
+    }
+    /** Cheap null-safe get — returns null when no map is allocated yet. */
+    public Object getOwnStatic(String key) {
+        return properties == null ? null : properties.get(key);
+    }
 
     /**
      * Per-property descriptor flags for static class members. Mirrors

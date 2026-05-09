@@ -239,7 +239,7 @@ public sealed interface Op {
                         "Cannot delete property '" + property + "' of " + b);
                 }
             } else if (b instanceof JSFunction jf) {
-                if (jf.properties().containsKey(property)) {
+                if (jf.hasOwnStatic(property)) {
                     if (jf.isConfigurable(property)) {
                         jf.properties().remove(property);
                         result = Boolean.TRUE;
@@ -281,7 +281,7 @@ public sealed interface Op {
                         "Cannot delete property '" + prop + "' of " + b);
                 }
             } else if (b instanceof JSFunction jf) {
-                if (jf.properties().containsKey(prop)) {
+                if (jf.hasOwnStatic(prop)) {
                     if (jf.isConfigurable(prop)) {
                         jf.properties().remove(prop);
                         result = Boolean.TRUE;
@@ -471,7 +471,7 @@ public sealed interface Op {
             }
             if (right instanceof JSFunction fn) {
                 if ("prototype".equals(key)) { dst.store(ctx, true); return pc + 1; }
-                if (fn.properties().containsKey(key)) { dst.store(ctx, true); return pc + 1; }
+                if (fn.hasOwnStatic(key)) { dst.store(ctx, true); return pc + 1; }
                 if (Realm.functionPrototype != null && Realm.functionPrototype.has(key)) {
                     dst.store(ctx, true); return pc + 1;
                 }
