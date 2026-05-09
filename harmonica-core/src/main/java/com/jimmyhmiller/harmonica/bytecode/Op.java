@@ -2479,10 +2479,13 @@ public sealed interface Op {
                 if (ctx.executable() != null && ctx.executable().localNames() != null) {
                     String[] names = ctx.executable().localNames();
                     Object[] locals = ctx.locals();
+                    // Promote each named slot to a Cell. Locals are now raw
+                    // by default — we only allocate the Cell wrapper when a
+                    // closure (or eval) needs a stable reference to share
+                    // mutation. cellAt does the in-place promote.
                     for (int i = 0; i < names.length && i < locals.length; i++) {
-                        if (names[i] != null && locals[i] instanceof Cell cell) {
-                            bindings.put(names[i], cell);
-                        }
+                        if (names[i] == null) continue;
+                        bindings.put(names[i], ctx.cellAt(i));
                     }
                 }
                 InterpContext.DirectEvalScope scope = new InterpContext.DirectEvalScope(

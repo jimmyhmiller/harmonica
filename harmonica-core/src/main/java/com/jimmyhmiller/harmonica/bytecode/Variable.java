@@ -48,18 +48,22 @@ public sealed interface Variable extends Operand permits Variable.Register, Vari
     record Local(int slot) implements Variable {
         @Override
         public Object retrieve(InterpContext ctx) {
+            // Slots are stored unboxed by default — the {@link Cell} wrapper
+            // is only allocated when an inner closure actually captures the
+            // slot (see {@link InterpContext#cellAt(int)}). This eliminates
+            // the per-call Cell-per-local allocation that lodash hot loops
+            // were paying for slots that never got captured.
             Object o = ctx.locals()[slot];
-            return o == null ? Undefined.VALUE : ((Cell) o).value;
+            if (o == null) return Undefined.VALUE;
+            if (o instanceof Cell c) return c.value;
+            return o;
         }
 
         @Override
         public void store(InterpContext ctx, Object value) {
             Object o = ctx.locals()[slot];
-            if (o == null) {
-                ctx.locals()[slot] = new Cell(value);
-                return;
-            }
-            ((Cell) o).value = value;
+            if (o instanceof Cell c) { c.value = value; return; }
+            ctx.locals()[slot] = value;
         }
     }
 

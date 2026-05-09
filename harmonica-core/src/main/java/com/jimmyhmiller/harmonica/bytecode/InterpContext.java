@@ -128,17 +128,22 @@ public final class InterpContext {
     }
 
     /**
-     * Return the Cell at the given local slot, allocating it lazily on first
-     * access. NewFunction captures use this to obtain the shared Cell — once
-     * a closure has the Cell, the parent's Variable.Local writes go through
-     * the same instance so reads from either side observe the updates.
+     * Return the Cell at the given local slot, allocating / promoting it on
+     * demand. NewFunction captures use this to obtain the shared Cell — once
+     * a closure has the Cell, the parent's {@link Variable.Local} writes go
+     * through the same instance so reads from either side observe the updates.
+     *
+     * <p>Default storage is now <i>unboxed</i> — Variable.Local stores values
+     * directly in {@code locals[slot]} without a Cell wrapper. cellAt
+     * promotes a raw slot to a Cell carrying its current value (or
+     * {@code undefined} if the slot has never been written), and stamps the
+     * Cell back so future reads/writes go through the shared instance.
      */
     public Cell cellAt(int slot) {
-        Cell c = (Cell) this.locals[slot];
-        if (c == null) {
-            c = new Cell(Undefined.VALUE);
-            this.locals[slot] = c;
-        }
+        Object o = this.locals[slot];
+        if (o instanceof Cell c) return c;
+        Cell c = new Cell(o == null ? Undefined.VALUE : o);
+        this.locals[slot] = c;
         return c;
     }
 
