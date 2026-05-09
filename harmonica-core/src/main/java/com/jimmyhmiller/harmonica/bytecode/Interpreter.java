@@ -224,7 +224,7 @@ public final class Interpreter {
             Object priorNT = CURRENT_NEW_TARGET.get();
             CURRENT_NEW_TARGET.set(newTarget);
             try {
-                Object result = interpret(fn.body(), callCtx);
+                Object result = runLoop(fn.body(), callCtx);
                 Realm.resolvePromise(promise, result, callerCtx);
             } catch (AbruptCompletion ac) {
                 Realm.rejectPromise(promise, ac.value());
@@ -241,11 +241,11 @@ public final class Interpreter {
         if (newTarget == Undefined.VALUE) {
             Object priorNT = CURRENT_NEW_TARGET.get();
             if (priorNT == Undefined.VALUE) {
-                try { return interpret(fn.body(), callCtx); }
+                try { return runLoop(fn.body(), callCtx); }
                 finally { callCtx.release(); }
             }
             CURRENT_NEW_TARGET.set(Undefined.VALUE);
-            try { return interpret(fn.body(), callCtx); }
+            try { return runLoop(fn.body(), callCtx); }
             finally {
                 CURRENT_NEW_TARGET.set(priorNT);
                 callCtx.release();
@@ -253,7 +253,7 @@ public final class Interpreter {
         }
         Object priorNT = CURRENT_NEW_TARGET.get();
         CURRENT_NEW_TARGET.set(newTarget);
-        try { return interpret(fn.body(), callCtx); }
+        try { return runLoop(fn.body(), callCtx); }
         finally {
             CURRENT_NEW_TARGET.set(priorNT);
             callCtx.release();
@@ -335,7 +335,7 @@ public final class Interpreter {
         return runLoop(executable, ctx);
     }
 
-    private static Object runLoop(Executable executable, InterpContext ctx) {
+    static Object runLoop(Executable executable, InterpContext ctx) {
         Op[] ops = executable.ops();
         int pc = 0;
         while (true) {
