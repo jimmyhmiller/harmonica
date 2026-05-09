@@ -36,6 +36,16 @@ public final class AbstractOps {
      * <p>v1 doesn't model BigInt, so we fold "ToNumeric" into ToNumber.
      */
     public static Object add(Object lhs, Object rhs) {
+        // Fast path: numeric + numeric — the dominant case in tight loops.
+        // Skip ToPrimitive (which is a no-op for Doubles but still does
+        // an instanceof JSObject check) and the String branch.
+        if (lhs instanceof Double dl && rhs instanceof Double dr) {
+            return boxDouble(dl + dr);
+        }
+        // Fast path: string + string.
+        if (lhs instanceof String sl && rhs instanceof String sr) {
+            return sl + sr;
+        }
         Object lPrim = toPrimitive(lhs, "default");
         Object rPrim = toPrimitive(rhs, "default");
         if (lPrim instanceof String || rPrim instanceof String) {
@@ -44,10 +54,22 @@ public final class AbstractOps {
         return boxDouble(toNumber(lPrim) + toNumber(rPrim));
     }
 
-    public static Object sub(Object lhs, Object rhs) { return boxDouble(toNumber(lhs) - toNumber(rhs)); }
-    public static Object mul(Object lhs, Object rhs) { return boxDouble(toNumber(lhs) * toNumber(rhs)); }
-    public static Object div(Object lhs, Object rhs) { return boxDouble(toNumber(lhs) / toNumber(rhs)); }
-    public static Object mod(Object lhs, Object rhs) { return boxDouble(toNumber(lhs) % toNumber(rhs)); }
+    public static Object sub(Object lhs, Object rhs) {
+        if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl - dr);
+        return boxDouble(toNumber(lhs) - toNumber(rhs));
+    }
+    public static Object mul(Object lhs, Object rhs) {
+        if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl * dr);
+        return boxDouble(toNumber(lhs) * toNumber(rhs));
+    }
+    public static Object div(Object lhs, Object rhs) {
+        if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl / dr);
+        return boxDouble(toNumber(lhs) / toNumber(rhs));
+    }
+    public static Object mod(Object lhs, Object rhs) {
+        if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl % dr);
+        return boxDouble(toNumber(lhs) % toNumber(rhs));
+    }
     public static Object exp(Object lhs, Object rhs) { return boxDouble(Math.pow(toNumber(lhs), toNumber(rhs))); }
 
     public static Object bitwiseAnd(Object lhs, Object rhs) { return boxDouble(toInt32(lhs) & toInt32(rhs)); }
