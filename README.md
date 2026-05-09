@@ -97,4 +97,15 @@ Benchmarks compare parsing time across real-world JavaScript libraries against R
 
 ## License
 
-AGPL-3.0
+Harmonica is licensed under AGPL-3.0 (see `LICENSE`).
+
+### Third-party attribution
+
+Harmonica's bytecode IR — opcode set, operand model, disassembler dump format,
+register-pool allocator, and the structural layout of standard objects — is
+adapted from [Ladybird LibJS](https://github.com/LadybirdBrowser/ladybird)
+(BSD-2-Clause) so that LibJS can serve as a byte-perfect behavioral oracle.
+No LibJS source code is copied or vendored into this repository; all code is
+written from scratch in Java. The LibJS copyright notice and license text are
+preserved in `THIRD_PARTY_LICENSES.md`, along with attribution for test262,
+benchmark fixtures, and other third-party material.

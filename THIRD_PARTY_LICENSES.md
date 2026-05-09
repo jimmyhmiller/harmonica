@@ -1,17 +1,74 @@
 # Third-Party Licenses
 
-This document lists all third-party code included in this repository and their respective licenses.
+This document lists all third-party code referenced or included in this repository
+and their respective licenses. Harmonica itself is licensed under AGPL-3.0 (see
+`LICENSE`); the items below are attributed under their own terms and remain
+governed by those terms.
 
 ## Quick Reference
 
-| Directory | Source | License |
-|-----------|--------|---------|
+| Component / Directory | Source | License |
+|-----------------------|--------|---------|
+| Bytecode IR design (opcode set, operand model, dump format, register-pool allocator, intrinsics layout) | Ladybird LibJS | BSD-2-Clause |
 | `test-oracles/test262/` | ECMAScript Test Suite | BSD-3-Clause |
 | `test-oracles/test262-cache/` | Derived ASTs from test262 | BSD-3-Clause |
 | `test-oracles/curated/` | Various open-source projects | MIT / Apache-2.0 |
 | `benchmarks/real-world-libs/` | npm packages (downloaded) | MIT / Apache-2.0 |
 
 For detailed license information about curated test fixtures, see `test-oracles/curated/README.md`.
+
+---
+
+## Ladybird LibJS (design attribution)
+
+**Source:** https://github.com/LadybirdBrowser/ladybird (`Libraries/LibJS/`),
+formerly part of SerenityOS (https://github.com/SerenityOS/serenity).
+
+**License:** BSD-2-Clause (`SPDX-License-Identifier: BSD-2-Clause`)
+
+**How it is used here:** No LibJS source code is copied or vendored into this
+repository. Harmonica's bytecode IR, opcode names, operand model, disassembler
+dump format, register-pool allocator strategy, and the structural layout of
+runtime intrinsics / standard objects are *adapted from* LibJS so that LibJS
+can serve as a byte-perfect behavioral oracle. Concretely, files under
+`harmonica-core/src/main/java/com/jimmyhmiller/harmonica/bytecode/` (notably
+`Op.java`, `Operand.java`, `AbstractOps.java`, `Generator.java`, `Executable.java`,
+`Disassembler.java`) and the design notes in `docs/standard-objects.md` and
+`docs/bytecode.md` are informed by LibJS. All implementations are written from
+scratch in Java; comments cite LibJS only as the design reference.
+
+The BSD-2-Clause license text reproduced below applies to LibJS itself. Where
+this project's design follows LibJS, the LibJS copyright notices are preserved
+by reference under this attribution.
+
+```
+Copyright (c) Andreas Kling <kling@serenityos.org> and Ladybird / SerenityOS
+LibJS contributors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+For canonical, per-file copyright headers, see the upstream sources at
+`Libraries/LibJS/` in the Ladybird repository.
 
 ## Test262 Test Suite
 
