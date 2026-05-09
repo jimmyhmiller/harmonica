@@ -171,9 +171,12 @@ public final class Interpreter {
         // InterpContext + its registers/locals arrays were 68% of all bytes
         // allocated; pooling cuts most of that.
         InterpContext callCtx = InterpContext.acquire(fn.body(), args, fn.localCount(), callerCtx.globals());
-        if (fn.capturedCells() != null) {
-            for (int k = 0; k < fn.captureCount(); k++) {
-                callCtx.installCapturedCell(fn.captureDestSlots()[k], fn.capturedCells()[k]);
+        Cell[] captured = fn.capturedCells();
+        if (captured != null) {
+            int[] dst = fn.captureDestSlots();
+            int n = captured.length;
+            for (int k = 0; k < n; k++) {
+                callCtx.installCapturedCell(dst[k], captured[k]);
             }
         }
         // ECMA-262 § 10.2.1.2 OrdinaryCallBindThis: in non-strict mode,
