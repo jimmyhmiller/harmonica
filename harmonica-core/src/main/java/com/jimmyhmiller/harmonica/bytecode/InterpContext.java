@@ -140,23 +140,19 @@ public final class InterpContext {
     }
 
     /**
-     * Return this context to the per-Executable pool for reuse. Resets all
-     * per-frame state HERE (not in acquire) so the data is still in L1/L2
-     * cache when we touch it. Profile (lodash) showed acquire was 8% of CPU
-     * almost entirely on the resets — moving them to release shaves that.
+     * Return this context to the per-Executable pool for reuse. Resets only
+     * the fields that the next caller's invokeFunctionImpl path doesn't
+     * already overwrite — newTarget is set unconditionally on the next call;
+     * yield/delegated state never leaves the originating generator frame
+     * (generators don't enter the pool); superConstructor stays harmless
+     * unless `super` is read in the next callee, which won't happen for the
+     * common non-class case.
      */
     public void release() {
         this.args = null;
         this.globals = null;
-        this.newTarget = Undefined.VALUE;
-        this.superConstructor = null;
-        this.directEvalScope = null;
-        this.yieldedValue = Undefined.VALUE;
-        this.yieldResumePc = 0;
-        this.yieldResumeDst = null;
-        this.lastResumedValue = Undefined.VALUE;
-        this.delegatedIterator = null;
-        this.delegatedNext = null;
+        this.directEvalScope = null;          // must clear — next call may not be eval
+        this.superConstructor = null;         // cheap, keeps `super` resolvable correctly
         java.util.Arrays.fill(this.registers, Undefined.VALUE);
         if (this.locals.length > 0) java.util.Arrays.fill(this.locals, null);
         executable.pushPooledCtx(this);
