@@ -41,31 +41,31 @@ public final class AbstractOps {
         if (lPrim instanceof String || rPrim instanceof String) {
             return toString(lPrim) + toString(rPrim);
         }
-        return toNumber(lPrim) + toNumber(rPrim);
+        return boxDouble(toNumber(lPrim) + toNumber(rPrim));
     }
 
-    public static Object sub(Object lhs, Object rhs) { return toNumber(lhs) - toNumber(rhs); }
-    public static Object mul(Object lhs, Object rhs) { return toNumber(lhs) * toNumber(rhs); }
-    public static Object div(Object lhs, Object rhs) { return toNumber(lhs) / toNumber(rhs); }
-    public static Object mod(Object lhs, Object rhs) { return toNumber(lhs) % toNumber(rhs); }
-    public static Object exp(Object lhs, Object rhs) { return Math.pow(toNumber(lhs), toNumber(rhs)); }
+    public static Object sub(Object lhs, Object rhs) { return boxDouble(toNumber(lhs) - toNumber(rhs)); }
+    public static Object mul(Object lhs, Object rhs) { return boxDouble(toNumber(lhs) * toNumber(rhs)); }
+    public static Object div(Object lhs, Object rhs) { return boxDouble(toNumber(lhs) / toNumber(rhs)); }
+    public static Object mod(Object lhs, Object rhs) { return boxDouble(toNumber(lhs) % toNumber(rhs)); }
+    public static Object exp(Object lhs, Object rhs) { return boxDouble(Math.pow(toNumber(lhs), toNumber(rhs))); }
 
-    public static Object bitwiseAnd(Object lhs, Object rhs) { return (double) (toInt32(lhs) & toInt32(rhs)); }
-    public static Object bitwiseOr (Object lhs, Object rhs) { return (double) (toInt32(lhs) | toInt32(rhs)); }
-    public static Object bitwiseXor(Object lhs, Object rhs) { return (double) (toInt32(lhs) ^ toInt32(rhs)); }
+    public static Object bitwiseAnd(Object lhs, Object rhs) { return boxDouble(toInt32(lhs) & toInt32(rhs)); }
+    public static Object bitwiseOr (Object lhs, Object rhs) { return boxDouble(toInt32(lhs) | toInt32(rhs)); }
+    public static Object bitwiseXor(Object lhs, Object rhs) { return boxDouble(toInt32(lhs) ^ toInt32(rhs)); }
 
     /** ECMAScript {@code <<} — shift count masked to 5 bits. */
     public static Object leftShift(Object lhs, Object rhs) {
-        return (double) (toInt32(lhs) << (toInt32(rhs) & 0x1F));
+        return boxDouble(toInt32(lhs) << (toInt32(rhs) & 0x1F));
     }
     /** ECMAScript {@code >>} — arithmetic right shift. */
     public static Object rightShift(Object lhs, Object rhs) {
-        return (double) (toInt32(lhs) >> (toInt32(rhs) & 0x1F));
+        return boxDouble(toInt32(lhs) >> (toInt32(rhs) & 0x1F));
     }
     /** ECMAScript {@code >>>} — logical/unsigned right shift, result is uint32 promoted to Number. */
     public static Object unsignedRightShift(Object lhs, Object rhs) {
         long u = ((long) toInt32(lhs) & 0xFFFFFFFFL) >>> (toInt32(rhs) & 0x1F);
-        return (double) u;
+        return boxDouble(u);
     }
 
     // -------------------------------------------------------------
@@ -74,7 +74,7 @@ public final class AbstractOps {
 
     public static Object unaryMinus(Object v) { return -toNumber(v); }
     public static Object unaryPlus (Object v) { return  toNumber(v); }
-    public static Object bitwiseNot(Object v) { return (double) (~toInt32(v)); }
+    public static Object bitwiseNot(Object v) { return boxDouble(~toInt32(v)); }
     public static Object not       (Object v) { return !toBoolean(v); }
 
     /** ECMA-262 § 13.5.3 typeof operator — Table 38 (typeof Operator Results). */
@@ -178,6 +178,38 @@ public final class AbstractOps {
             return (d >= '0' && d <= '9') || d == '.' || (d == 'I' && t.endsWith("Infinity"));
         }
         return false;
+    }
+
+    /**
+     * Cache of {@link Double} boxes for small integer-valued doubles. JS's
+     * Number type is uniformly double, but loops, indices, and counter
+     * increments are almost always integer-valued in [0, CACHE_MAX). Without
+     * this cache, every {@code i++} / arithmetic-result-store allocates a
+     * fresh {@code Double} (Java's autoboxing doesn't pre-cache Double the
+     * way it does Integer/Long).
+     *
+     * <p>Profile (lodash 5K workload): {@code Double.valueOf} was 37% of
+     * allocated bytes after pooling InterpContext / args[]; mostly from
+     * Increment, getProperty, bitwiseAnd, PostfixDecrement.
+     */
+    private static final int DOUBLE_CACHE_MAX = 4096;
+    private static final Double[] DOUBLE_CACHE;
+    static {
+        DOUBLE_CACHE = new Double[DOUBLE_CACHE_MAX];
+        for (int i = 0; i < DOUBLE_CACHE_MAX; i++) DOUBLE_CACHE[i] = (double) i;
+    }
+
+    /**
+     * Box a primitive double via the cache when its value is an integer in
+     * {@code [0, DOUBLE_CACHE_MAX)}; falls back to {@link Double#valueOf}
+     * (which still allocates, since {@code Double} has no built-in cache).
+     */
+    public static Double boxDouble(double d) {
+        int i = (int) d;
+        if (i >= 0 && i < DOUBLE_CACHE_MAX && (double) i == d) {
+            return DOUBLE_CACHE[i];
+        }
+        return d;
     }
 
     /** https://tc39.es/ecma262/#sec-tonumber */
@@ -318,7 +350,7 @@ public final class AbstractOps {
             return v;
         }
         if (base instanceof JSArray arr) {
-            if ("length".equals(prop)) return (double) arr.length();
+            if ("length".equals(prop)) return boxDouble(arr.length());
             int idx = parseIndex(prop);
             if (idx >= 0 && idx < arr.length()) return arr.get(idx);
             // Non-index extras (e.g. tagged template strings.raw).
@@ -328,7 +360,7 @@ public final class AbstractOps {
             return Undefined.VALUE;
         }
         if (base instanceof String s) {
-            if ("length".equals(prop)) return (double) s.length();
+            if ("length".equals(prop)) return boxDouble(s.length());
             int idx = parseIndex(prop);
             if (idx >= 0 && idx < s.length()) return String.valueOf(s.charAt(idx));
             if (Realm.stringPrototype != null) return Realm.stringPrototype.get(prop);
@@ -339,7 +371,7 @@ public final class AbstractOps {
             if (fn.properties().containsKey(prop)) return fn.properties().get(prop);
             // Spec virtual properties: name, length.
             if ("name".equals(prop)) return fn.name() != null ? fn.name() : "";
-            if ("length".equals(prop)) return (double) fn.paramCount();
+            if ("length".equals(prop)) return boxDouble(fn.paramCount());
             // `prototype` exposes the function's prototype object. Native
             // functions don't auto-create one; user functions do (so
             // `Foo.prototype.method = ...` just works without `class`).

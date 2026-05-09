@@ -318,7 +318,7 @@ public sealed interface Op {
     record Increment(Variable dst) implements Op {
         @Override public Operation operation() { return Operation.INCREMENT; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, AbstractOps.toNumber(dst.retrieve(ctx)) + 1.0);
+            dst.store(ctx, AbstractOps.boxDouble(AbstractOps.toNumber(dst.retrieve(ctx)) + 1.0));
             return pc + 1;
         }
     }
@@ -326,7 +326,7 @@ public sealed interface Op {
     record Decrement(Variable dst) implements Op {
         @Override public Operation operation() { return Operation.DECREMENT; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, AbstractOps.toNumber(dst.retrieve(ctx)) - 1.0);
+            dst.store(ctx, AbstractOps.boxDouble(AbstractOps.toNumber(dst.retrieve(ctx)) - 1.0));
             return pc + 1;
         }
     }
@@ -334,12 +334,13 @@ public sealed interface Op {
     record PostfixIncrement(Variable dst, Operand src) implements Op {
         @Override public Operation operation() { return Operation.POSTFIX_INCREMENT; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            // Reuse the source's already-boxed Double for the dst store —
-            // saves one allocation per `x++`.
+            // Reuse the source's already-boxed Double for the dst store; box
+            // the new value via the small-double cache so ++ in tight loops
+            // doesn't allocate.
             Object orig = src.retrieve(ctx);
             double n = AbstractOps.toNumber(orig);
-            dst.store(ctx, orig instanceof Double ? orig : (Object) n);
-            if (src instanceof Variable v) v.store(ctx, n + 1.0);
+            dst.store(ctx, orig instanceof Double ? orig : AbstractOps.boxDouble(n));
+            if (src instanceof Variable v) v.store(ctx, AbstractOps.boxDouble(n + 1.0));
             return pc + 1;
         }
     }
@@ -349,8 +350,8 @@ public sealed interface Op {
         @Override public int interpret(InterpContext ctx, int pc) {
             Object orig = src.retrieve(ctx);
             double n = AbstractOps.toNumber(orig);
-            dst.store(ctx, orig instanceof Double ? orig : (Object) n);
-            if (src instanceof Variable v) v.store(ctx, n - 1.0);
+            dst.store(ctx, orig instanceof Double ? orig : AbstractOps.boxDouble(n));
+            if (src instanceof Variable v) v.store(ctx, AbstractOps.boxDouble(n - 1.0));
             return pc + 1;
         }
     }
