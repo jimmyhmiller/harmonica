@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Run a JavaScript program through the Harmonica interpreter.
+#
+#   ./scripts/harmonica path/to/script.js
+#   ./scripts/harmonica -e 'console.log(1 + 2)'
+#   echo 'console.log("hi")' | ./scripts/harmonica -
+#
+# First run compiles harmonica-core and caches the classpath in target/.
+# Set HARMONICA_REBUILD=1 to force a recompile.
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CORE_DIR="$PROJECT_ROOT/harmonica-core"
+CLASSES_DIR="$CORE_DIR/target/classes"
+CP_FILE="$CORE_DIR/target/harmonica-cli.classpath"
+
+cd "$PROJECT_ROOT"
+
+needs_build=0
+if [[ ! -f "$CLASSES_DIR/com/jimmyhmiller/harmonica/Cli.class" ]]; then
+    needs_build=1
+fi
+if [[ -n "${HARMONICA_REBUILD:-}" ]]; then
+    needs_build=1
+fi
+
+if [[ "$needs_build" == "1" ]]; then
+    echo "Building harmonica-core..." >&2
+    ./mvnw -q -pl harmonica-core -am compile
+    ./mvnw -q -pl harmonica-core dependency:build-classpath \
+        -Dmdep.outputFile="$CP_FILE" -Dmdep.includeScope=runtime
+fi
+
+CP="$CLASSES_DIR"
+if [[ -s "$CP_FILE" ]]; then
+    CP="$CP:$(cat "$CP_FILE")"
+fi
+
+exec java -cp "$CP" com.jimmyhmiller.harmonica.Cli "$@"
