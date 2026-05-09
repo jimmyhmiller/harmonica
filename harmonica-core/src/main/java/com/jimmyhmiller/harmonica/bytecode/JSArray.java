@@ -12,7 +12,7 @@ import java.util.List;
  */
 public final class JSArray {
 
-    private final List<Object> elements = new ArrayList<>();
+    private final List<Object> elements;
 
     /**
      * Non-index "extra" string-keyed properties. Real arrays in JS are
@@ -35,10 +35,25 @@ public final class JSArray {
     }
     public java.util.Map<String, Object> extraProperties() { return extraProperties; }
 
-    public JSArray() {}
+    public JSArray() {
+        // Default ArrayList capacity is 10. Most JSArrays in the lodash
+        // workload start empty and grow via push, so the default works;
+        // a smaller pre-size only helps when the size is known. Use the
+        // {@link #JSArray(int)} or {@link #JSArray(Object[])} constructors
+        // when the final size is known up front.
+        this.elements = new ArrayList<>();
+    }
+
+    /** Pre-sized array — caller knows the final length. Saves a resize. */
+    public JSArray(int initialCapacity) {
+        this.elements = new ArrayList<>(initialCapacity);
+    }
 
     public JSArray(Object[] initialElements) {
-        for (Object e : initialElements) elements.add(e);
+        // Pre-size the ArrayList to the exact length so the first append
+        // doesn't trigger an Object[10]→Object[15] grow.
+        this.elements = new ArrayList<>(initialElements.length);
+        java.util.Collections.addAll(elements, initialElements);
     }
 
     public int length() { return elements.size(); }
