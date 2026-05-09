@@ -37,6 +37,22 @@ public sealed interface Variable extends Operand permits Variable.Register, Vari
         public void store(InterpContext ctx, Object value) {
             ctx.registers()[index] = value;
         }
+
+        @Override
+        public double retrieveDouble(InterpContext ctx) {
+            // Skip the AbstractOps.toNumber dispatch when the slot already
+            // holds a Number (the dominant case in arithmetic chains).
+            Object v = ctx.registers()[index];
+            if (v instanceof Number n) return n.doubleValue();
+            return AbstractOps.toNumber(v);
+        }
+
+        @Override
+        public boolean retrieveBoolean(InterpContext ctx) {
+            Object v = ctx.registers()[index];
+            if (v instanceof Boolean b) return b;
+            return AbstractOps.toBoolean(v);
+        }
     }
 
     /**

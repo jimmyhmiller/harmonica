@@ -1107,6 +1107,29 @@ public final class Generator {
         return new Operand.Constant(index, value);
     }
 
+    /**
+     * Emit a literal as the most-specific {@link Operand} subtype available.
+     * Unlike {@link #constant}, the result is NOT necessarily an
+     * {@link Operand.Constant} — typed literals carry the value directly and
+     * expose {@code retrieveDouble} / {@code retrieveBoolean} that skip the
+     * box round-trip used by the generic {@code Object retrieve} path.
+     *
+     * <p>Used by call sites that don't need the constants-pool index (i.e.
+     * everything except byte-perfect oracle dumps). Disassembler output
+     * still gets coverage from the regular {@link Operand.Constant}
+     * fallback when the value isn't a recognized primitive.
+     */
+    private Operand literal(Object value) {
+        if (value == null) return Operand.NullLit.INSTANCE;
+        if (value == Undefined.VALUE) return Operand.UndefinedLit.INSTANCE;
+        if (value instanceof Boolean b) return b ? Operand.BoolLit.TRUE : Operand.BoolLit.FALSE;
+        if (value instanceof Number n) return new Operand.DoubleLit(n.doubleValue());
+        if (value instanceof String s) return new Operand.StringLit(s);
+        // Fallback: still go through the constants pool so the oracle dump
+        // sees an indexed slot for unhandled value types.
+        return constant(value);
+    }
+
     /** Get-or-create a local slot for a name. */
     /**
      * DFS post-order pre-allocation of {@code let}/{@code const} slots for

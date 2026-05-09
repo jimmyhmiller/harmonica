@@ -408,6 +408,15 @@ public final class Disassembler {
                 ? formatValue(exe.constants()[c.index()])
                 : "constant[" + c.index() + "]";
             case Operand.This t      -> "this";
+            // Typed literals: render the value the same way the constants
+            // pool would have, so byte-perfect dumps stay stable when the
+            // generator switches a literal site between Operand.Constant
+            // and a typed alternative.
+            case Operand.DoubleLit d -> formatValue(d.value());
+            case Operand.BoolLit b   -> formatValue(b.value());
+            case Operand.StringLit s -> formatValue(s.value());
+            case Operand.UndefinedLit u -> formatValue(Undefined.VALUE);
+            case Operand.NullLit n   -> formatValue(null);
         };
     }
 

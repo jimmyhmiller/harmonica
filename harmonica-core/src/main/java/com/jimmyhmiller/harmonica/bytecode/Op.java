@@ -362,7 +362,10 @@ public sealed interface Op {
     record LessThan(Variable dst, Operand lhs, Operand rhs) implements Op {
         @Override public Operation operation() { return Operation.LESS_THAN; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, AbstractOps.lessThan(lhs.retrieve(ctx), rhs.retrieve(ctx)));
+            // retrieveDouble skips the Double box for numeric registers and
+            // typed-literal operands; Java's `<` already handles NaN per
+            // ECMA-262 (NaN < x is false in both).
+            dst.store(ctx, lhs.retrieveDouble(ctx) < rhs.retrieveDouble(ctx));
             return pc + 1;
         }
     }
@@ -370,7 +373,7 @@ public sealed interface Op {
     record LessThanEquals(Variable dst, Operand lhs, Operand rhs) implements Op {
         @Override public Operation operation() { return Operation.LESS_THAN_EQUALS; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, AbstractOps.lessThanEquals(lhs.retrieve(ctx), rhs.retrieve(ctx)));
+            dst.store(ctx, lhs.retrieveDouble(ctx) <= rhs.retrieveDouble(ctx));
             return pc + 1;
         }
     }
@@ -378,7 +381,7 @@ public sealed interface Op {
     record GreaterThan(Variable dst, Operand lhs, Operand rhs) implements Op {
         @Override public Operation operation() { return Operation.GREATER_THAN; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, AbstractOps.greaterThan(lhs.retrieve(ctx), rhs.retrieve(ctx)));
+            dst.store(ctx, lhs.retrieveDouble(ctx) > rhs.retrieveDouble(ctx));
             return pc + 1;
         }
     }
@@ -386,7 +389,7 @@ public sealed interface Op {
     record GreaterThanEquals(Variable dst, Operand lhs, Operand rhs) implements Op {
         @Override public Operation operation() { return Operation.GREATER_THAN_EQUALS; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, AbstractOps.greaterThanEquals(lhs.retrieve(ctx), rhs.retrieve(ctx)));
+            dst.store(ctx, lhs.retrieveDouble(ctx) >= rhs.retrieveDouble(ctx));
             return pc + 1;
         }
     }
@@ -524,21 +527,21 @@ public sealed interface Op {
     record JumpTrue(Operand condition, int targetPc) implements Op {
         @Override public Operation operation() { return Operation.JUMP_TRUE; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            return AbstractOps.toBoolean(condition.retrieve(ctx)) ? targetPc : pc + 1;
+            return condition.retrieveBoolean(ctx) ? targetPc : pc + 1;
         }
     }
 
     record JumpFalse(Operand condition, int targetPc) implements Op {
         @Override public Operation operation() { return Operation.JUMP_FALSE; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            return AbstractOps.toBoolean(condition.retrieve(ctx)) ? pc + 1 : targetPc;
+            return condition.retrieveBoolean(ctx) ? pc + 1 : targetPc;
         }
     }
 
     record JumpIf(Operand condition, int trueTargetPc, int falseTargetPc) implements Op {
         @Override public Operation operation() { return Operation.JUMP_IF; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            return AbstractOps.toBoolean(condition.retrieve(ctx)) ? trueTargetPc : falseTargetPc;
+            return condition.retrieveBoolean(ctx) ? trueTargetPc : falseTargetPc;
         }
     }
 
