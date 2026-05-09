@@ -291,9 +291,18 @@ public final class Realm {
                 throw AbruptCompletion.typeError("Function.prototype.call called on non-function");
             }
             Object newThis = arg(a, 0);
-            Object[] callArgs = new Object[Math.max(0, a.length - 1)];
+            // Reuse the per-thread args pool — lodash calls Function.prototype.call
+            // tens of thousands of times in iteratee dispatch, and the
+            // `new Object[a.length-1]` allocation here was 4%+ of allocated
+            // bytes in the workload's profile.
+            int n = Math.max(0, a.length - 1);
+            Object[] callArgs = Interpreter.acquireArgs(n);
             for (int i = 1; i < a.length; i++) callArgs[i - 1] = a[i];
-            return Interpreter.invokeFunction(fn, newThis, callArgs, c);
+            try {
+                return Interpreter.invokeFunction(fn, newThis, callArgs, c);
+            } finally {
+                Interpreter.releaseArgs(callArgs);
+            }
         }));
         functionPrototype.set("apply", nativeFn("apply", 2, (thisVal, a, c) -> {
             if (!(thisVal instanceof JSFunction fn)) {
