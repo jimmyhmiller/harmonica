@@ -427,6 +427,19 @@ public final class AbstractOps {
         if (base == null || base == Undefined.VALUE) {
             throw AbruptCompletion.typeError("Cannot set properties of " + (base == null ? "null" : "undefined"));
         }
+        // Hot path: array[i] = value with a numeric key. Skip the
+        // Long.toString -> parseIndex round-trip (matches the same fast
+        // path in getProperty). Profile showed setProperty was the top
+        // caller of Long.toString (17% of allocated bytes for the lodash
+        // workload).
+        if (base instanceof JSArray arr && key instanceof Number n) {
+            double d = n.doubleValue();
+            int idx = (int) d;
+            if (idx == d && idx >= 0) {
+                arr.set(idx, value);
+                return;
+            }
+        }
         String prop = key instanceof String s ? s
             : key instanceof JSSymbol sym ? sym.asPropertyKey()
             : toString(key);
