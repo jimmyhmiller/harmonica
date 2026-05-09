@@ -108,6 +108,7 @@ class BinaryTreesTest {
 
     @Test void dumpFailingBytecode() throws Exception {
         java.nio.file.Path p = java.nio.file.Paths.get("/tmp/btree_dbg.js");
+        if (!java.nio.file.Files.exists(p)) return;
         String body = java.nio.file.Files.readString(p);
         Program ast = Parser.parse(body);
         Executable exe = Generator.generate(ast);
