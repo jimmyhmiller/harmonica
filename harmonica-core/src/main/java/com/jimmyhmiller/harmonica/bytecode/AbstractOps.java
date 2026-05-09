@@ -116,10 +116,22 @@ public final class AbstractOps {
     // -------------------------------------------------------------
 
     /** https://tc39.es/ecma262/#sec-islessthan — simplified to numeric path. */
-    public static Boolean lessThan         (Object lhs, Object rhs) { return toNumber(lhs) <  toNumber(rhs); }
-    public static Boolean lessThanEquals   (Object lhs, Object rhs) { return toNumber(lhs) <= toNumber(rhs); }
-    public static Boolean greaterThan      (Object lhs, Object rhs) { return toNumber(lhs) >  toNumber(rhs); }
-    public static Boolean greaterThanEquals(Object lhs, Object rhs) { return toNumber(lhs) >= toNumber(rhs); }
+    public static Boolean lessThan         (Object lhs, Object rhs) {
+        if (lhs instanceof Double dl && rhs instanceof Double dr) return dl < dr;
+        return toNumber(lhs) <  toNumber(rhs);
+    }
+    public static Boolean lessThanEquals   (Object lhs, Object rhs) {
+        if (lhs instanceof Double dl && rhs instanceof Double dr) return dl <= dr;
+        return toNumber(lhs) <= toNumber(rhs);
+    }
+    public static Boolean greaterThan      (Object lhs, Object rhs) {
+        if (lhs instanceof Double dl && rhs instanceof Double dr) return dl > dr;
+        return toNumber(lhs) >  toNumber(rhs);
+    }
+    public static Boolean greaterThanEquals(Object lhs, Object rhs) {
+        if (lhs instanceof Double dl && rhs instanceof Double dr) return dl >= dr;
+        return toNumber(lhs) >= toNumber(rhs);
+    }
     public static Boolean strictlyInequals(Object lhs, Object rhs) { return !strictlyEquals(lhs, rhs); }
 
     /** https://tc39.es/ecma262/#sec-islooselyequal — simplified, missing object-coercion paths. */
