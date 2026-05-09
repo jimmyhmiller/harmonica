@@ -89,6 +89,58 @@ public final class Interpreter {
     }
 
     /**
+     * Per-thread pool of recyclable {@code Object[]} buffers used as args
+     * arrays for {@code Op.Call.interpret}. Indexed by arity in
+     * {@code [0..MAX_POOLED_ARITY]}. Each slot holds a small stack of
+     * available buffers; depth bounded to keep memory tight.
+     *
+     * <p>Profile (lodash 5K workload): {@code new Object[args.length]} in
+     * {@code Op.Call.interpret} was 43% of allocated bytes after the
+     * InterpContext pool landed.
+     */
+    private static final int MAX_POOLED_ARITY = 8;
+    private static final int POOL_DEPTH = 16;
+    /**
+     * Per-thread pool storage. Outer dimension = arity (0..MAX_POOLED_ARITY);
+     * each slot is a lazily-allocated stack of buffers of that arity.
+     */
+    private static final class ArgsPool {
+        final Object[][][] stacks = new Object[MAX_POOLED_ARITY + 1][][];
+        final int[] sizes = new int[MAX_POOLED_ARITY + 1];
+    }
+    private static final ThreadLocal<ArgsPool> ARGS_POOL = ThreadLocal.withInitial(ArgsPool::new);
+
+    /** Acquire an {@code Object[length]} buffer, reusing a pooled one if possible. */
+    public static Object[] acquireArgs(int length) {
+        if (length > MAX_POOLED_ARITY) return new Object[length];
+        ArgsPool pool = ARGS_POOL.get();
+        int sz = pool.sizes[length];
+        if (sz == 0) return new Object[length];
+        Object[][] stack = pool.stacks[length];
+        Object[] buf = stack[--sz];
+        stack[sz] = null;
+        pool.sizes[length] = sz;
+        return buf;
+    }
+
+    /** Return an args buffer to the pool. Caller must drop all references. */
+    public static void releaseArgs(Object[] args) {
+        int len = args.length;
+        if (len > MAX_POOLED_ARITY) return;
+        ArgsPool pool = ARGS_POOL.get();
+        int sz = pool.sizes[len];
+        if (sz >= POOL_DEPTH) return;
+        Object[][] stack = pool.stacks[len];
+        if (stack == null) {
+            stack = new Object[POOL_DEPTH][];
+            pool.stacks[len] = stack;
+        }
+        java.util.Arrays.fill(args, null);
+        stack[sz] = args;
+        pool.sizes[len] = sz + 1;
+    }
+
+    /**
      * Combined invoke — folds the previously 3-deep chain
      * (invokeFunction → invokeFunctionInternal → invokeFunctionDispatch) into
      * one method. Lodash exercises millions of small calls; the per-call

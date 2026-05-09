@@ -2423,9 +2423,13 @@ public sealed interface Op {
                 throw AbruptCompletion.typeError("not callable: " + calleeVal);
             }
             Object thisVal = thisValue.retrieve(ctx);
-            Object[] argValues = new Object[args.length];
+            Object[] argValues = Interpreter.acquireArgs(args.length);
             for (int k = 0; k < args.length; k++) argValues[k] = args[k].retrieve(ctx);
-            dst.store(ctx, Interpreter.invokeFunction(fn, thisVal, argValues, ctx));
+            try {
+                dst.store(ctx, Interpreter.invokeFunction(fn, thisVal, argValues, ctx));
+            } finally {
+                Interpreter.releaseArgs(argValues);
+            }
             return pc + 1;
         }
     }
