@@ -1,0 +1,8 @@
+{
+  "name": "imports-field-fixture",
+  "type": "module",
+  "imports": {
+    "#config":  "./src/config.mjs",
+    "#utils/*": "./src/utils/*.mjs"
+  }
+}

@@ -618,11 +618,31 @@ public final class Generator {
     }
 
     public static Executable generate(Program program) {
+        return generate(program, /* moduleMode */ false);
+    }
+
+    /**
+     * Compile {@code program} as either a script or an ES module. In module
+     * mode, top-level {@code import} declarations become no-ops (the module
+     * loader pre-installs {@link com.jimmyhmiller.harmonica.module.ImportRef}
+     * sentinels in the module's globals before the body runs), and
+     * {@code export default <expr>} stores the value into a binding named
+     * {@code "*default*"} (a key that's not a valid JS identifier so it
+     * cannot collide with user code).
+     */
+    public static Executable generate(Program program, boolean moduleMode) {
         Generator g = new Generator();
-        g.strictMode = detectStrictMode(program.sourceType(), program.body());
+        g.moduleMode = moduleMode;
+        g.strictMode = moduleMode || detectStrictMode(program.sourceType(), program.body());
         g.lowerProgram(program);
         return g.finish();
     }
+
+    /** Module-mode flag — see {@link #generate(Program, boolean)}. */
+    private boolean moduleMode;
+    public boolean moduleMode() { return moduleMode; }
+    /** Sentinel binding name for {@code export default <expr>}. */
+    public static final String DEFAULT_EXPORT_BINDING = "*default*";
 
     /**
      * Peephole: replace each FORWARD unconditional {@code Jump → block-with-only-End}
@@ -1733,21 +1753,31 @@ public final class Generator {
         if (!atTopLevel) {
             throw new UnsupportedOperationException("Generator: nested import declarations are illegal");
         }
-        for (Node spec : id.specifiers()) {
-            String localName;
-            if (spec instanceof ImportDefaultSpecifier ids) {
-                localName = ids.local().name();
-            } else if (spec instanceof ImportNamespaceSpecifier ins) {
-                localName = ins.local().name();
-            } else if (spec instanceof ImportSpecifier is) {
-                localName = is.local().name();
-            } else {
-                throw new UnsupportedOperationException(
-                    "Generator: import specifier type " + spec.getClass().getSimpleName() + " not supported");
+        // In module mode the loader pre-installs ImportRef sentinels under
+        // each imported name in the module's globals BEFORE the body runs.
+        // Emitting an InitializeLexicalBinding here would clobber those refs
+        // with Undefined.VALUE — so we skip emission entirely.
+        if (moduleMode) {
+            for (Node spec : id.specifiers()) {
+                globalNames.add(localNameOf(spec));
             }
+            return;
+        }
+        // Script-mode (legacy) behavior — bind to undefined so references
+        // lower successfully but observably yield undefined.
+        for (Node spec : id.specifiers()) {
+            String localName = localNameOf(spec);
             globalNames.add(localName);
             emit(new Op.InitializeLexicalBinding(localName, constant(Undefined.VALUE), new EnvironmentCoordinate()));
         }
+    }
+
+    private static String localNameOf(Node spec) {
+        if (spec instanceof ImportDefaultSpecifier ids) return ids.local().name();
+        if (spec instanceof ImportNamespaceSpecifier ins) return ins.local().name();
+        if (spec instanceof ImportSpecifier is) return is.local().name();
+        throw new UnsupportedOperationException(
+            "Generator: import specifier type " + spec.getClass().getSimpleName() + " not supported");
     }
 
     /** {@code export} of a declaration just lowers the declaration; named-export
@@ -1760,10 +1790,49 @@ public final class Generator {
     }
 
     private void lowerExportDefault(ExportDefaultDeclaration edd) {
-        // Lower the inner node — if it's an expression, evaluate (and discard);
-        // if a declaration, lower it as a statement. Real "default export"
-        // wiring will store it in the module's exports record.
         Node inner = edd.declaration();
+        if (moduleMode) {
+            // Stash the default value under DEFAULT_EXPORT_BINDING so the
+            // module's namespace builder can find it. The key is "*default*"
+            // — not a valid JS identifier, so user code can't shadow it.
+            globalNames.add(DEFAULT_EXPORT_BINDING);
+            if (inner instanceof FunctionDeclaration fd) {
+                // `export default function foo(){}` — lower normally so the
+                // named binding exists, then alias the default slot to it.
+                if (fd.id() != null) {
+                    lowerStatement(fd);
+                    Variable.Register r = allocRegister();
+                    emit(new Op.GetGlobal(r, fd.id().name(), new GlobalVariableCache()));
+                    emit(new Op.InitializeLexicalBinding(DEFAULT_EXPORT_BINDING, r, new EnvironmentCoordinate()));
+                    release(r);
+                } else {
+                    // Anonymous: synthesize an anonymous FunctionExpression
+                    // and store it directly in the *default* binding.
+                    FunctionExpression fe = new FunctionExpression(
+                        fd.start(), fd.end(), fd.loc(), null,
+                        fd.expression(), fd.generator(), fd.async(),
+                        fd.params(), fd.body());
+                    Operand v = lowerExpression(fe);
+                    emit(new Op.InitializeLexicalBinding(DEFAULT_EXPORT_BINDING, v, new EnvironmentCoordinate()));
+                    release(v);
+                }
+            } else if (inner instanceof ClassDeclaration cd && cd.id() != null) {
+                lowerStatement(cd);
+                Variable.Register r = allocRegister();
+                emit(new Op.GetGlobal(r, cd.id().name(), new GlobalVariableCache()));
+                emit(new Op.InitializeLexicalBinding(DEFAULT_EXPORT_BINDING, r, new EnvironmentCoordinate()));
+                release(r);
+            } else if (inner instanceof Expression e) {
+                Operand v = lowerExpression(e);
+                emit(new Op.InitializeLexicalBinding(DEFAULT_EXPORT_BINDING, v, new EnvironmentCoordinate()));
+                release(v);
+            } else {
+                throw new UnsupportedOperationException(
+                    "Generator: export default of " + inner.getClass().getSimpleName() + " not yet supported");
+            }
+            return;
+        }
+        // Script-mode (legacy) behavior — evaluate and discard.
         if (inner instanceof Statement s) {
             lowerStatement(s);
         } else if (inner instanceof Expression e) {

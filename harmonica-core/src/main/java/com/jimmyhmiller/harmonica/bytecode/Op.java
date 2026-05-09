@@ -1039,6 +1039,20 @@ public sealed interface Op {
             }
             if (ctx.globals().containsKey(identifier)) {
                 Object v = ctx.globals().get(identifier);
+                // Module imports: dereference live binding to the source module.
+                if (v instanceof com.jimmyhmiller.harmonica.module.ImportRef ref) {
+                    if (!ref.sourceGlobals.containsKey(ref.sourceName)) {
+                        throw AbruptCompletion.referenceError("cannot access '" + ref.sourceName
+                            + "' before initialization");
+                    }
+                    Object srcVal = ref.sourceGlobals.get(ref.sourceName);
+                    if (srcVal == InterpContext.TDZ) {
+                        throw AbruptCompletion.referenceError("cannot access '" + ref.sourceName
+                            + "' before initialization");
+                    }
+                    dst.store(ctx, srcVal);
+                    return pc + 1;
+                }
                 if (v == InterpContext.TDZ) {
                     throw AbruptCompletion.referenceError("cannot access '" + identifier
                         + "' before initialization");
@@ -1086,7 +1100,17 @@ public sealed interface Op {
                 }
             }
             if (ctx.globals().containsKey(identifier)) {
-                dst.store(ctx, ctx.globals().get(identifier));
+                Object v = ctx.globals().get(identifier);
+                if (v instanceof com.jimmyhmiller.harmonica.module.ImportRef ref) {
+                    Object srcVal = ref.sourceGlobals.get(ref.sourceName);
+                    if (srcVal == InterpContext.TDZ) {
+                        throw AbruptCompletion.referenceError("cannot access '" + ref.sourceName
+                            + "' before initialization");
+                    }
+                    dst.store(ctx, srcVal);
+                    return pc + 1;
+                }
+                dst.store(ctx, v);
                 return pc + 1;
             }
             Object globalThisVal = ctx.globals().get("globalThis");
@@ -1115,6 +1139,13 @@ public sealed interface Op {
                     cell.value = value;
                     return pc + 1;
                 }
+            }
+            // ECMA-262 § 16.2.1.5: an imported binding is immutable. Assigning
+            // through it from the importing module is a TypeError.
+            if (ctx.globals().containsKey(identifier)
+                    && ctx.globals().get(identifier) instanceof com.jimmyhmiller.harmonica.module.ImportRef) {
+                throw AbruptCompletion.typeError(
+                    "Assignment to constant variable '" + identifier + "' (imported binding)");
             }
             // ECMA-262 § 6.2.5.5 PutValue:
             //   step 6.a: if Reference is unresolvable AND containing code is
@@ -1163,7 +1194,17 @@ public sealed interface Op {
             for (int k = 0; k < captured.length; k++) {
                 captured[k] = ctx.cellAt(template.captureSourceSlots()[k]);
             }
-            dst.store(ctx, template.withCapturedCells(captured));
+            JSFunction fn = template.withCapturedCells(captured);
+            // Stamp the current frame's globals as the function's home globals
+            // so that cross-module calls still see the defining module's
+            // bindings (per-module scope + live bindings). For non-module
+            // scripts, every frame shares the same globals map so this is a
+            // no-op semantically — every function still reads/writes the same
+            // map regardless of who calls it.
+            if (ctx.globals() instanceof com.jimmyhmiller.harmonica.module.ModuleGlobals) {
+                fn.setHomeGlobals(ctx.globals());
+            }
+            dst.store(ctx, fn);
             return pc + 1;
         }
     }

@@ -161,6 +161,19 @@ public final class JSFunction {
         this.nativeBody = nativeBody;
     }
 
+    /**
+     * The "home globals" of this function — the module's globals map at the
+     * point of materialization. Bytecode functions read globals through this
+     * map so that a function defined in module A keeps reading A's bindings
+     * even when called from module B (live bindings + per-module scope).
+     *
+     * <p>{@code null} for native functions and for functions defined when no
+     * module is active (the legacy single-globals path stays in use).
+     */
+    private java.util.Map<String, Object> homeGlobals;
+    public java.util.Map<String, Object> homeGlobals() { return homeGlobals; }
+    public void setHomeGlobals(java.util.Map<String, Object> g) { this.homeGlobals = g; }
+
     /** Build a runtime function value from this template, binding captured cells. */
     public JSFunction withCapturedCells(Cell[] cells) {
         JSFunction f = new JSFunction(name, body, paramCount, localCount, captureCount,
@@ -168,6 +181,7 @@ public final class JSFunction {
         f.isGenerator = this.isGenerator;
         f.isAsync = this.isAsync;
         f.isArrow = this.isArrow;
+        f.homeGlobals = this.homeGlobals;
         return f;
     }
 

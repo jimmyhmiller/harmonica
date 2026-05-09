@@ -39,25 +39,36 @@ public final class Interpreter {
     }
 
     public static Object interpret(Executable executable, Object[] args, int numberOfLocals) {
-        InterpContext ctx = new InterpContext(executable, args, numberOfLocals);
-        // Install standard-library prototypes and globals (idempotent for prototypes,
-        // per-frame for globals — putIfAbsent so user shadowing is preserved).
+        return interpret(executable, args, numberOfLocals, new java.util.HashMap<>());
+    }
+
+    /**
+     * Module-loader entry point. The caller supplies a pre-allocated globals
+     * map (typically a {@code ModuleGlobals} pre-populated with
+     * {@code ImportRef} sentinels for imported names). Bootstrap, hoisting,
+     * and {@code globalThis} setup mirror the no-globals overload — only the
+     * map identity differs.
+     */
+    public static Object interpret(Executable executable, Object[] args, int numberOfLocals,
+                                   java.util.Map<String, Object> globals) {
+        InterpContext ctx = new InterpContext(executable, args, numberOfLocals, globals);
         Realm.ensureBootstrapped(ctx.globals());
-        // ECMA-262 § 19.4 / § 9.3 Realm Records: top-level `this` is the
-        // realm's [[GlobalThisValue]] (the global object for non-module scripts).
         Object globalThisVal = ctx.globals().get("globalThis");
         if (globalThisVal != null) {
             ctx.registers()[Variable.Register.THIS_VALUE_INDEX] = globalThisVal;
         }
-        // Pre-bind hoisted top-level `var` names to undefined.
         for (String name : executable.hoistedVarNames()) {
             ctx.globals().putIfAbsent(name, Undefined.VALUE);
         }
-        // Materialize hoisted top-level FunctionDeclarations into globals. They
-        // can't have captures (top-level scope has no enclosing locals), so the
-        // template's capturedCells are left null.
         for (Executable.HoistedFunction h : executable.hoistedFunctions()) {
-            ctx.globals().put(h.name(), h.template());
+            // Stamp homeGlobals on hoisted function templates so they observe
+            // their defining-module's bindings on cross-module calls.
+            JSFunction tmpl = h.template();
+            if (globals instanceof com.jimmyhmiller.harmonica.module.ModuleGlobals
+                    && tmpl != null && !tmpl.isNative()) {
+                tmpl.setHomeGlobals(globals);
+            }
+            ctx.globals().put(h.name(), tmpl);
         }
         return interpret(executable, ctx);
     }
@@ -179,7 +190,15 @@ public final class Interpreter {
         // if pool is empty). Profile (lodash 5K workload) showed
         // InterpContext + its registers/locals arrays were 68% of all bytes
         // allocated; pooling cuts most of that.
-        InterpContext callCtx = InterpContext.acquire(fn.body(), args, fn.localCount(), callerCtx.globals());
+        // Per-module scope: a function defined inside an ESM module captures
+        // its module's globals at materialization time (Op.NewFunction). When
+        // invoked from another module's frame, the call must still see the
+        // defining module's bindings, so we prefer fn.homeGlobals() over the
+        // caller's globals. Native functions and script-mode user functions
+        // have homeGlobals == null and inherit the caller's frame globals.
+        java.util.Map<String, Object> calleeGlobals = fn.homeGlobals() != null
+            ? fn.homeGlobals() : callerCtx.globals();
+        InterpContext callCtx = InterpContext.acquire(fn.body(), args, fn.localCount(), calleeGlobals);
         Cell[] captured = fn.capturedCells();
         if (captured != null) {
             int[] dst = fn.captureDestSlots();
@@ -195,7 +214,7 @@ public final class Interpreter {
         // observed — the assignment here is harmless for them.
         Object boundThis = thisVal;
         if (!fn.body().strictMode() && (boundThis == null || boundThis == Undefined.VALUE)) {
-            Object globalThis = callerCtx.globals().get("globalThis");
+            Object globalThis = calleeGlobals.get("globalThis");
             if (globalThis != null) boundThis = globalThis;
         }
         callCtx.registers()[Variable.Register.THIS_VALUE_INDEX] = boundThis;
