@@ -12,9 +12,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CORE_DIR="$PROJECT_ROOT/harmonica-core"
-CLASSES_DIR="$CORE_DIR/target/classes"
-CP_FILE="$CORE_DIR/target/harmonica-cli.classpath"
+INTERP_DIR="$PROJECT_ROOT/harmonica-interpreter"
+CORE_CLASSES_DIR="$PROJECT_ROOT/harmonica-core/target/classes"
+CLASSES_DIR="$INTERP_DIR/target/classes"
+CP_FILE="$INTERP_DIR/target/harmonica-cli.classpath"
 
 cd "$PROJECT_ROOT"
 
@@ -27,13 +28,13 @@ if [[ -n "${HARMONICA_REBUILD:-}" ]]; then
 fi
 
 if [[ "$needs_build" == "1" ]]; then
-    echo "Building harmonica-core..." >&2
-    ./mvnw -q -pl harmonica-core -am compile
-    ./mvnw -q -pl harmonica-core dependency:build-classpath \
+    echo "Building harmonica-interpreter..." >&2
+    ./mvnw -q -pl harmonica-interpreter -am compile
+    ./mvnw -q -pl harmonica-interpreter dependency:build-classpath \
         -Dmdep.outputFile="$CP_FILE" -Dmdep.includeScope=runtime
 fi
 
-CP="$CLASSES_DIR"
+CP="$CLASSES_DIR:$CORE_CLASSES_DIR"
 if [[ -s "$CP_FILE" ]]; then
     CP="$CP:$(cat "$CP_FILE")"
 fi

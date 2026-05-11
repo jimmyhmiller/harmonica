@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
  * programs, report wall-clock timing. Not assertion-driven — meant to print
  * a feel for current interpreter throughput.
  *
- * Run: mvn -pl harmonica-core test -Dtest=FibBenchmark
+ * Run: mvn -pl harmonica-interpreter test -Dtest=FibBenchmark
  */
 class FibBenchmark {
 

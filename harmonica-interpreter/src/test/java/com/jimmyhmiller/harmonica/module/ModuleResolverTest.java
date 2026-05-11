@@ -16,7 +16,7 @@ class ModuleResolverTest {
     private static Path locateFixtures() {
         Path[] candidates = {
             Paths.get("src/test/resources/modules"),
-            Paths.get("harmonica-core/src/test/resources/modules"),
+            Paths.get("harmonica-interpreter/src/test/resources/modules"),
         };
         for (Path p : candidates) {
             if (Files.isDirectory(p)) return p.toAbsolutePath();

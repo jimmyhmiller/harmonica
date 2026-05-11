@@ -34,8 +34,8 @@ import java.util.stream.Stream;
  *
  * <p>Run with:
  * <pre>{@code
- *   ./mvnw -pl harmonica-core compile test-compile
- *   java -cp $(./mvnw -pl harmonica-core dependency:build-classpath -q -Dmdep.outputFile=/dev/stdout):harmonica-core/target/classes:harmonica-core/target/test-classes \
+ *   ./mvnw -pl harmonica-interpreter compile test-compile
+ *   java -cp $(./mvnw -pl harmonica-interpreter dependency:build-classpath -q -Dmdep.outputFile=/dev/stdout):harmonica-interpreter/target/classes:harmonica-interpreter/target/test-classes \
  *     com.jimmyhmiller.harmonica.bytecode.Test262Runner
  * }</pre>
  *

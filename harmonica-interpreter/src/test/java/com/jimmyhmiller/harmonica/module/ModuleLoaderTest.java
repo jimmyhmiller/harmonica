@@ -29,10 +29,10 @@ class ModuleLoaderTest {
     private static final Path FIXTURES = locateFixtures();
 
     private static Path locateFixtures() {
-        // Surefire runs from harmonica-core/; standalone IDE runs may run from project root.
+        // Surefire runs from harmonica-interpreter/; standalone IDE runs may run from project root.
         Path[] candidates = {
             Paths.get("src/test/resources/modules"),
-            Paths.get("harmonica-core/src/test/resources/modules"),
+            Paths.get("harmonica-interpreter/src/test/resources/modules"),
         };
         for (Path p : candidates) {
             if (Files.isDirectory(p)) return p.toAbsolutePath();

@@ -37,6 +37,7 @@
 
     <modules>
         <module>harmonica-core</module>
+        <module>harmonica-interpreter</module>
         <module>harmonica-json-api</module>
         <module>harmonica-jackson</module>
     </modules>
@@ -56,6 +57,11 @@
             <dependency>
                 <groupId>com.jimmyhmiller.harmonica</groupId>
                 <artifactId>harmonica-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.jimmyhmiller.harmonica</groupId>
+                <artifactId>harmonica-interpreter</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

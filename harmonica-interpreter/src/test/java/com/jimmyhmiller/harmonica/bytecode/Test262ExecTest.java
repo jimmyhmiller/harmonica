@@ -21,9 +21,9 @@ import java.util.stream.Stream;
  * {@code mvn test} because the full sweep takes minutes; opt in with:
  *
  * <pre>{@code
- *   ./mvnw -pl harmonica-core test -Dtest=Test262ExecTest -DrunTest262=true
- *   ./mvnw -pl harmonica-core test -Dtest=Test262ExecTest -DrunTest262=true -Dtest262.limit=2000
- *   ./mvnw -pl harmonica-core test -Dtest=Test262ExecTest -DrunTest262=true -Dtest262.filter=arrow-function
+ *   ./mvnw -pl harmonica-interpreter test -Dtest=Test262ExecTest -DrunTest262=true
+ *   ./mvnw -pl harmonica-interpreter test -Dtest=Test262ExecTest -DrunTest262=true -Dtest262.limit=2000
+ *   ./mvnw -pl harmonica-interpreter test -Dtest=Test262ExecTest -DrunTest262=true -Dtest262.filter=arrow-function
  * }</pre>
  *
  * <p>Writes:

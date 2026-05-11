@@ -9,7 +9,7 @@ import java.util.List;
  * Diagnostic harness: print our bytecode side-by-side with LibJS's for a
  * curated list of programs, so we can see what to align.
  *
- * <p>Run via: {@code mvn -pl harmonica-core exec:java
+ * <p>Run via: {@code mvn -pl harmonica-interpreter exec:java
  * -Dexec.mainClass=com.jimmyhmiller.harmonica.bytecode.SideBySideDump
  * -Dexec.classpathScope=test}
  *

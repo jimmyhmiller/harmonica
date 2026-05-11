@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  * After intentionally fixing or breaking tests, regenerate via:
  *
  * <pre>{@code
- *   ./mvnw -pl harmonica-core test -Dtest=Test262SnapshotTest \
+ *   ./mvnw -pl harmonica-interpreter test -Dtest=Test262SnapshotTest \
  *       -Dtest262.snapshot.update=true
  * }</pre>
  *
@@ -52,7 +52,7 @@ class Test262SnapshotTest {
     private static final Path BASELINE_FILE =
         Paths.get("src/test/resources/test262-passing-baseline.txt");
     private static final Path BASELINE_FILE_FALLBACK =
-        Paths.get("harmonica-core/src/test/resources/test262-passing-baseline.txt");
+        Paths.get("harmonica-interpreter/src/test/resources/test262-passing-baseline.txt");
 
     private static final Path TEST262_LANGUAGE = Paths.get("test-oracles/test262/test/language");
     private static final Path FALLBACK_LANGUAGE = Paths.get("../test-oracles/test262/test/language");
@@ -125,7 +125,7 @@ class Test262SnapshotTest {
             for (int i = 0; i < show; i++) msg.append("  ").append(regressions.get(i)).append('\n');
             if (regressions.size() > show) msg.append("  …and ").append(regressions.size() - show).append(" more\n");
             msg.append("\nIf this regression is intentional, regenerate the baseline with:\n");
-            msg.append("  mvn -pl harmonica-core test -Dtest=Test262SnapshotTest ")
+            msg.append("  mvn -pl harmonica-interpreter test -Dtest=Test262SnapshotTest ")
                .append("-DrunTest262Snapshot=true -Dtest262.snapshot.update=true\n");
             fail(msg.toString());
         }

@@ -45,4 +45,15 @@ jobs:
         run: node scripts/generate-curated-cache.js
 
       - name: Run tests
-        run: mvn clean test -B
+        run: mvn clean test -B -DrunTest262=true
+
+      - name: Upload test262 execution results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test262-results
+          path: |
+            harmonica-interpreter/target/test262-results.txt
+            harmonica-interpreter/target/test262-summary.txt
+            harmonica-interpreter/target/test262-snapshot-regressions.txt
+          if-no-files-found: ignore
