@@ -231,6 +231,9 @@ public final class Disassembler {
                                         + ", receiver:" + operand(o.receiver(), exe)
                                         + ", start:" + operand(o.startArg(), exe)
                                         + (o.endArg() != null ? ", end:" + operand(o.endArg(), exe) : "");
+            case Op.CallArrayPush o   -> "CallArrayPush " + dst(o.dst())
+                                        + ", receiver:" + operand(o.receiver(), exe)
+                                        + ", value:" + operand(o.value(), exe);
             case Op.CallMethod o     -> "CallMethod " + dst(o.dst())
                                         + ", receiver:" + operand(o.receiver(), exe)
                                         + ", `" + o.property() + "`"

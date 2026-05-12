@@ -1233,6 +1233,8 @@ public final class Generator {
                 new Op.CallCharAt(newDst, o.receiver(), o.index());
             case Op.CallStringSlice o when o.dst().equals(expectedDst) ->
                 new Op.CallStringSlice(newDst, o.receiver(), o.startArg(), o.endArg());
+            case Op.CallArrayPush o when o.dst().equals(expectedDst) ->
+                new Op.CallArrayPush(newDst, o.receiver(), o.value());
             case Op.CallMethod o when o.dst().equals(expectedDst) ->
                 new Op.CallMethod(newDst, o.receiver(), o.property(), o.args(),
                     o.expressionString(), o.lookupCache(), o.callCache());
@@ -8156,6 +8158,14 @@ public final class Generator {
                 emit(new Op.CallStringSlice(dst, recvOp, startOp, endOp));
                 if (endOp != null) release(endOp);
                 release(startOp);
+                release(recvOp);
+                return dst;
+            }
+            if (noSpread && nargs == 1 && "push".equals(name)) {
+                Operand recvOp = lowerExpression(me.object());
+                Operand valOp = lowerExpression(call.arguments().get(0));
+                emit(new Op.CallArrayPush(dst, recvOp, valOp));
+                release(valOp);
                 release(recvOp);
                 return dst;
             }

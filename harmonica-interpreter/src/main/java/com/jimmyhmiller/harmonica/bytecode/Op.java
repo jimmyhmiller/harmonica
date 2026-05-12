@@ -2691,6 +2691,35 @@ public sealed interface Op {
     }
 
     /**
+     * Specialized call: {@code receiver.push(value)} when {@code receiver}
+     * is a JSArray. Acorn (and any AST-building parser) accumulates child
+     * nodes via {@code list.push(node)} repeatedly. The fast path is one
+     * {@code ArrayList.add} call; the fallback covers monkey-patched push
+     * and non-array receivers.
+     *
+     * <p>Note: this is a single-arg specialization. Multi-arg push
+     * (deopt to the general call) goes through the generic Call op.
+     */
+    record CallArrayPush(Variable dst, Operand receiver, Operand value) implements Op {
+        @Override public Operation operation() { return Operation.CALL; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            Object base = receiver.retrieve(ctx);
+            Object v = value.retrieve(ctx);
+            if (base instanceof JSArray arr) {
+                arr.push(v);
+                dst.store(ctx, AbstractOps.boxDouble(arr.length()));
+                return pc + 1;
+            }
+            Object fn = AbstractOps.getProperty(base, "push");
+            if (!(fn instanceof JSFunction f)) {
+                throw AbruptCompletion.typeError("not callable: " + fn);
+            }
+            dst.store(ctx, Interpreter.invokeFunction(f, base, new Object[]{v}, ctx));
+            return pc + 1;
+        }
+    }
+
+    /**
      * Specialized call: {@code receiver.slice(start)} or
      * {@code receiver.slice(start, end)} when {@code receiver} is a String
      * (acorn extracts token text from {@code this.input} this way 36 times
