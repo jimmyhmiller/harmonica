@@ -221,6 +221,12 @@ public final class Disassembler {
                                         + ", this_value:" + operand(o.thisValue(), exe)
                                         + (o.expressionString() != null ? ", " + o.expressionString() : "")
                                         + (o.args().length == 0 ? "" : ", arguments:[" + joinArgs(o.args(), exe) + "]");
+            case Op.CallCharCodeAt o -> "CallCharCodeAt " + dst(o.dst())
+                                        + ", receiver:" + operand(o.receiver(), exe)
+                                        + ", index:" + operand(o.index(), exe);
+            case Op.CallCharAt o     -> "CallCharAt " + dst(o.dst())
+                                        + ", receiver:" + operand(o.receiver(), exe)
+                                        + ", index:" + operand(o.index(), exe);
 
             case Op.NewFunction o    -> "NewFunction " + dst(o.dst())
                                         + ", shared_function_data_index:" + o.sharedFunctionDataIndex()

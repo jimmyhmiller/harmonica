@@ -96,6 +96,7 @@ public final class Cli {
         } catch (RuntimeException re) {
             String msg = re.getMessage();
             System.err.println(label + ": " + (msg != null ? msg : re.getClass().getSimpleName()));
+            if (Boolean.getBoolean("harmonica.cli.trace")) re.printStackTrace();
             System.exit(1);
         }
     }

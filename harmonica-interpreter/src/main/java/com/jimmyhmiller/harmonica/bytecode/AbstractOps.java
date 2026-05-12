@@ -1,5 +1,7 @@
 package com.jimmyhmiller.harmonica.bytecode;
 
+import java.util.Map;
+
 /**
  * ECMAScript abstract operations used by the interpreter.
  *
@@ -484,7 +486,10 @@ public final class AbstractOps {
             // its setter with `obj` as receiver. Otherwise set as own data prop.
             JSObject cursor = obj;
             while (cursor != null) {
-                Object existing = cursor.properties().get(prop);
+                // Direct own-property check — avoids any Map allocation that
+                // `propertiesIfPresent()` would need when JSObject is in
+                // flat-array mode (most small objects).
+                Object existing = cursor.getOwn(prop);
                 if (existing instanceof Accessor acc) {
                     if (acc.setter() != null) {
                         InterpContext ctx = InterpContext.current();
@@ -507,7 +512,7 @@ public final class AbstractOps {
                     }
                     return;
                 }
-                if (cursor.properties().containsKey(prop)) {
+                if (existing != JSObject.ABSENT) {
                     // Own/inherited data prop — § 10.1.9.2 step 3.b: in
                     // strict mode, writing to a non-writable property throws.
                     if (!cursor.isWritable(prop)) {

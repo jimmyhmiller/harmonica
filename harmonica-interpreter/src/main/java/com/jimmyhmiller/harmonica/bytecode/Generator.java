@@ -1109,8 +1109,95 @@ public final class Generator {
                 return;
             }
             regRefCount.remove(idx);
+            // PEEPHOLE: at the point of true release, if the tail of the
+            // emitted ops is `<producer dst=r> ; Mov(local, r)`, the producer
+            // can write `local` directly and the Mov can be dropped. This is
+            // LibJS's `preferred_dst` shape: the caller computed an
+            // expression into a temp, copied it to a local, then released the
+            // temp. Release is the contract that nobody else needs the temp,
+            // so collapsing here is safe (unlike doing it at emit time, when
+            // the codegen might still be planning to reuse the register).
+            if (ops.size() >= 2 && !blockStartPcs.contains(ops.size() - 1)) {
+                Op last = ops.get(ops.size() - 1);
+                if (last instanceof Op.Mov mov
+                    && mov.src() instanceof Variable.Register movSrc
+                    && movSrc.index() == idx
+                    && mov.dst() instanceof Variable.Local localDst) {
+                    Op prev = ops.get(ops.size() - 2);
+                    Op rewritten = rewriteDstIfSingleWriter(prev, r, localDst);
+                    if (rewritten != null) {
+                        ops.set(ops.size() - 2, rewritten);
+                        ops.remove(ops.size() - 1);
+                        // Skip pool push — the register slot is genuinely
+                        // never written by the rewritten op, so leaving it
+                        // un-pushed keeps the rest of the codegen's pool
+                        // ordering deterministic.
+                        return;
+                    }
+                }
+            }
             freePool.push(idx);
         }
+    }
+
+    /**
+     * Rewrite {@code op}'s single destination from {@code expectedDst} to
+     * {@code newDst}. Returns null if {@code op}'s shape isn't on the
+     * supported list, or if its dst doesn't match. Used by the release-time
+     * peephole — see {@link #release}.
+     */
+    private static Op rewriteDstIfSingleWriter(Op op, Variable.Register expectedDst, Variable newDst) {
+        return switch (op) {
+            case Op.Add o when o.dst().equals(expectedDst) -> new Op.Add(newDst, o.lhs(), o.rhs());
+            case Op.Sub o when o.dst().equals(expectedDst) -> new Op.Sub(newDst, o.lhs(), o.rhs());
+            case Op.Mul o when o.dst().equals(expectedDst) -> new Op.Mul(newDst, o.lhs(), o.rhs());
+            case Op.Div o when o.dst().equals(expectedDst) -> new Op.Div(newDst, o.lhs(), o.rhs());
+            case Op.Mod o when o.dst().equals(expectedDst) -> new Op.Mod(newDst, o.lhs(), o.rhs());
+            case Op.Exp o when o.dst().equals(expectedDst) -> new Op.Exp(newDst, o.lhs(), o.rhs());
+            case Op.BitwiseAnd o when o.dst().equals(expectedDst) -> new Op.BitwiseAnd(newDst, o.lhs(), o.rhs());
+            case Op.BitwiseOr  o when o.dst().equals(expectedDst) -> new Op.BitwiseOr (newDst, o.lhs(), o.rhs());
+            case Op.BitwiseXor o when o.dst().equals(expectedDst) -> new Op.BitwiseXor(newDst, o.lhs(), o.rhs());
+            case Op.LeftShift o when o.dst().equals(expectedDst) -> new Op.LeftShift(newDst, o.lhs(), o.rhs());
+            case Op.RightShift o when o.dst().equals(expectedDst) -> new Op.RightShift(newDst, o.lhs(), o.rhs());
+            case Op.UnsignedRightShift o when o.dst().equals(expectedDst) -> new Op.UnsignedRightShift(newDst, o.lhs(), o.rhs());
+            case Op.LessThan o when o.dst().equals(expectedDst) -> new Op.LessThan(newDst, o.lhs(), o.rhs());
+            case Op.LessThanEquals o when o.dst().equals(expectedDst) -> new Op.LessThanEquals(newDst, o.lhs(), o.rhs());
+            case Op.GreaterThan o when o.dst().equals(expectedDst) -> new Op.GreaterThan(newDst, o.lhs(), o.rhs());
+            case Op.GreaterThanEquals o when o.dst().equals(expectedDst) -> new Op.GreaterThanEquals(newDst, o.lhs(), o.rhs());
+            case Op.StrictlyEquals o when o.dst().equals(expectedDst) -> new Op.StrictlyEquals(newDst, o.lhs(), o.rhs());
+            case Op.StrictlyInequals o when o.dst().equals(expectedDst) -> new Op.StrictlyInequals(newDst, o.lhs(), o.rhs());
+            case Op.LooselyEquals o when o.dst().equals(expectedDst) -> new Op.LooselyEquals(newDst, o.lhs(), o.rhs());
+            case Op.LooselyInequals o when o.dst().equals(expectedDst) -> new Op.LooselyInequals(newDst, o.lhs(), o.rhs());
+            case Op.Instanceof o when o.dst().equals(expectedDst) -> new Op.Instanceof(newDst, o.lhs(), o.rhs());
+            case Op.In o when o.dst().equals(expectedDst) -> new Op.In(newDst, o.lhs(), o.rhs());
+            case Op.UnaryMinus o when o.dst().equals(expectedDst) -> new Op.UnaryMinus(newDst, o.src());
+            case Op.UnaryPlus o when o.dst().equals(expectedDst) -> new Op.UnaryPlus(newDst, o.src());
+            case Op.BitwiseNot o when o.dst().equals(expectedDst) -> new Op.BitwiseNot(newDst, o.src());
+            case Op.Not o when o.dst().equals(expectedDst) -> new Op.Not(newDst, o.src());
+            case Op.ToBoolean o when o.dst().equals(expectedDst) -> new Op.ToBoolean(newDst, o.value());
+            case Op.Typeof o when o.dst().equals(expectedDst) -> new Op.Typeof(newDst, o.src());
+            case Op.NewObject o when o.dst().equals(expectedDst) -> new Op.NewObject(newDst);
+            case Op.NewArray o when o.dst().equals(expectedDst) -> new Op.NewArray(newDst, o.elements());
+            case Op.GetById o when o.dst().equals(expectedDst) ->
+                new Op.GetById(newDst, o.base(), o.property(), o.baseIdentifier(), o.cache());
+            case Op.GetByValue o when o.dst().equals(expectedDst) ->
+                new Op.GetByValue(newDst, o.base(), o.property(), o.baseIdentifier());
+            case Op.GetLength o when o.dst().equals(expectedDst) ->
+                new Op.GetLength(newDst, o.base(), o.baseIdentifier(), o.cache());
+            case Op.GetGlobal o when o.dst().equals(expectedDst) ->
+                new Op.GetGlobal(newDst, o.identifier(), o.cache());
+            case Op.GetBinding o when o.dst().equals(expectedDst) ->
+                new Op.GetBinding(newDst, o.identifier(), o.cache());
+            case Op.Call o when o.dst().equals(expectedDst) ->
+                new Op.Call(newDst, o.callee(), o.thisValue(), o.args(), o.expressionString(), o.cache());
+            case Op.CallConstruct o when o.dst().equals(expectedDst) ->
+                new Op.CallConstruct(newDst, o.callee(), o.args(), o.expressionString(), o.cache());
+            case Op.CallCharCodeAt o when o.dst().equals(expectedDst) ->
+                new Op.CallCharCodeAt(newDst, o.receiver(), o.index());
+            case Op.CallCharAt o when o.dst().equals(expectedDst) ->
+                new Op.CallCharAt(newDst, o.receiver(), o.index());
+            default -> null;
+        };
     }
 
     /** Top of the completion-register stack, or {@code null} if not in a tracked context. */
@@ -1345,6 +1432,15 @@ public final class Generator {
                                          Variable dst2, Operand src2) {
         return java.util.Objects.equals(dst1, dst2) && java.util.Objects.equals(src1, src2);
     }
+
+    /**
+     * If {@code op} writes its single result to {@code expectedDst} (a temp
+     * register), return a clone of the op whose dst is {@code newDst}
+     * instead. Returns null if the op has multiple writes, doesn't match,
+     * or isn't on the supported list. Used by the {@code Mov} peephole in
+     * {@link #emit} to collapse `op tmp, ...; Mov local, tmp` into a single
+     * `op local, ...`.
+     */
 
     private final List<Integer> releaseAfterEmit = new ArrayList<>();
 
@@ -3680,15 +3776,17 @@ public final class Generator {
         // into `members` so we can backpatch templateIndex after assignment.
         java.util.List<JSFunction> deferredSfd = new ArrayList<>();
         java.util.List<Integer> deferredMemberIdx = new ArrayList<>();   // -1 for placeholder-only entries
-        // ECMA-262 § 15.7.10 step 33 — class static blocks are run after
-        // all other member definitions, with `this` bound to the class
-        // constructor. Collect them here and emit IIFE-style calls below.
-        java.util.List<JSFunction> staticBlockFns = new ArrayList<>();
+        // ECMA-262 § 15.7.10 step 33 — class static blocks AND non-literal
+        // static field initializers run in source-text order, with `this`
+        // bound to the constructor. We accumulate one entry per source
+        // element and emit calls below in the same order. Each entry is
+        // either {"block", JSFunction} or {"field", deferredIdx, eki, name}.
+        java.util.List<Object[]> staticInitSteps = new ArrayList<>();
         for (Node n : orderedMembers) {
             if (n instanceof StaticBlock sb) {
                 JSFunction fn = generateFunction(null, java.util.List.of(),
                     new BlockStatement(0, 0, 0, 0, 0, 0, sb.body()));
-                staticBlockFns.add(fn);
+                staticInitSteps.add(new Object[]{"block", fn});
                 continue;
             }
             if (n instanceof MethodDefinition md) {
@@ -3720,13 +3818,22 @@ public final class Generator {
             } else if (n instanceof PropertyDefinition pd && pd.isStatic()) {
                 String name = classMemberKey(pd.computed(), (Expression) pd.key());
                 Object keyValue = classMemberKeyValue(pd.computed(), (Expression) pd.key());
+                int eki = elementKeyNames.size();
                 if (pd.value() != null && !isLiteralFieldInitializer(pd.value())) {
-                    deferredSfd.add(fieldInitializerPlaceholder());
+                    // Wrap initializer as `function () { return <expr>; }` so
+                    // we can invoke it with `this` = constructor after NewClass.
+                    Expression initExpr = (Expression) pd.value();
+                    JSFunction initFn = generateFunction(null, java.util.List.of(),
+                        new BlockStatement(0, 0, 0, 0, 0, 0,
+                            java.util.List.<Statement>of(
+                                new ReturnStatement(0, 0, 0, 0, 0, 0, initExpr))));
+                    int deferredIdx = deferredSfd.size();
+                    deferredSfd.add(initFn);
                     deferredMemberIdx.add(-1);   // placeholder-only, no member backpatch
+                    staticInitSteps.add(new Object[]{"field", deferredIdx, eki, name});
                 }
                 Object staticInitVal = (pd.value() instanceof Literal sLit && isLiteralFieldInitializer(pd.value()))
                     ? literalValue(sLit) : null;
-                int eki = elementKeyNames.size();
                 members.add(new Executable.ClassMember("field", name, /* isStatic */ true, -1, staticInitVal, eki));
                 elementKeyNames.add(name);
                 elementKeyValues.add(keyValue);
@@ -3796,21 +3903,28 @@ public final class Generator {
         // SetLexicalEnvironment) — matches LibJS's emission order.
         java.util.List<Operand> publicElementKeys = new ArrayList<>();
         java.util.List<Operand> computedKeyOps = new ArrayList<>();   // for cleanup after NewClass
+        // Map elementKeyIndex → Operand for static-field-init post-NewClass
+        // emission below (only populated for non-private entries).
+        java.util.Map<Integer, Operand> publicKeyByEki = new java.util.HashMap<>();
         for (int i = 0; i < elementKeyNames.size(); i++) {
             String n = elementKeyNames.get(i);
             if (n != null && n.startsWith("#")) continue;   // skip privates
+            Operand keyOp;
             if (elementKeyExprs.get(i) != null) {
-                Operand keyOp = lowerExpression(elementKeyExprs.get(i));
+                keyOp = lowerExpression(elementKeyExprs.get(i));
                 publicElementKeys.add(keyOp);
                 computedKeyOps.add(keyOp);
             } else {
-                publicElementKeys.add(constant(elementKeyValues.get(i)));
+                keyOp = constant(elementKeyValues.get(i));
+                publicElementKeys.add(keyOp);
             }
+            publicKeyByEki.put(i, keyOp);
         }
 
         // Now that key expressions have claimed their SFD slots, append the
         // deferred member functions in declaration order, backpatching each
         // member's templateIndex.
+        int deferredSfdBaseIdx = sharedFunctionData.size();
         for (int i = 0; i < deferredSfd.size(); i++) {
             int memberIdx = deferredMemberIdx.get(i);
             int sfdIdx = sharedFunctionData.size();
@@ -3844,7 +3958,6 @@ public final class Generator {
         emit(new Op.NewClass(classReg, superReg, classEnv, blueprintIdx,
             elementKeysOp, /* displayName */ null));
         if (superReg != null) release(superReg);
-        for (Operand k : computedKeyOps) release(k);
         if (!privateNames.isEmpty()) emit(new Op.LeavePrivateEnvironment());
 
         // ECMA-262 § 15.7.10 step 35 — initialize the class binding BEFORE
@@ -3852,21 +3965,42 @@ public final class Generator {
         // the class by name).
         emit(new Op.InitializeLexicalBinding(className, classReg, new EnvironmentCoordinate()));
 
-        // Step 33: invoke each static block IIFE with `this` = the class
-        // constructor. We materialize one JSFunction per block via
-        // sharedFunctionData and emit NewFunction + Call.
-        for (JSFunction sbFn : staticBlockFns) {
-            int sfdIdx = sharedFunctionData.size();
-            sharedFunctionData.add(sbFn);
+        // Step 33: run static blocks and non-literal static field initializers
+        // in source-text order, each as an IIFE with `this` = constructor.
+        // A throw in any step aborts the rest (spec §15.7.10 step 33.d).
+        for (Object[] step : staticInitSteps) {
+            String kind = (String) step[0];
+            int sfdIdx;
+            if ("block".equals(kind)) {
+                JSFunction sbFn = (JSFunction) step[1];
+                sfdIdx = sharedFunctionData.size();
+                sharedFunctionData.add(sbFn);
+            } else {
+                int deferredIdx = (Integer) step[1];
+                sfdIdx = deferredSfdBaseIdx + deferredIdx;
+            }
             Variable.Register fnReg = allocRegister();
             emit(new Op.NewFunction(fnReg, sfdIdx, /* name */ null, /* homeObject */ null));
             Variable.Register resultReg = allocRegister();
             emit(new Op.Call(resultReg, fnReg, classReg, new Operand[0],
                 /* expressionString */ null,
                 new com.jimmyhmiller.harmonica.bytecode.cache.CallSite()));
+            if ("field".equals(kind)) {
+                int eki = (Integer) step[2];
+                String knownName = (String) step[3];
+                if (knownName != null) {
+                    emit(new Op.PutById(classReg, knownName, resultReg,
+                        new com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache()));
+                } else {
+                    Operand keyOp = publicKeyByEki.get(eki);
+                    emit(new Op.PutByValue(classReg, keyOp, resultReg, Op.PutByValueKind.OWN, null));
+                }
+            }
             release(resultReg);
             release(fnReg);
         }
+
+        for (Operand k : computedKeyOps) release(k);
         // Release order matters (LIFO pool): release classEnv first so that
         // subsequent allocations pop classReg's slot first, matching LibJS.
         release(classEnv);
@@ -3993,12 +4127,15 @@ public final class Generator {
         java.util.List<Expression> elementKeyExprs = new ArrayList<>();
         java.util.List<JSFunction> deferredSfd = new ArrayList<>();
         java.util.List<Integer> deferredMemberIdx = new ArrayList<>();
-        java.util.List<JSFunction> staticBlockFns = new ArrayList<>();
+        // Static blocks + non-literal static field initializers in source order
+        // (see lowerClassDeclarationStrict). Each entry is either
+        // {"block", JSFunction} or {"field", deferredIdx, eki, name}.
+        java.util.List<Object[]> staticInitSteps = new ArrayList<>();
         for (Node n : orderedMembers) {
             if (n instanceof StaticBlock sb) {
                 JSFunction fn = generateFunction(null, java.util.List.of(),
                     new BlockStatement(0, 0, 0, 0, 0, 0, sb.body()));
-                staticBlockFns.add(fn);
+                staticInitSteps.add(new Object[]{"block", fn});
                 continue;
             }
             if (n instanceof MethodDefinition md) {
@@ -4019,13 +4156,20 @@ public final class Generator {
             } else if (n instanceof PropertyDefinition pd && pd.isStatic()) {
                 String name = classMemberKey(pd.computed(), (Expression) pd.key());
                 Object keyValue = classMemberKeyValue(pd.computed(), (Expression) pd.key());
+                int eki = elementKeyNames.size();
                 if (pd.value() != null && !isLiteralFieldInitializer(pd.value())) {
-                    deferredSfd.add(fieldInitializerPlaceholder());
+                    Expression initExpr = (Expression) pd.value();
+                    JSFunction initFn = generateFunction(null, java.util.List.of(),
+                        new BlockStatement(0, 0, 0, 0, 0, 0,
+                            java.util.List.<Statement>of(
+                                new ReturnStatement(0, 0, 0, 0, 0, 0, initExpr))));
+                    int deferredIdx = deferredSfd.size();
+                    deferredSfd.add(initFn);
                     deferredMemberIdx.add(-1);
+                    staticInitSteps.add(new Object[]{"field", deferredIdx, eki, name});
                 }
                 Object staticInitVal = (pd.value() instanceof Literal sLit && isLiteralFieldInitializer(pd.value()))
                     ? literalValue(sLit) : null;
-                int eki = elementKeyNames.size();
                 members.add(new Executable.ClassMember("field", name, true, -1, staticInitVal, eki));
                 elementKeyNames.add(name);
                 elementKeyValues.add(keyValue);
@@ -4090,19 +4234,24 @@ public final class Generator {
         // operands, computed keys are lowered now into fresh registers.
         java.util.List<Operand> publicElementKeys = new ArrayList<>();
         java.util.List<Operand> computedKeyOps = new ArrayList<>();
+        java.util.Map<Integer, Operand> publicKeyByEki = new java.util.HashMap<>();
         for (int i = 0; i < elementKeyNames.size(); i++) {
             String n = elementKeyNames.get(i);
             if (n != null && n.startsWith("#")) continue;
+            Operand keyOp;
             if (elementKeyExprs.get(i) != null) {
-                Operand keyOp = lowerExpression(elementKeyExprs.get(i));
+                keyOp = lowerExpression(elementKeyExprs.get(i));
                 publicElementKeys.add(keyOp);
                 computedKeyOps.add(keyOp);
             } else {
-                publicElementKeys.add(constant(elementKeyValues.get(i)));
+                keyOp = constant(elementKeyValues.get(i));
+                publicElementKeys.add(keyOp);
             }
+            publicKeyByEki.put(i, keyOp);
         }
 
         // Backpatch deferred member SFD slots after key lowering.
+        int deferredSfdBaseIdx = sharedFunctionData.size();
         for (int i = 0; i < deferredSfd.size(); i++) {
             int memberIdx = deferredMemberIdx.get(i);
             int sfdIdx = sharedFunctionData.size();
@@ -4131,23 +4280,44 @@ public final class Generator {
             : publicElementKeys.toArray(new Operand[0]);
         emit(new Op.NewClass(classReg, superReg, classEnv, blueprintIdx,
             elementKeysOp, displayName));
-        for (Operand k : computedKeyOps) release(k);
         if (superReg != null) release(superReg);
         if (!privateNames.isEmpty()) emit(new Op.LeavePrivateEnvironment());
 
-        // Static blocks run with `this` = the class (§ 15.7.10 step 33).
-        for (JSFunction sbFn : staticBlockFns) {
-            int sfdIdx = sharedFunctionData.size();
-            sharedFunctionData.add(sbFn);
+        // Static blocks + non-literal static field initializers in source order.
+        // See lowerClassDeclarationStrict for the matching pattern.
+        for (Object[] step : staticInitSteps) {
+            String kind = (String) step[0];
+            int sfdIdx;
+            if ("block".equals(kind)) {
+                JSFunction sbFn = (JSFunction) step[1];
+                sfdIdx = sharedFunctionData.size();
+                sharedFunctionData.add(sbFn);
+            } else {
+                int deferredIdx = (Integer) step[1];
+                sfdIdx = deferredSfdBaseIdx + deferredIdx;
+            }
             Variable.Register fnReg = allocRegister();
             emit(new Op.NewFunction(fnReg, sfdIdx, /* name */ null, /* homeObject */ null));
             Variable.Register resultReg = allocRegister();
             emit(new Op.Call(resultReg, fnReg, classReg, new Operand[0],
                 /* expressionString */ null,
                 new com.jimmyhmiller.harmonica.bytecode.cache.CallSite()));
+            if ("field".equals(kind)) {
+                int eki = (Integer) step[2];
+                String knownName = (String) step[3];
+                if (knownName != null) {
+                    emit(new Op.PutById(classReg, knownName, resultReg,
+                        new com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache()));
+                } else {
+                    Operand keyOp = publicKeyByEki.get(eki);
+                    emit(new Op.PutByValue(classReg, keyOp, resultReg, Op.PutByValueKind.OWN, null));
+                }
+            }
             release(resultReg);
             release(fnReg);
         }
+
+        for (Operand k : computedKeyOps) release(k);
 
         // Caller binds the class to its target via the surrounding assignment
         // / var-decl. We don't emit InitializeLexicalBinding for the inner
@@ -7204,7 +7374,8 @@ public final class Generator {
                 yield constant("#" + pid.name());
             }
             default -> throw new UnsupportedOperationException(
-                "Generator: expression type " + e.getClass().getSimpleName() + " is not yet supported");
+                "Generator: expression type " + e.getClass().getSimpleName()
+                + " is not yet supported at " + e.loc().start().line() + ":" + e.loc().start().column());
         };
     }
 
@@ -7256,12 +7427,33 @@ public final class Generator {
         // GetGlobal + Typeof. typeof on an unbound name yields "undefined"
         // (not a ReferenceError), and LibJS uses a single dedicated op.
         if ("typeof".equals(u.operator()) && u.argument() instanceof Identifier id) {
-            // Only globals get TypeofBinding — locals would still need their
-            // value loaded into a register first. Heuristic: if not in
-            // {@link #locals}, treat as global.
-            if (!locals.containsKey(id.name())) {
+            // Reserved literals (`typeof undefined`, etc.) coerce normally.
+            String n = id.name();
+            if (!"undefined".equals(n) && !"NaN".equals(n) && !"Infinity".equals(n)) {
+                // If the name resolves to a parameter, local, captured cell, or
+                // outer-capture target, load the bound value and Typeof it.
+                // Falling through to TypeofBinding (globals-only) would lose
+                // the binding for IIFEs nested inside the CJS wrapper, where
+                // `exports`/`module` are wrapper parameters captured by the
+                // inner function.
+                boolean isBound = params.containsKey(n)
+                    || captureSlot.containsKey(n)
+                    || locals.containsKey(n);
+                if (!isBound) {
+                    // Try to capture from an outer scope. captureFromOuter
+                    // both checks visibility and allocates a slot if found.
+                    int outerSlot = captureFromOuter(n);
+                    if (outerSlot >= 0) isBound = true;
+                }
+                if (isBound) {
+                    Operand src = lowerExpression(id);
+                    Variable.Register dst = allocRegister();
+                    emit(new Op.Typeof(dst, src));
+                    release(src);
+                    return dst;
+                }
                 Variable.Register dst = allocRegister();
-                emit(new Op.TypeofBinding(dst, id.name()));
+                emit(new Op.TypeofBinding(dst, n));
                 return dst;
             }
         }
@@ -7863,6 +8055,33 @@ public final class Generator {
             release(superFn);
             return dst;
         }
+        // Specialized-builtin fast path (LibJS-style). When the call shape is
+        // `<expr>.charCodeAt(<expr>)` or `<expr>.charAt(<expr>)`, emit a
+        // dedicated opcode that inlines the operation when the receiver is a
+        // String. Acorn's tokenizer dispatches charCodeAt in a tight loop, and
+        // the specialized op skips GetById + Op.Call + invokeFunctionImpl +
+        // native trampoline per call.
+        if (call.callee() instanceof MemberExpression me
+            && !me.computed()
+            && me.property() instanceof Identifier propId
+            && !(me.object() instanceof Super)
+            && call.arguments().size() == 1
+            && !(call.arguments().get(0) instanceof SpreadElement)
+            && !call.optional()) {
+            String name = propId.name();
+            if ("charCodeAt".equals(name) || "charAt".equals(name)) {
+                Operand recvOp = lowerExpression(me.object());
+                Operand idxOp = lowerExpression(call.arguments().get(0));
+                if ("charCodeAt".equals(name)) {
+                    emit(new Op.CallCharCodeAt(dst, recvOp, idxOp));
+                } else {
+                    emit(new Op.CallCharAt(dst, recvOp, idxOp));
+                }
+                release(idxOp);
+                release(recvOp);
+                return dst;
+            }
+        }
         // Method-call form: o.foo(args) → `this` is `o`; non-method `this` is undefined.
         Operand callee;
         Operand thisVal;
@@ -7936,13 +8155,36 @@ public final class Generator {
                 }
                 release(superBase);
                 Operand superThisVal = Variable.Register.THIS_VALUE;
-                Operand[] argOperands = new Operand[call.arguments().size()];
-                for (int k = 0; k < argOperands.length; k++) {
-                    argOperands[k] = lowerExpression(call.arguments().get(k));
+                boolean superAnySpread = false;
+                for (Expression e : call.arguments()) {
+                    if (e instanceof SpreadElement) { superAnySpread = true; break; }
                 }
-                emit(new Op.Call(dst, calleeReg, superThisVal, argOperands, null,
-                    new com.jimmyhmiller.harmonica.bytecode.cache.CallSite()));
-                for (Operand a : argOperands) release(a);
+                if (!superAnySpread) {
+                    Operand[] argOperands = new Operand[call.arguments().size()];
+                    for (int k = 0; k < argOperands.length; k++) {
+                        argOperands[k] = lowerExpression(call.arguments().get(k));
+                    }
+                    emit(new Op.Call(dst, calleeReg, superThisVal, argOperands, null,
+                        new com.jimmyhmiller.harmonica.bytecode.cache.CallSite()));
+                    for (Operand a : argOperands) release(a);
+                } else {
+                    Variable.Register argsArr = allocRegister();
+                    emit(new Op.NewArray(argsArr, new Operand[0]));
+                    for (Expression e : call.arguments()) {
+                        if (e instanceof SpreadElement se) {
+                            Operand src = lowerExpression(se.argument());
+                            emit(new Op.ArrayAppend(argsArr, src, true));
+                            release(src);
+                        } else {
+                            Operand v = lowerExpression(e);
+                            emit(new Op.ArrayAppend(argsArr, v, false));
+                            release(v);
+                        }
+                    }
+                    emit(new Op.CallWithArgumentArray(dst, calleeReg, superThisVal, argsArr, null,
+                        new com.jimmyhmiller.harmonica.bytecode.cache.CallSite()));
+                    release(argsArr);
+                }
                 release(calleeReg);
                 return dst;
             }

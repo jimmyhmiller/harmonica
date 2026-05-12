@@ -12,9 +12,17 @@ public final class AbruptCompletion extends RuntimeException {
 
     private final Object value;
 
+    private static final boolean TRACE = Boolean.getBoolean("harmonica.abrupt.trace");
+
     public AbruptCompletion(Object value) {
-        super(null, null, /* enableSuppression */ false, /* writableStackTrace */ false);
+        super(null, null, /* enableSuppression */ false, /* writableStackTrace */ TRACE);
         this.value = value;
+        if (TRACE) {
+            System.err.println("[abrupt] " + (value instanceof JSObject jo
+                ? AbstractOps.toString(jo.get("name")) + ": " + AbstractOps.toString(jo.get("message"))
+                : AbstractOps.toString(value)));
+            this.printStackTrace();
+        }
     }
 
     public Object value() { return value; }

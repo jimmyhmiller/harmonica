@@ -166,7 +166,13 @@ public final class ModuleLoader {
 
         // Run the wrapper script — this materializes the wrapper as a global
         // function. We then call it with our injected arguments.
-        Map<String, Object> wrapperGlobals = new HashMap<>();
+        //
+        // Use ModuleGlobals (identity-distinct from plain HashMap) so the
+        // interpreter stamps homeGlobals on functions hoisted inside the
+        // wrapper. Without this, exported functions called from another
+        // module would inherit the caller's globals and lose access to the
+        // defining module's top-level lexical bindings (e.g. classes).
+        Map<String, Object> wrapperGlobals = new ModuleGlobals();
         Interpreter.interpret(exe, new Object[0], 64, wrapperGlobals);
 
         Object fnVal = wrapperGlobals.get(CJS_WRAPPER_NAME);
@@ -203,8 +209,10 @@ public final class ModuleLoader {
             Interpreter.invokeFunction(wrapperFn, Undefined.VALUE, args,
                 new com.jimmyhmiller.harmonica.bytecode.InterpContext(exe, args, 64, wrapperGlobals));
         } catch (AbruptCompletion ac) {
-            throw new IOException("Module evaluation threw: "
+            IOException io = new IOException("Module evaluation threw: "
                 + abruptDescribe(ac) + " (in " + rec.path + ")");
+            if (Boolean.getBoolean("harmonica.cli.trace")) ac.printStackTrace();
+            throw io;
         }
         moduleObj.set("loaded", Boolean.TRUE);
 

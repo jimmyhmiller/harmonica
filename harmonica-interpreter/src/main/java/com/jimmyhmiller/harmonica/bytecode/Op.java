@@ -887,6 +887,18 @@ public sealed interface Op {
         @Override public Operation operation() { return Operation.GET_LENGTH; }
         @Override public int interpret(InterpContext ctx, int pc) {
             Object b = base.retrieve(ctx);
+            // Fast path: the magical .length properties on Array, String,
+            // and arguments-style objects. Mirrors LibJS's GetByIdMode::Length
+            // fast path (PropertyAccess.h:75-88) — `xs.length` in for-loops
+            // is one of the hottest accesses in any JS workload.
+            if (b instanceof JSArray arr) {
+                dst.store(ctx, AbstractOps.boxDouble(arr.length()));
+                return pc + 1;
+            }
+            if (b instanceof String s) {
+                dst.store(ctx, AbstractOps.boxDouble(s.length()));
+                return pc + 1;
+            }
             Object v = AbstractOps.getProperty(b, "length");
             if (v instanceof Accessor acc && acc.getter() != null) {
                 v = Interpreter.invokeFunction(acc.getter(), b, new Object[0], ctx);
@@ -944,14 +956,13 @@ public sealed interface Op {
                     Object existing = AbstractOps.getOwnPropertyRaw(b, property);
                     if (existing == Undefined.VALUE && b instanceof JSObject jo) {
                         // Walk proto chain for an accessor cell — JSObject.get
-                        // does this but we want the raw value, so duplicate
-                        // the walk briefly.
+                        // does this but we want the raw value (without
+                        // triggering getter invocation). Direct getOwn calls
+                        // skip the Map allocation needed by flat-mode objects.
                         JSObject cursor = jo.proto();
                         while (cursor != null) {
-                            if (cursor.properties().containsKey(property)) {
-                                existing = cursor.properties().get(property);
-                                break;
-                            }
+                            Object raw = cursor.getOwn(property);
+                            if (raw != JSObject.ABSENT) { existing = raw; break; }
                             cursor = cursor.proto();
                         }
                     }
@@ -966,7 +977,7 @@ public sealed interface Op {
                         }
                         // non-strict, no setter → silently no-op
                     } else if (existing != Undefined.VALUE && b instanceof JSObject jo
-                               && jo.properties().containsKey(property)
+                               && jo.hasOwn(property)
                                && !jo.isWritable(property)) {
                         // Own non-writable data property — strict throws.
                         if (ctx.executable() != null && ctx.executable().strictMode()) {
@@ -1037,8 +1048,11 @@ public sealed interface Op {
                     return pc + 1;
                 }
             }
-            if (ctx.globals().containsKey(identifier)) {
-                Object v = ctx.globals().get(identifier);
+            // Single-lookup path: HashMap.get returns null both for "absent"
+            // and for "present, mapped to Java null". The common case is
+            // "present and non-null" — short-circuit on that.
+            Object v = ctx.globals().get(identifier);
+            if (v != null) {
                 // Module imports: dereference live binding to the source module.
                 if (v instanceof com.jimmyhmiller.harmonica.module.ImportRef ref) {
                     if (!ref.sourceGlobals.containsKey(ref.sourceName)) {
@@ -1060,14 +1074,22 @@ public sealed interface Op {
                 dst.store(ctx, v);
                 return pc + 1;
             }
+            if (ctx.globals().containsKey(identifier)) {
+                // Present-but-null (rare: explicit `let x = null` at module top).
+                dst.store(ctx, null);
+                return pc + 1;
+            }
             // ECMA-262 § 9.3 GlobalEnvironmentRecord: the global object
             // (globalThis) is part of the global environment chain. Reads
             // of an undeclared bare name must observe properties written via
             // `globalThis.X = Y` or `window.X = Y`.
             Object globalThisVal = ctx.globals().get("globalThis");
-            if (globalThisVal instanceof JSObject gtObj && gtObj.properties().containsKey(identifier)) {
-                dst.store(ctx, gtObj.properties().get(identifier));
-                return pc + 1;
+            if (globalThisVal instanceof JSObject gtObj) {
+                Object gv = gtObj.getOwn(identifier);
+                if (gv != JSObject.ABSENT) {
+                    dst.store(ctx, gv);
+                    return pc + 1;
+                }
             }
             throw AbruptCompletion.referenceError("" + identifier + " is not defined");
         }
@@ -1114,9 +1136,12 @@ public sealed interface Op {
                 return pc + 1;
             }
             Object globalThisVal = ctx.globals().get("globalThis");
-            if (globalThisVal instanceof JSObject gtObj && gtObj.properties().containsKey(identifier)) {
-                dst.store(ctx, gtObj.properties().get(identifier));
-                return pc + 1;
+            if (globalThisVal instanceof JSObject gtObj) {
+                Object gv = gtObj.getOwn(identifier);
+                if (gv != JSObject.ABSENT) {
+                    dst.store(ctx, gv);
+                    return pc + 1;
+                }
             }
             throw AbruptCompletion.referenceError(identifier + " is not defined");
         }
@@ -1157,8 +1182,7 @@ public sealed interface Op {
                 // globalThis (e.g. UMD libraries that did `globalThis.foo = …`
                 // earlier — that property IS resolvable per § 9.3).
                 Object globalThisVal = ctx.globals().get("globalThis");
-                if (!(globalThisVal instanceof JSObject gt)
-                        || !gt.properties().containsKey(identifier)) {
+                if (!(globalThisVal instanceof JSObject gt) || !gt.hasOwn(identifier)) {
                     throw AbruptCompletion.referenceError(identifier + " is not defined");
                 }
             }
@@ -1355,6 +1379,11 @@ public sealed interface Op {
             JSFunction ctor = ctorTemplate.withCapturedCells(captured);
 
             JSObject proto = new JSObject();
+            // ECMA-262 § 15.7.10 / § 10.2.5: F.prototype.constructor === F,
+            // non-enumerable + writable + configurable.
+            proto.set("constructor", ctor);
+            proto.setAttributes("constructor",
+                (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
             ctor.setPrototypeObject(proto);
 
             JSFunction superCtorVal = null;
@@ -2314,6 +2343,34 @@ public sealed interface Op {
         @Override public int interpret(InterpContext ctx, int pc) {
             Object b = base.retrieve(ctx);
             Object key = property.retrieve(ctx);
+            // Fast path: Array base + integer-valued numeric key. AbstractOps
+            // .getProperty does the same direct-index, but inlining here saves
+            // a frame and lets the JIT specialize the dispatch in tight
+            // for/array loops (acorn's tokenizer pattern). Mirrors LibJS's
+            // GetByValue Int32 fast path (Interpreter.cpp:955).
+            if (b instanceof JSArray arr && key instanceof Number n) {
+                double d = n.doubleValue();
+                int idx = (int) d;
+                if (idx == d && idx >= 0 && idx < arr.length()) {
+                    Object v = arr.get(idx);
+                    if (!(v instanceof Accessor)) {
+                        dst.store(ctx, v);
+                        return pc + 1;
+                    }
+                }
+            }
+            // Fast path: String base + integer-valued numeric key, e.g.
+            // `s[i]` in a char-by-char scanner (acorn's lexer reads chars
+            // this way after the `charCodeAt` route). Equivalent to
+            // String.prototype indexed access — no method call needed.
+            if (b instanceof String s && key instanceof Number n) {
+                double d = n.doubleValue();
+                int idx = (int) d;
+                if (idx == d && idx >= 0 && idx < s.length()) {
+                    dst.store(ctx, String.valueOf(s.charAt(idx)));
+                    return pc + 1;
+                }
+            }
             // Fast path: JSObject base + String key (lodash's `obj[k]` pattern).
             // Skips the megamorphic dispatch in getProperty.
             if (b instanceof JSObject obj && key instanceof String k
@@ -2472,6 +2529,77 @@ public sealed interface Op {
             } finally {
                 Interpreter.releaseArgs(argValues);
             }
+            return pc + 1;
+        }
+    }
+
+    /**
+     * Specialized call: {@code receiver.charCodeAt(index)}. Emitted when the
+     * generator sees a {@code <expr>.charCodeAt(<expr>)} CallExpression.
+     * Hot in acorn's tokenizer and any character-by-character scanner.
+     *
+     * <p>Fast path runs entirely inline when {@code receiver} is a String —
+     * no GetById on the string prototype, no Call dispatch, no native
+     * trampoline. Falls back to the generic call only for monkey-patched
+     * receivers or non-string types. Mirrors LibJS's {@code CallBuiltin
+     * StringPrototypeCharCodeAt} dispatch (Bytecode/Builtins.h, Interpreter.cpp
+     * execute_specialized_builtin_call).
+     */
+    record CallCharCodeAt(Variable dst, Operand receiver, Operand index) implements Op {
+        @Override public Operation operation() { return Operation.CALL; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            Object base = receiver.retrieve(ctx);
+            Object idx = index.retrieve(ctx);
+            if (base instanceof String s && idx instanceof Number n) {
+                double d = n.doubleValue();
+                int i = (int) d;
+                // Spec: returns NaN for out-of-range. ToInteger truncates.
+                if (i == d && i >= 0 && i < s.length()) {
+                    dst.store(ctx, AbstractOps.boxDouble(s.charAt(i)));
+                    return pc + 1;
+                }
+                dst.store(ctx, AbstractOps.boxDouble(Double.NaN));
+                return pc + 1;
+            }
+            // Fallback: do the spec-mandated GetMethod + Call. Covers
+            // user-defined `charCodeAt` overrides on the receiver and
+            // non-string receivers (which would coerce via ToString first).
+            Object fn = AbstractOps.getProperty(base, "charCodeAt");
+            if (!(fn instanceof JSFunction f)) {
+                throw AbruptCompletion.typeError("not callable: " + fn);
+            }
+            Object result = Interpreter.invokeFunction(f, base, new Object[]{idx}, ctx);
+            dst.store(ctx, result);
+            return pc + 1;
+        }
+    }
+
+    /**
+     * Specialized call: {@code receiver.charAt(index)}. Same shape as
+     * {@link CallCharCodeAt} — fast path returns a single-character String.
+     */
+    record CallCharAt(Variable dst, Operand receiver, Operand index) implements Op {
+        @Override public Operation operation() { return Operation.CALL; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            Object base = receiver.retrieve(ctx);
+            Object idx = index.retrieve(ctx);
+            if (base instanceof String s && idx instanceof Number n) {
+                double d = n.doubleValue();
+                int i = (int) d;
+                // Spec § 22.1.3.2: returns "" when index is out of range.
+                if (i == d && i >= 0 && i < s.length()) {
+                    dst.store(ctx, String.valueOf(s.charAt(i)));
+                    return pc + 1;
+                }
+                dst.store(ctx, "");
+                return pc + 1;
+            }
+            Object fn = AbstractOps.getProperty(base, "charAt");
+            if (!(fn instanceof JSFunction f)) {
+                throw AbruptCompletion.typeError("not callable: " + fn);
+            }
+            Object result = Interpreter.invokeFunction(f, base, new Object[]{idx}, ctx);
+            dst.store(ctx, result);
             return pc + 1;
         }
     }

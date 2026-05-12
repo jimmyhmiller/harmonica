@@ -7,9 +7,9 @@ import java.util.Map;
  * A JavaScript object — a string-keyed property bag with insertion-ordered
  * iteration.
  *
- * <p>v1: no shapes/hidden classes, no prototypes, no property descriptors
- * (so no accessors, no enumerability flags). Just a plain map. Real JS object
- * semantics will land as we wire shapes and prototype chains.
+ * <p>v1: no shapes/hidden classes, no prototypes (per-key), no property
+ * descriptors beyond the (writable, enumerable, configurable) byte flags.
+ * Real JS object semantics will land as we wire shapes and prototype chains.
  */
 public final class JSObject {
 
@@ -19,9 +19,28 @@ public final class JSObject {
      * single {@code set}, so the LinkedHashMap header was wasted on those
      * (~12% of allocated bytes in lodash workload before this change).
      * Allocated on the first write or the first {@link #properties()} call.
+     *
+     * <p>We tried a flat {@code String[]/Object[]} small-object storage
+     * (LibJS-style sans shapes); on the acorn parse-loop it lost — linear
+     * scan over 6-12 keys was slower than HashMap's hash+bucket walk for
+     * the typical AST-node sizes. The HashMap path wins because string
+     * keys are interned by the parser (cached hashCode), so a HashMap
+     * lookup is one hash → one bucket-load → one ref-compare on the hot path.
      */
     private Map<String, Object> properties;
     private static final Map<String, Object> EMPTY = java.util.Collections.emptyMap();
+
+    /**
+     * Sentinel returned by {@link #getOwn(String)} to distinguish "no own
+     * property" from "own property mapped to JS {@code null}" (Java null in
+     * our value model). Callers that don't need that distinction can use
+     * {@link #get(String)}, which returns {@code Undefined.VALUE} for
+     * missing and walks the prototype chain.
+     */
+    public static final Object ABSENT = new Object() {
+        @Override public String toString() { return "<ABSENT>"; }
+    };
+
     /**
      * Sidecar for non-default property attributes. Default for any key is
      * `{writable, enumerable, configurable}` all true. When any of those
@@ -61,13 +80,37 @@ public final class JSObject {
     /** Explicit-prototype constructor — used during Realm bootstrap and by class instances. */
     public JSObject(JSObject proto) { this.proto = proto; }
 
+    /** Get an own property; returns {@link #ABSENT} if not present on this object. */
+    public Object getOwn(String key) {
+        if (properties == null) return ABSENT;
+        Object v = properties.get(key);
+        if (v != null) return v;
+        // Map.get returns null both for "absent" and for "present, mapped to
+        // null". Disambiguate only when the cheap fast path missed.
+        if (properties.containsKey(key)) return null;
+        return ABSENT;
+    }
+
+    /** True iff {@code key} is an own property of this object. */
+    public boolean hasOwn(String key) {
+        return properties != null && properties.containsKey(key);
+    }
+
     public Object get(String key) {
-        // Own property?
-        if (properties != null && properties.containsKey(key)) return properties.get(key);
+        // Inlined own-property check for the dominant fast path.
+        if (properties != null) {
+            Object v = properties.get(key);
+            if (v != null) return v;
+            if (properties.containsKey(key)) return null;
+        }
         // Walk proto chain.
         JSObject cursor = proto;
         while (cursor != null) {
-            if (cursor.properties != null && cursor.properties.containsKey(key)) return cursor.properties.get(key);
+            if (cursor.properties != null) {
+                Object v = cursor.properties.get(key);
+                if (v != null) return v;
+                if (cursor.properties.containsKey(key)) return null;
+            }
             cursor = cursor.proto;
         }
         return Undefined.VALUE;
@@ -115,9 +158,8 @@ public final class JSObject {
     /**
      * Mutable property map. Lazy-allocates on first call so empty objects
      * stay header-only. Callers that only read (containsKey / get) should
-     * prefer the get / has methods above to avoid forcing allocation; the
-     * built-ins use this directly because they need a stable Map reference
-     * (e.g. for putIfAbsent or entrySet iteration).
+     * prefer the {@link #get}/{@link #has}/{@link #getOwn}/{@link #hasOwn}
+     * methods above — they don't force allocation.
      */
     public Map<String, Object> properties() {
         if (properties == null) properties = new LinkedHashMap<>(4);

@@ -82,10 +82,26 @@ public final class Interpreter {
         // Inlined directly so the JIT doesn't have to inline a wrapper
         // ahead of the call dispatch. invokeFunctionImpl is the only
         // entry point now.
+        //
+        // When invoked from outside an active interpret() frame (e.g. the
+        // module loader running a CJS wrapper after the loader script
+        // returned), the per-thread CURRENT context is null. AbstractOps
+        // helpers (toPrimitive etc.) rely on CURRENT for callbacks into
+        // valueOf/toString, so seed it here when the caller didn't.
+        if (InterpContext.current() == null) {
+            InterpContext.setCurrent(callerCtx);
+            try { return invokeFunctionImpl(fn, thisVal, args, callerCtx, Undefined.VALUE); }
+            finally { InterpContext.setCurrent(null); }
+        }
         return invokeFunctionImpl(fn, thisVal, args, callerCtx, /* newTarget */ Undefined.VALUE);
     }
 
     public static Object invokeFunctionAsConstructor(JSFunction fn, Object thisVal, Object[] args, InterpContext callerCtx) {
+        if (InterpContext.current() == null) {
+            InterpContext.setCurrent(callerCtx);
+            try { return invokeFunctionImpl(fn, thisVal, args, callerCtx, fn); }
+            finally { InterpContext.setCurrent(null); }
+        }
         return invokeFunctionImpl(fn, thisVal, args, callerCtx, /* newTarget */ fn);
     }
 

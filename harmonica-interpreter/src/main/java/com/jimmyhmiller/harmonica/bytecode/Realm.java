@@ -818,7 +818,7 @@ public final class Realm {
                         if (last > s.length()) break;
                     }
                 }
-                sb.append(s, last, s.length());
+                if (last < s.length()) sb.append(s, last, s.length());
                 return sb.toString();
             }
             String search = AbstractOps.toString(search0);
@@ -3151,6 +3151,15 @@ public final class Realm {
                     // Map looked "non-native", lodash's Stack stayed in
                     // O(n²) ListCache mode, cycle-detection dominated.
                     sb.append("\\[");
+                    continue;
+                }
+                // JS `[^]` means "any character including line terminators"
+                // (negation of the empty set). Java rejects an empty negated
+                // class, so rewrite to `[\s\S]`. acorn uses this idiom in
+                // `/\/\*[^]*?\*\//` to match block-comment bodies.
+                if (i + 2 < src.length() && src.charAt(i + 1) == '^' && src.charAt(i + 2) == ']') {
+                    sb.append("[\\s\\S]");
+                    i += 2;
                     continue;
                 }
                 inClass = true;
