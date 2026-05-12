@@ -154,6 +154,15 @@ public final class AbstractOps {
 
     /** https://tc39.es/ecma262/#sec-isstrictlyequal */
     public static Boolean strictlyEquals(Object lhs, Object rhs) {
+        // Fast identity path. Covers JSObject and JSFunction identity (the
+        // canonical case for token-type comparisons like `t === tt.semi` in
+        // acorn), interned String literal comparisons, and cached Boolean
+        // singletons. Excludes Number boxes because Java `==` on Number is
+        // reference equality — two distinct Double objects with value 0
+        // should compare strictly equal per ECMA-262 § 7.2.16, and NaN
+        // identity must NOT compare true (NaN !== NaN); both fall through
+        // to the IEEE-754 branch below.
+        if (lhs == rhs && !(lhs instanceof Number)) return Boolean.TRUE;
         if (lhs == null && rhs == null) return true;
         if (lhs == Undefined.VALUE && rhs == Undefined.VALUE) return true;
         if (lhs == null || rhs == null) return false;
