@@ -64,6 +64,41 @@ public final class Realm {
 
     public static JSFunction throwTypeError() { return throwTypeError; }
 
+    /**
+     * Per-prototype root shape cache. Every {@code new JSObject(proto)}
+     * starts at one of these, so all bare empty objects with the same
+     * prototype share an identity-equal root Shape — and from there, the
+     * transition tree shares child shapes for the same property-addition
+     * sequences. Keyed on the prototype's identity (null for
+     * proto-less objects from {@code Object.create(null)}).
+     */
+    private static final java.util.Map<JSObject, Shape> EMPTY_OBJECT_SHAPES =
+        new java.util.IdentityHashMap<>();
+    private static volatile Shape rootShapeForNullProto;
+
+    public static Shape shapeForEmptyObject(JSObject proto) {
+        if (proto == null) {
+            Shape s = rootShapeForNullProto;
+            if (s != null) return s;
+            synchronized (EMPTY_OBJECT_SHAPES) {
+                s = rootShapeForNullProto;
+                if (s == null) {
+                    s = Shape.root(null);
+                    rootShapeForNullProto = s;
+                }
+                return s;
+            }
+        }
+        synchronized (EMPTY_OBJECT_SHAPES) {
+            Shape s = EMPTY_OBJECT_SHAPES.get(proto);
+            if (s == null) {
+                s = Shape.root(proto);
+                EMPTY_OBJECT_SHAPES.put(proto, s);
+            }
+            return s;
+        }
+    }
+
     private static volatile boolean prototypesReady;
 
     private Realm() {}

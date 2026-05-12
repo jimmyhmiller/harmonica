@@ -850,12 +850,38 @@ public sealed interface Op {
         @Override public Operation operation() { return Operation.GET_BY_ID; }
         @Override public int interpret(InterpContext ctx, int pc) {
             Object b = base.retrieve(ctx);
-            // Fast path: plain-object property read with no accessors. The
-            // dominant case in lodash's hot loops (`d.id`, `o.length`-on-array
-            // is GetLength), so it pays to short-circuit before the generic
-            // dispatch in AbstractOps.getProperty.
+            // Shape-keyed inline cache: on hit, the property's storage offset
+            // is known and the read is a single indexed load — the V8/LibJS
+            // monomorphic-fast-path trick that makes hot OO code fly. Only
+            // viable for own data properties of plain JSObjects; accessors
+            // and proto-chain hits fall back to the generic dispatch.
             if (b instanceof JSObject obj
                     && (property.isEmpty() || property.charAt(0) != '#')) {
+                Shape s = obj.shape();
+                int slot = cache.lookup(s);
+                if (slot >= 0) {
+                    Object cached = obj.getDirect(slot);
+                    if (!(cached instanceof Accessor)) {
+                        dst.store(ctx, cached);
+                        return pc + 1;
+                    }
+                    // Slot is now an Accessor — fall through to generic path
+                    // and let the cache evict on the next observed shape.
+                } else {
+                    // IC miss: try to install. Only install for own,
+                    // non-accessor data properties (slot will read cleanly
+                    // through getDirect next time).
+                    Shape.PropertyMeta meta = s.lookup(property);
+                    if (meta != null) {
+                        Object v = obj.getDirect(meta.offset());
+                        if (!(v instanceof Accessor)) {
+                            cache.install(s, meta.offset());
+                            dst.store(ctx, v);
+                            return pc + 1;
+                        }
+                    }
+                }
+                // Non-own property or accessor — walk proto chain via obj.get.
                 Object v = obj.get(property);
                 if (!(v instanceof Accessor)) {
                     dst.store(ctx, v);
@@ -951,13 +977,37 @@ public sealed interface Op {
                     else AbstractOps.setProperty(b, property, value);
                 }
                 case NORMAL -> {
-                    // Inline fast path for the common case: receiver is a
-                    // JSObject and the property is its own data property
-                    // with default writable attributes. Skips the redundant
-                    // proto-walk that the AbstractOps.setProperty fallback
-                    // does for accessor detection. This dominates the
-                    // `this.<field> = value` pattern in OO code.
+                    // Shape-keyed IC fast path. On hit, write goes straight
+                    // to storage[slot] — one indexed store, no map probe.
+                    // Skipped for accessors / non-writable / cross-shape
+                    // installs.
                     if (b instanceof JSObject jo) {
+                        Shape s = jo.shape();
+                        int slot = cache.lookup(s);
+                        if (slot >= 0) {
+                            Object existing = jo.getDirect(slot);
+                            if (!(existing instanceof Accessor)) {
+                                // Writability check via shape attrs.
+                                Shape.PropertyMeta meta = s.lookup(property);
+                                if (meta != null && (meta.attrs() & JSObject.ATTR_WRITABLE) != 0) {
+                                    jo.putDirect(slot, value);
+                                    return pc + 1;
+                                }
+                            }
+                            // Fall through on accessor / read-only.
+                        } else {
+                            // IC miss: install on own writable data property.
+                            Shape.PropertyMeta meta = s.lookup(property);
+                            if (meta != null) {
+                                Object existing = jo.getDirect(meta.offset());
+                                if (!(existing instanceof Accessor)
+                                        && (meta.attrs() & JSObject.ATTR_WRITABLE) != 0) {
+                                    cache.install(s, meta.offset());
+                                    jo.putDirect(meta.offset(), value);
+                                    return pc + 1;
+                                }
+                            }
+                        }
                         Object own = jo.getOwn(property);
                         if (own != JSObject.ABSENT) {
                             if (own instanceof Accessor acc) {
