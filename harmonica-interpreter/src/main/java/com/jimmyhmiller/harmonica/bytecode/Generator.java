@@ -1233,6 +1233,9 @@ public final class Generator {
                 new Op.CallCharAt(newDst, o.receiver(), o.index());
             case Op.CallStringSlice o when o.dst().equals(expectedDst) ->
                 new Op.CallStringSlice(newDst, o.receiver(), o.startArg(), o.endArg());
+            case Op.CallMethod o when o.dst().equals(expectedDst) ->
+                new Op.CallMethod(newDst, o.receiver(), o.property(), o.args(),
+                    o.expressionString(), o.lookupCache(), o.callCache());
             default -> null;
         };
     }
@@ -8132,6 +8135,48 @@ public final class Generator {
                 release(recvOp);
                 return dst;
             }
+        }
+        // Fused method-call fast path. For the canonical `obj.method(args)`
+        // shape — non-computed member, no spread, no optional chain, no
+        // Super, AND every arg is side-effect-free (Identifier or Literal)
+        // so reordering against the method lookup is observably equivalent
+        // — emit a single Op.CallMethod that combines the GetById (method
+        // lookup on receiver) and the Call (with receiver as `this`).
+        //
+        // The side-effect guard is required by ECMA-262 § 13.3.6.1: the
+        // callee reference (and its GetValue) is evaluated before the
+        // argument list. If the receiver is nullish, the method lookup
+        // must throw TypeError BEFORE any argument is evaluated. Fusing
+        // would let pre-emitted arg Call ops run first and change semantics.
+        if (call.callee() instanceof MemberExpression me
+            && !me.computed()
+            && me.property() instanceof Identifier propId
+            && !(me.object() instanceof Super)
+            && !call.optional()
+            && call.arguments().stream().allMatch(a ->
+                   a instanceof Identifier || a instanceof Literal)) {
+            String methodName = propId.name();
+            String chain = memberChainName(me);
+            String exprString = chain != null
+                ? chain
+                : "<object>." + methodName;
+            Operand recvOp = lowerExpression(me.object());
+            // Method calls don't need copy_if_needed for the receiver (we
+            // pass it to a single op that reads it once before any arg
+            // side effects), but args may still be locals — copy those.
+            boolean hasArgs = !call.arguments().isEmpty();
+            Operand[] argOperands = new Operand[call.arguments().size()];
+            for (int i = 0; i < argOperands.length; i++) {
+                Operand raw = lowerExpression(call.arguments().get(i));
+                argOperands[i] = hasArgs ? copyIfNeededForCall(raw) : raw;
+            }
+            emit(new Op.CallMethod(
+                dst, recvOp, methodName, argOperands, exprString,
+                new com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache(),
+                new com.jimmyhmiller.harmonica.bytecode.cache.CallSite()));
+            for (Operand a : argOperands) release(a);
+            release(recvOp);
+            return dst;
         }
         // Method-call form: o.foo(args) → `this` is `o`; non-method `this` is undefined.
         Operand callee;

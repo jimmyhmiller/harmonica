@@ -2534,6 +2534,57 @@ public sealed interface Op {
     }
 
     /**
+     * Fused {@code dst = receiver.<property>(args...)}. Emitted by the
+     * generator whenever the call site is a non-computed member expression
+     * (the common {@code obj.method(...)} shape). Saves one full Op dispatch
+     * cycle and one register write/read versus emitting separate
+     * {@link GetById} + {@link Call}.
+     *
+     * <p>Carries its own {@link PropertyLookupCache} for the method lookup
+     * and a {@link CallSite} for the call. The receiver is evaluated once
+     * and re-used as the call's {@code this} value (per spec for member
+     * calls).
+     */
+    record CallMethod(
+        Variable dst,
+        Operand receiver,
+        String property,
+        Operand[] args,
+        String expressionString,
+        com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache lookupCache,
+        CallSite callCache
+    ) implements Op {
+        @Override public Operation operation() { return Operation.CALL; }
+        @Override public boolean equals(Object other) { return this == other; }
+        @Override public int hashCode() { return System.identityHashCode(this); }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            Object b = receiver.retrieve(ctx);
+            // Method lookup: own + proto walk for the named property.
+            Object fnVal;
+            if (b instanceof JSObject obj
+                    && (property.isEmpty() || property.charAt(0) != '#')) {
+                fnVal = obj.get(property);
+            } else {
+                fnVal = AbstractOps.getProperty(b, property);
+            }
+            if (fnVal instanceof Accessor acc && acc.getter() != null) {
+                fnVal = Interpreter.invokeFunction(acc.getter(), b, new Object[0], ctx);
+            }
+            if (!(fnVal instanceof JSFunction fn)) {
+                throw AbruptCompletion.typeError("not callable: " + fnVal);
+            }
+            Object[] argValues = Interpreter.acquireArgs(args.length);
+            for (int k = 0; k < args.length; k++) argValues[k] = args[k].retrieve(ctx);
+            try {
+                dst.store(ctx, Interpreter.invokeFunction(fn, b, argValues, ctx));
+            } finally {
+                Interpreter.releaseArgs(argValues);
+            }
+            return pc + 1;
+        }
+    }
+
+    /**
      * Specialized call: {@code receiver.charCodeAt(index)}. Emitted when the
      * generator sees a {@code <expr>.charCodeAt(<expr>)} CallExpression.
      * Hot in acorn's tokenizer and any character-by-character scanner.
