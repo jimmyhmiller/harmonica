@@ -602,6 +602,22 @@ public final class Generator {
      */
     private boolean inFunctionBody = false;
 
+    /**
+     * Initialize a completion register to {@code Undefined.VALUE}. Skipped
+     * inside function bodies — the completion is never observed there, and
+     * any expression-statement that would have updated it is also gated on
+     * {@link #inFunctionBody} (see {@link #lowerExpressionStatement}).
+     * Without this skip we'd emit a Mov per if / while / for / do-while
+     * / try-finally / etc. inside every function body. Acorn's parser body
+     * is ~99% function-body code, so the savings show up directly in the
+     * acorn benchmark Mov-family sample counts.
+     */
+    private void emitCompletionInit(Variable.Register completionReg) {
+        if (!inFunctionBody) {
+            emit(new Op.Mov(completionReg, constant(Undefined.VALUE)));
+        }
+    }
+
     Generator() {}
 
     /**
@@ -3299,7 +3315,7 @@ public final class Generator {
             }
             if (foldedBool != null) {
                 boolean b = foldedBool;
-                emit(new Op.Mov(completionReg, constant(Undefined.VALUE)));
+                emitCompletionInit(completionReg);
                 Statement chosen = b ? is.consequent() : is.alternate();
                 if (chosen != null) {
                     completionRegStack.push(completionReg);
@@ -3320,7 +3336,7 @@ public final class Generator {
             }
         }
 
-        emit(new Op.Mov(completionReg, constant(Undefined.VALUE)));
+        emitCompletionInit(completionReg);
 
         // LibJS uses JumpIf (with explicit true+false targets) instead of
         // JumpFalse when deferred branches will be emitted between the if's
@@ -3461,7 +3477,7 @@ public final class Generator {
         // Lower the inner test inline (in the alternate's block).
         Operand cond = lowerExpression(is.test());
         Variable.Register innerCompletion = allocRegister();
-        emit(new Op.Mov(innerCompletion, constant(Undefined.VALUE)));
+        emitCompletionInit(innerCompletion);
         // JumpIf with placeholders for both targets — patched in finish*.
         int jumpIfPc = emit(new Op.JumpIf(cond, /* trueTarget */ -1, /* falseTarget */ -1));
         // Snapshot allocator state — innerCompletion AND cond stay alive.
@@ -4415,7 +4431,7 @@ public final class Generator {
         // 2. Completion register.
         Variable.Register completionReg = allocRegister();
         Operand.Constant undefConst = constant(Undefined.VALUE);
-        emit(new Op.Mov(completionReg, undefConst));
+        emitCompletionInit(completionReg);
 
         // 3. Pre-register the test's literal (so Bool(false) lands in the pool
         // at the source-order position even though no test op is emitted).
@@ -4475,7 +4491,7 @@ public final class Generator {
 
         // 2. Completion register.
         Variable.Register completionReg = allocRegister();
-        emit(new Op.Mov(completionReg, constant(Undefined.VALUE)));
+        emitCompletionInit(completionReg);
 
         // 3. Body block. NO Jump-to-cond — block0 falls through to block1
         // because there's no back-edge in this flattened layout.
@@ -4579,7 +4595,7 @@ public final class Generator {
 
         // 2. Completion register.
         Variable.Register completionReg = allocRegister();
-        emit(new Op.Mov(completionReg, constant(Undefined.VALUE)));
+        emitCompletionInit(completionReg);
 
         // 2b. Pre-register the test expression's literals so they land in the
         // constant pool BEFORE the body's literals — matches LibJS, which
@@ -4872,7 +4888,7 @@ public final class Generator {
         constant(Undefined.VALUE);
         Operand cond = lowerExpression(is.test());
         Variable.Register ifCompletion = allocRegister();
-        emit(new Op.Mov(ifCompletion, constant(Undefined.VALUE)));
+        emitCompletionInit(ifCompletion);
         // JumpIf with placeholders for both targets — patched in finish*.
         int jumpIfPc = emit(new Op.JumpIf(cond, /* trueTarget */ -1, /* falseTarget */ -1));
         // Snapshot the allocator state BEFORE releasing cond/ifCompletion —
@@ -5150,7 +5166,7 @@ public final class Generator {
 
         // 2. Inner completion register + Mov(innerCompletion, Undefined).
         Variable.Register innerCompletion = allocRegister();
-        emit(new Op.Mov(innerCompletion, constant(Undefined.VALUE)));
+        emitCompletionInit(innerCompletion);
 
         // 2b. Pre-register the inner test expression's literals so they land
         // in the constant pool BEFORE the inner body's literals — matches
@@ -5673,7 +5689,7 @@ public final class Generator {
         int tryBodyStart = currentPc();
         patchJumpTarget(jumpToTryBodyPc, tryBodyStart);
         Variable.Register innerCompletion = allocRegister();
-        emit(new Op.Mov(innerCompletion, constant(Undefined.VALUE)));
+        emitCompletionInit(innerCompletion);
         completionRegStack.push(innerCompletion);
         Operand lastBodyValue = innerCompletion;
         try {
@@ -5842,7 +5858,7 @@ public final class Generator {
             bindPattern(handler.param(), catchDst, BindMode.LOCAL);
         }
         Variable.Register innerCatchCompletion = allocRegister();           // reg6 (or reg7 if lex-env)
-        emit(new Op.Mov(innerCatchCompletion, constant(Undefined.VALUE)));
+        emitCompletionInit(innerCatchCompletion);
         completionRegStack.push(innerCatchCompletion);
         if (useLexEnv) lexEnvCatchBodyDepth++;
         boolean hasNestedBlock = catchBodyHasNestedBlock(handler.body().body());
@@ -6514,7 +6530,7 @@ public final class Generator {
         emit(new Op.Mov(iReg, constant(0.0)));
 
         Variable.Register completionReg = allocRegister();
-        emit(new Op.Mov(completionReg, constant(Undefined.VALUE)));
+        emitCompletionInit(completionReg);
 
         startNewBlock();
         int loopHead = currentPc();
@@ -6613,7 +6629,7 @@ public final class Generator {
 
         // 4. Allocate the script-completion register and init to Undefined.
         Variable.Register completionReg = allocRegister();
-        emit(new Op.Mov(completionReg, constant(Undefined.VALUE)));
+        emitCompletionInit(completionReg);
 
         // 5. typeReg + exReg for abrupt-completion handling.
         Variable.Register typeReg = allocRegister();
@@ -6850,7 +6866,7 @@ public final class Generator {
                 || v instanceof Long || v instanceof Double || v instanceof String;
             if (foldable && !AbstractOps.toBoolean(v)) {
                 Variable.Register completionReg = allocRegister();
-                emit(new Op.Mov(completionReg, constant(Undefined.VALUE)));
+                emitCompletionInit(completionReg);
                 // Pre-register the literal in the pool (LibJS does so during
                 // parse, before realizing it's dead).
                 constant(v);
@@ -6863,7 +6879,7 @@ public final class Generator {
         }
 
         Variable.Register completionReg = allocRegister();
-        emit(new Op.Mov(completionReg, constant(Undefined.VALUE)));
+        emitCompletionInit(completionReg);
 
         // Loop-test block: re-entered each iteration.
         startNewBlock();
@@ -7198,7 +7214,7 @@ public final class Generator {
         }
 
         Variable.Register completionReg = allocRegister();
-        emit(new Op.Mov(completionReg, constant(Undefined.VALUE)));
+        emitCompletionInit(completionReg);
 
         // Pre-register test literals: matches LibJS pool order (test before
         // body, even though body lowers first in the bytecode stream).
