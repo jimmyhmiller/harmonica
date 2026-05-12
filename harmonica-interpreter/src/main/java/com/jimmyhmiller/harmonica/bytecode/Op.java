@@ -951,43 +951,78 @@ public sealed interface Op {
                     else AbstractOps.setProperty(b, property, value);
                 }
                 case NORMAL -> {
-                    // Use the raw lookup (no accessor invocation) so we can
-                    // detect a setter cell sitting on the receiver / proto.
-                    Object existing = AbstractOps.getOwnPropertyRaw(b, property);
-                    if (existing == Undefined.VALUE && b instanceof JSObject jo) {
-                        // Walk proto chain for an accessor cell — JSObject.get
-                        // does this but we want the raw value (without
-                        // triggering getter invocation). Direct getOwn calls
-                        // skip the Map allocation needed by flat-mode objects.
+                    // Inline fast path for the common case: receiver is a
+                    // JSObject and the property is its own data property
+                    // with default writable attributes. Skips the redundant
+                    // proto-walk that the AbstractOps.setProperty fallback
+                    // does for accessor detection. This dominates the
+                    // `this.<field> = value` pattern in OO code.
+                    if (b instanceof JSObject jo) {
+                        Object own = jo.getOwn(property);
+                        if (own != JSObject.ABSENT) {
+                            if (own instanceof Accessor acc) {
+                                if (acc.setter() != null) {
+                                    Interpreter.invokeFunction(acc.setter(), b, new Object[]{value}, ctx);
+                                } else if (ctx.executable() != null && ctx.executable().strictMode()) {
+                                    throw AbruptCompletion.typeError(
+                                        "Cannot set property '" + property + "' of " + b + " which has only a getter");
+                                }
+                                return pc + 1;
+                            }
+                            if (!jo.isWritable(property)) {
+                                if (ctx.executable() != null && ctx.executable().strictMode()) {
+                                    throw AbruptCompletion.typeError(
+                                        "Cannot assign to read only property '" + property + "'");
+                                }
+                                return pc + 1;
+                            }
+                            jo.set(property, value);
+                            return pc + 1;
+                        }
+                        // Not own — check proto chain for a setter accessor
+                        // (or a non-writable data prop). For typical OO code
+                        // this walk hits null quickly (the proto chain is
+                        // Parser.prototype → Object.prototype; no setters).
                         JSObject cursor = jo.proto();
                         while (cursor != null) {
                             Object raw = cursor.getOwn(property);
-                            if (raw != JSObject.ABSENT) { existing = raw; break; }
+                            if (raw instanceof Accessor acc) {
+                                if (acc.setter() != null) {
+                                    Interpreter.invokeFunction(acc.setter(), b, new Object[]{value}, ctx);
+                                    return pc + 1;
+                                }
+                                if (ctx.executable() != null && ctx.executable().strictMode()) {
+                                    throw AbruptCompletion.typeError(
+                                        "Cannot set property '" + property + "' of " + b + " which has only a getter");
+                                }
+                                return pc + 1;
+                            }
+                            if (raw != JSObject.ABSENT) break;   // shadowed data prop on proto
                             cursor = cursor.proto();
                         }
+                        jo.set(property, value);
+                        return pc + 1;
                     }
-                    if (existing instanceof Accessor acc) {
-                        if (acc.setter() != null) {
-                            Interpreter.invokeFunction(acc.setter(), b, new Object[]{value}, ctx);
-                        } else if (ctx.executable() != null && ctx.executable().strictMode()) {
-                            // ECMA-262 § 10.1.9.2 step 4 — strict-mode set
-                            // through a getter-only accessor throws TypeError.
-                            throw AbruptCompletion.typeError(
-                                "Cannot set property '" + property + "' of " + b + " which has only a getter");
+                    // JSFunction (class constructor with static
+                    // accessors / data props): keep the existing
+                    // accessor-detection path. AbstractOps.setProperty
+                    // doesn't know about JSFunction accessors, so do it
+                    // inline.
+                    if (b instanceof JSFunction fn && fn.hasOwnStatic(property)) {
+                        Object existing = fn.getOwnStatic(property);
+                        if (existing instanceof Accessor acc) {
+                            if (acc.setter() != null) {
+                                Interpreter.invokeFunction(acc.setter(), b, new Object[]{value}, ctx);
+                            } else if (ctx.executable() != null && ctx.executable().strictMode()) {
+                                throw AbruptCompletion.typeError(
+                                    "Cannot set property '" + property + "' of " + b + " which has only a getter");
+                            }
+                            return pc + 1;
                         }
-                        // non-strict, no setter → silently no-op
-                    } else if (existing != Undefined.VALUE && b instanceof JSObject jo
-                               && jo.hasOwn(property)
-                               && !jo.isWritable(property)) {
-                        // Own non-writable data property — strict throws.
-                        if (ctx.executable() != null && ctx.executable().strictMode()) {
-                            throw AbruptCompletion.typeError(
-                                "Cannot assign to read only property '" + property + "'");
-                        }
-                        // non-strict: silently swallow
-                    } else {
-                        AbstractOps.setProperty(b, property, value);
                     }
+                    // Non-JSObject / non-JSFunction-with-accessor receiver —
+                    // fall back to the generic path.
+                    AbstractOps.setProperty(b, property, value);
                 }
             }
             return pc + 1;
