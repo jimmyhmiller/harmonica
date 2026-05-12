@@ -8047,6 +8047,30 @@ public final class Generator {
         return op;
     }
 
+    /**
+     * Conservative side-effect-free predicate used by the
+     * {@link Op.CallMethod} emit guard. An expression is "pure" for our
+     * fusion purposes if evaluating it observably interleaves harmlessly
+     * with the surrounding method-lookup throw: no user-visible writes,
+     * no Call dispatch, no `new` / instantiation, no compound assignment.
+     *
+     * <p>Reads (Identifier, ThisExpression, MemberExpression with a pure
+     * base) and Literals qualify. They may throw if their reference is
+     * unresolvable, but that throw is observably indistinguishable from
+     * the method-lookup throw in the common case where one or the other
+     * succeeds.
+     */
+    private boolean isPureExpressionArg(Expression e) {
+        return e instanceof Literal
+            || e instanceof Identifier
+            || e instanceof ThisExpression
+            || (e instanceof MemberExpression me
+                && !me.computed()
+                && me.property() instanceof Identifier
+                && me.object() instanceof Expression base
+                && isPureExpressionArg(base));
+    }
+
     private Operand lowerCall(CallExpression call) {
         // LibJS allocates the call result's destination register BEFORE lowering
         // the callee and arguments, so the dst gets the lowest free index and
@@ -8153,8 +8177,7 @@ public final class Generator {
             && me.property() instanceof Identifier propId
             && !(me.object() instanceof Super)
             && !call.optional()
-            && call.arguments().stream().allMatch(a ->
-                   a instanceof Identifier || a instanceof Literal)) {
+            && call.arguments().stream().allMatch(this::isPureExpressionArg)) {
             String methodName = propId.name();
             String chain = memberChainName(me);
             String exprString = chain != null
