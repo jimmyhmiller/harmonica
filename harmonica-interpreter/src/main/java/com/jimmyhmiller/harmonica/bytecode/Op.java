@@ -860,17 +860,27 @@ public sealed interface Op {
                 Shape s = obj.shape();
                 int slot = cache.lookup(s);
                 if (slot >= 0) {
-                    Object cached = obj.getDirect(slot);
-                    if (!(cached instanceof Accessor)) {
-                        dst.store(ctx, cached);
-                        return pc + 1;
+                    Object owner = cache.ownerOf();
+                    if (owner == null) {
+                        // Own-property hit.
+                        Object cached = obj.getDirect(slot);
+                        if (!(cached instanceof Accessor)) {
+                            dst.store(ctx, cached);
+                            return pc + 1;
+                        }
+                    } else if (owner instanceof JSObject oj
+                                && oj.shape() == cache.ownerShapeOf()) {
+                        // Proto-chain hit — class method, inherited prop.
+                        Object cached = oj.getDirect(slot);
+                        if (!(cached instanceof Accessor)) {
+                            dst.store(ctx, cached);
+                            return pc + 1;
+                        }
                     }
-                    // Slot is now an Accessor — fall through to generic path
-                    // and let the cache evict on the next observed shape.
+                    // Hit but accessor / stale proto — fall through.
                 } else {
-                    // IC miss: try to install. Only install for own,
-                    // non-accessor data properties (slot will read cleanly
-                    // through getDirect next time).
+                    // IC miss: walk own then prototype chain, installing
+                    // wherever we find a non-accessor data slot.
                     Shape.PropertyMeta meta = s.lookup(property);
                     if (meta != null) {
                         Object v = obj.getDirect(meta.offset());
@@ -878,6 +888,22 @@ public sealed interface Op {
                             cache.install(s, meta.offset());
                             dst.store(ctx, v);
                             return pc + 1;
+                        }
+                    } else {
+                        JSObject cursor = obj.proto();
+                        while (cursor != null) {
+                            Shape cs = cursor.shape();
+                            Shape.PropertyMeta cm = cs.lookup(property);
+                            if (cm != null) {
+                                Object v = cursor.getDirect(cm.offset());
+                                if (!(v instanceof Accessor)) {
+                                    cache.installProto(s, cursor, cs, cm.offset());
+                                    dst.store(ctx, v);
+                                    return pc + 1;
+                                }
+                                break;
+                            }
+                            cursor = cursor.proto();
                         }
                     }
                 }
@@ -2644,11 +2670,52 @@ public sealed interface Op {
         @Override public int hashCode() { return System.identityHashCode(this); }
         @Override public int interpret(InterpContext ctx, int pc) {
             Object b = receiver.retrieve(ctx);
-            // Method lookup: own + proto walk for the named property.
-            Object fnVal;
+            // Shape-keyed IC for method lookup. Class methods live on the
+            // prototype — without this, every method call repeats a full
+            // proto walk + map probe.
+            Object fnVal = null;
             if (b instanceof JSObject obj
                     && (property.isEmpty() || property.charAt(0) != '#')) {
-                fnVal = obj.get(property);
+                Shape s = obj.shape();
+                int slot = lookupCache.lookup(s);
+                if (slot >= 0) {
+                    Object owner = lookupCache.ownerOf();
+                    if (owner == null) {
+                        fnVal = obj.getDirect(slot);
+                    } else if (owner instanceof JSObject oj
+                                && oj.shape() == lookupCache.ownerShapeOf()) {
+                        fnVal = oj.getDirect(slot);
+                    }
+                }
+                if (fnVal == null) {
+                    // Miss: walk own then proto chain, installing on a hit.
+                    Shape.PropertyMeta meta = s.lookup(property);
+                    if (meta != null) {
+                        Object v = obj.getDirect(meta.offset());
+                        if (!(v instanceof Accessor)) {
+                            lookupCache.install(s, meta.offset());
+                            fnVal = v;
+                        } else {
+                            fnVal = v;
+                        }
+                    } else {
+                        JSObject cursor = obj.proto();
+                        while (cursor != null) {
+                            Shape cs = cursor.shape();
+                            Shape.PropertyMeta cm = cs.lookup(property);
+                            if (cm != null) {
+                                Object v = cursor.getDirect(cm.offset());
+                                if (!(v instanceof Accessor)) {
+                                    lookupCache.installProto(s, cursor, cs, cm.offset());
+                                }
+                                fnVal = v;
+                                break;
+                            }
+                            cursor = cursor.proto();
+                        }
+                        if (fnVal == null) fnVal = Undefined.VALUE;
+                    }
+                }
             } else {
                 fnVal = AbstractOps.getProperty(b, property);
             }
