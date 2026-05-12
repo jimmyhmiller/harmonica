@@ -590,6 +590,18 @@ public final class Generator {
      */
     private boolean atTopLevel = true;
 
+    /**
+     * True for the Generator running a user function body (set in
+     * {@code generateFunction}). Used to gate the per-expression-statement
+     * Mov-to-completionReg: function bodies can't observe statement
+     * completion values — a function only returns via explicit {@code return}
+     * — so the completion-tracking machinery is wasted work. Scripts and
+     * direct-eval bodies stay {@code false} (their completion values are
+     * observable by the host: scripts via the program-level return,
+     * eval via its return value).
+     */
+    private boolean inFunctionBody = false;
+
     Generator() {}
 
     /**
@@ -799,6 +811,7 @@ public final class Generator {
     ) {
         Generator g = new Generator();
         g.atTopLevel = false;
+        g.inFunctionBody = true;
         g.isArrow = isArrow;
         g.globalNames.addAll(this.globalNames);
         g.parent = this;
@@ -2089,7 +2102,11 @@ public final class Generator {
         }
         Operand v = lowerExpression(es.expression());
         Variable.Register completionReg = currentCompletionReg();
-        if (completionReg != null) {
+        // Function bodies can't observe statement completion (only explicit
+        // `return` exits), so skip the per-statement Mov-to-completionReg.
+        // For scripts and direct eval, the completion is the host-visible
+        // result so keep the write.
+        if (completionReg != null && !inFunctionBody) {
             emit(new Op.Mov(completionReg, v));
             // In a compound body that contains a nested block, leak the
             // call dst (don't release) so subsequent expression statements
