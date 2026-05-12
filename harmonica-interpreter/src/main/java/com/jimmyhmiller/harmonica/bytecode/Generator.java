@@ -863,6 +863,12 @@ public final class Generator {
                 g.emit(new Op.CreateRestParams(restArr, i));
                 g.bindPattern(rest.argument(), restArr, BindMode.LOCAL);
                 g.release(restArr);
+            } else if (p instanceof Identifier id) {
+                // Fast path: plain identifier parameter binds directly from
+                // its argument slot to the named local, skipping the
+                // intermediate Register that the destructuring path needs.
+                // Cuts one Mov per simple parameter on every function entry.
+                g.bindPattern(id, new Variable.Argument(i), BindMode.LOCAL);
             } else {
                 Variable.Register paramReg = g.allocRegister();
                 g.emit(new Op.Mov(paramReg, new Variable.Argument(i)));
@@ -1196,6 +1202,8 @@ public final class Generator {
                 new Op.CallCharCodeAt(newDst, o.receiver(), o.index());
             case Op.CallCharAt o when o.dst().equals(expectedDst) ->
                 new Op.CallCharAt(newDst, o.receiver(), o.index());
+            case Op.CallStringSlice o when o.dst().equals(expectedDst) ->
+                new Op.CallStringSlice(newDst, o.receiver(), o.startArg(), o.endArg());
             default -> null;
         };
     }
@@ -8056,20 +8064,20 @@ public final class Generator {
             return dst;
         }
         // Specialized-builtin fast path (LibJS-style). When the call shape is
-        // `<expr>.charCodeAt(<expr>)` or `<expr>.charAt(<expr>)`, emit a
-        // dedicated opcode that inlines the operation when the receiver is a
-        // String. Acorn's tokenizer dispatches charCodeAt in a tight loop, and
-        // the specialized op skips GetById + Op.Call + invokeFunctionImpl +
-        // native trampoline per call.
+        // `<expr>.charCodeAt(<expr>)`, `<expr>.charAt(<expr>)`, or
+        // `<expr>.slice(start[, end])`, emit a dedicated opcode that inlines
+        // the operation when the receiver is a String. Acorn's tokenizer
+        // dispatches charCodeAt and slice in tight loops, and the specialized
+        // ops skip GetById + Op.Call + invokeFunctionImpl + native trampoline.
         if (call.callee() instanceof MemberExpression me
             && !me.computed()
             && me.property() instanceof Identifier propId
             && !(me.object() instanceof Super)
-            && call.arguments().size() == 1
-            && !(call.arguments().get(0) instanceof SpreadElement)
             && !call.optional()) {
             String name = propId.name();
-            if ("charCodeAt".equals(name) || "charAt".equals(name)) {
+            int nargs = call.arguments().size();
+            boolean noSpread = call.arguments().stream().noneMatch(a -> a instanceof SpreadElement);
+            if (noSpread && nargs == 1 && ("charCodeAt".equals(name) || "charAt".equals(name))) {
                 Operand recvOp = lowerExpression(me.object());
                 Operand idxOp = lowerExpression(call.arguments().get(0));
                 if ("charCodeAt".equals(name)) {
@@ -8078,6 +8086,16 @@ public final class Generator {
                     emit(new Op.CallCharAt(dst, recvOp, idxOp));
                 }
                 release(idxOp);
+                release(recvOp);
+                return dst;
+            }
+            if (noSpread && (nargs == 1 || nargs == 2) && "slice".equals(name)) {
+                Operand recvOp = lowerExpression(me.object());
+                Operand startOp = lowerExpression(call.arguments().get(0));
+                Operand endOp = (nargs == 2) ? lowerExpression(call.arguments().get(1)) : null;
+                emit(new Op.CallStringSlice(dst, recvOp, startOp, endOp));
+                if (endOp != null) release(endOp);
+                release(startOp);
                 release(recvOp);
                 return dst;
             }

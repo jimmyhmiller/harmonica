@@ -2605,6 +2605,52 @@ public sealed interface Op {
     }
 
     /**
+     * Specialized call: {@code receiver.slice(start)} or
+     * {@code receiver.slice(start, end)} when {@code receiver} is a String
+     * (acorn extracts token text from {@code this.input} this way 36 times
+     * in its source — every parsed identifier / number / string literal).
+     * Spec § 22.1.3.27: negative indices are relative to length; out-of-range
+     * indices clamp; missing end means "to length".
+     */
+    record CallStringSlice(Variable dst, Operand receiver, Operand startArg, Operand endArg) implements Op {
+        @Override public Operation operation() { return Operation.CALL; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            Object base = receiver.retrieve(ctx);
+            Object startVal = startArg.retrieve(ctx);
+            Object endVal = endArg == null ? Undefined.VALUE : endArg.retrieve(ctx);
+            if (base instanceof String s
+                && startVal instanceof Number sn
+                && (endVal == Undefined.VALUE || endVal instanceof Number)) {
+                int len = s.length();
+                int from = clampSliceIndex(sn.doubleValue(), len);
+                int to = (endVal == Undefined.VALUE)
+                    ? len
+                    : clampSliceIndex(((Number) endVal).doubleValue(), len);
+                if (to < from) to = from;
+                dst.store(ctx, s.substring(from, to));
+                return pc + 1;
+            }
+            // Fallback: spec-compliant call through the string prototype.
+            Object fn = AbstractOps.getProperty(base, "slice");
+            if (!(fn instanceof JSFunction f)) {
+                throw AbruptCompletion.typeError("not callable: " + fn);
+            }
+            Object[] args = (endArg == null)
+                ? new Object[]{startVal}
+                : new Object[]{startVal, endVal};
+            dst.store(ctx, Interpreter.invokeFunction(f, base, args, ctx));
+            return pc + 1;
+        }
+        private static int clampSliceIndex(double idx, int len) {
+            if (Double.isNaN(idx)) return 0;
+            int i = (int) idx;
+            if (idx < 0) i = Math.max(len + i, 0);
+            else i = Math.min(i, len);
+            return i;
+        }
+    }
+
+    /**
      * Direct {@code eval(...)} call. ES spec requires the eval'd code to see
      * the calling lexical scope, so this is a distinct opcode. Emitted by
      * the generator only when the callee is the unqualified Identifier

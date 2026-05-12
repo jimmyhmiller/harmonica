@@ -227,6 +227,10 @@ public final class Disassembler {
             case Op.CallCharAt o     -> "CallCharAt " + dst(o.dst())
                                         + ", receiver:" + operand(o.receiver(), exe)
                                         + ", index:" + operand(o.index(), exe);
+            case Op.CallStringSlice o -> "CallStringSlice " + dst(o.dst())
+                                        + ", receiver:" + operand(o.receiver(), exe)
+                                        + ", start:" + operand(o.startArg(), exe)
+                                        + (o.endArg() != null ? ", end:" + operand(o.endArg(), exe) : "");
 
             case Op.NewFunction o    -> "NewFunction " + dst(o.dst())
                                         + ", shared_function_data_index:" + o.sharedFunctionDataIndex()
