@@ -10316,6 +10316,7 @@ expressions/property-accessors/S11.2.1_A1.2.js
 expressions/property-accessors/S11.2.1_A2.js
 expressions/property-accessors/S11.2.1_A3_T1.js
 expressions/property-accessors/S11.2.1_A3_T2.js
+expressions/property-accessors/S11.2.1_A3_T3.js
 expressions/property-accessors/S11.2.1_A3_T4.js
 expressions/property-accessors/S11.2.1_A3_T5.js
 expressions/property-accessors/S11.2.1_A4_T1.js

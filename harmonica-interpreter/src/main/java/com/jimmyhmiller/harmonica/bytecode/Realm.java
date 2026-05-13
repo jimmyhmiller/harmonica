@@ -2322,12 +2322,13 @@ public final class Realm {
             else if (a[0] instanceof JSSymbol sym && !Interpreter.isNewCall()) s = sym.toString();
             else s = AbstractOps.toString(a[0]);
             if (!Interpreter.isNewCall()) return s;
-            if (t instanceof JSObject wrapper) {
-                wrapper.properties().put(SLOT_STRING_DATA, s);
-                return wrapper;
-            }
-            JSObject wrapper = new JSObject(stringPrototype);
+            // ECMA-262 § 22.1.4.1: a String exotic object has an own `length`
+            // property with attrs { writable:false, enumerable:false,
+            // configurable:false } that reflects the underlying [[StringData]].
+            JSObject wrapper = (t instanceof JSObject jo) ? jo : new JSObject(stringPrototype);
             wrapper.properties().put(SLOT_STRING_DATA, s);
+            wrapper.set("length", (double) s.length());
+            wrapper.setAttributes("length", (byte) 0);
             return wrapper;
         });
         stringCtor.setPrototypeObject(stringPrototype);
