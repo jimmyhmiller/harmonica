@@ -1249,6 +1249,68 @@ public sealed interface Op {
         @Override public Operation operation() { return Operation.INITIALIZE_LEXICAL_BINDING; }
         @Override public int interpret(InterpContext ctx, int pc) {
             ctx.globals().put(identifier, src.retrieve(ctx));
+            // Mark as a lexical binding so subsequent SetGlobal writes don't
+            // mirror onto the global object (ECMA-262 § 9.3: lexical bindings
+            // live in the Global/Module Environment Record, not the global
+            // object's property table).
+            @SuppressWarnings("unchecked")
+            java.util.Set<String> lex = (java.util.Set<String>) ctx.globals().get(LEXICAL_NAMES);
+            if (lex == null) {
+                lex = new java.util.HashSet<>();
+                ctx.globals().put(LEXICAL_NAMES, lex);
+            }
+            lex.add(identifier);
+            return pc + 1;
+        }
+    }
+
+    /** Sentinel key under which globals stores the {@code Set<String>} of
+     *  names that originated as lexical (let/const/class) bindings — read
+     *  by {@link SetGlobal} to suppress the globalThis mirror write. */
+    String LEXICAL_NAMES = "##LexicalBindingNames##";
+
+    /**
+     * Module-mode prelude: register top-level binding names as "lexical"
+     * (i.e. live in the Module Environment Record, NOT on the global
+     * object). Emitted once at module entry with every hoisted var, hoisted
+     * function, and top-level let/const/class name. Subsequent SetGlobal
+     * writes for these names skip the globalThis mirror so descriptor
+     * queries on globalThis observe undefined per ECMA-262 § 9.4.6.
+     */
+    record RegisterModuleNames(String[] names) implements Op {
+        @Override public Operation operation() { return Operation.INITIALIZE_LEXICAL_BINDING; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            @SuppressWarnings("unchecked")
+            java.util.Set<String> lex = (java.util.Set<String>) ctx.globals().get(LEXICAL_NAMES);
+            if (lex == null) {
+                lex = new java.util.HashSet<>();
+                ctx.globals().put(LEXICAL_NAMES, lex);
+            }
+            for (String n : names) lex.add(n);
+            return pc + 1;
+        }
+    }
+
+    /** Sentinel key for the {@code Set<String>} of names that are
+     *  immutable lexical bindings (top-level {@code const}). Read by
+     *  {@link SetGlobal} to throw TypeError on assignment. */
+    String CONST_NAMES = "##ConstBindingNames##";
+
+    /**
+     * Register top-level {@code const} names so assignments to them throw
+     * TypeError per ECMA-262 § 9.1.1.1.5 SetMutableBinding. Emitted in the
+     * module/script prelude alongside {@link RegisterModuleNames}.
+     */
+    record RegisterConstNames(String[] names) implements Op {
+        @Override public Operation operation() { return Operation.INITIALIZE_LEXICAL_BINDING; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            @SuppressWarnings("unchecked")
+            java.util.Set<String> consts = (java.util.Set<String>) ctx.globals().get(CONST_NAMES);
+            if (consts == null) {
+                consts = new java.util.HashSet<>();
+                ctx.globals().put(CONST_NAMES, consts);
+            }
+            for (String n : names) consts.add(n);
             return pc + 1;
         }
     }
@@ -1432,14 +1494,27 @@ public sealed interface Op {
                     throw AbruptCompletion.referenceError(identifier + " is not defined");
                 }
             }
+            // const immutability: assignment to a top-level const throws.
+            @SuppressWarnings("unchecked")
+            java.util.Set<String> consts = (java.util.Set<String>) ctx.globals().get(CONST_NAMES);
+            if (consts != null && consts.contains(identifier)) {
+                throw AbruptCompletion.typeError(
+                    "Assignment to constant variable '" + identifier + "'");
+            }
             ctx.globals().put(identifier, value);
             // Mirror onto globalThis so `globalThis.X` reads see the write —
             // matches ECMA-262 § 9.3's GlobalObject ↔ GlobalEnvironmentRecord
             // contract (the global object IS the binding store for "var" /
-            // unqualified writes, not a separate cache).
-            Object globalThisVal = ctx.globals().get("globalThis");
-            if (globalThisVal instanceof JSObject gt && gt != value) {
-                gt.set(identifier, value);
+            // unqualified writes, not a separate cache). Skip the mirror
+            // for names that originated as lexical bindings (let/const/class):
+            // those live in the Environment Record, not on the global object.
+            @SuppressWarnings("unchecked")
+            java.util.Set<String> lex = (java.util.Set<String>) ctx.globals().get(LEXICAL_NAMES);
+            if (lex == null || !lex.contains(identifier)) {
+                Object globalThisVal = ctx.globals().get("globalThis");
+                if (globalThisVal instanceof JSObject gt && gt != value) {
+                    gt.set(identifier, value);
+                }
             }
             return pc + 1;
         }

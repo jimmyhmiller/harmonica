@@ -210,6 +210,8 @@ public final class Disassembler {
             case Op.InitializeLexicalBinding o -> "InitializeLexicalBinding `" + o.identifier() + "`"
                                                   + ", src:" + operand(o.src(), exe);
             case Op.InitializeImportBinding o  -> "InitializeImportBinding `" + o.identifier() + "`";
+            case Op.RegisterModuleNames o      -> "RegisterModuleNames [" + String.join(", ", o.names()) + "]";
+            case Op.RegisterConstNames o       -> "RegisterConstNames [" + String.join(", ", o.names()) + "]";
             case Op.GetGlobal o      -> "GetGlobal " + dst(o.dst()) + ", `" + o.identifier() + "`";
             case Op.GetBinding o     -> "GetBinding " + dst(o.dst()) + ", `" + o.identifier() + "`";
             case Op.SetGlobal o      -> "SetGlobal `" + o.identifier() + "`, src:" + operand(o.src(), exe);

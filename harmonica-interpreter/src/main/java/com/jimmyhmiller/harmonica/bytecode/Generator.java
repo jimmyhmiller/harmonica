@@ -1444,6 +1444,22 @@ public final class Generator {
         }
     }
 
+    private static void collectTopLevelConstNames(java.util.List<Statement> body, java.util.Set<String> out) {
+        for (Statement s : body) {
+            if (s instanceof VariableDeclaration vd && "const".equals(vd.kind())) {
+                for (VariableDeclarator d : vd.declarations()) {
+                    collectIdentifierLeafNames(d.id(), out);
+                }
+            } else if (s instanceof ExportNamedDeclaration end
+                    && end.declaration() instanceof VariableDeclaration vd2
+                    && "const".equals(vd2.kind())) {
+                for (VariableDeclarator d : vd2.declarations()) {
+                    collectIdentifierLeafNames(d.id(), out);
+                }
+            }
+        }
+    }
+
     private static void collectIdentifierLeafNames(Node pattern, java.util.Set<String> out) {
         if (pattern instanceof Identifier id) {
             out.add(id.name());
@@ -1738,9 +1754,15 @@ public final class Generator {
         // Pre-pass: hoist top-level FunctionDeclarations. They're bound and
         // materialized at script-load time (matches LibJS) — no ops in the
         // body. Includes async/generator declarations, which are still
-        // hoisted by the same VarStatement-style hoisting rule.
+        // hoisted by the same VarStatement-style hoisting rule. Module
+        // mode: `export function foo()` lives inside an ExportNamedDeclaration
+        // but is still a hoistable function declaration per § 16.2.3.7.
         for (Statement s : program.body()) {
-            if (s instanceof FunctionDeclaration fd && fd.id() != null) {
+            FunctionDeclaration fd = null;
+            if (s instanceof FunctionDeclaration f) fd = f;
+            else if (s instanceof ExportNamedDeclaration end
+                    && end.declaration() instanceof FunctionDeclaration f) fd = f;
+            if (fd != null && fd.id() != null) {
                 String name = fd.id().name();
                 globalNames.add(name);
                 hoistedNames.add(name);
@@ -1757,6 +1779,44 @@ public final class Generator {
         // teardown before End.
         collectAnnexBFunctionDecls(program.body());
         boolean hasAnnexBFns = !annexBFunctionDecls.isEmpty();
+
+        // Module mode: register ALL top-level binding names (var, function,
+        // let/const/class) as lexical so SetGlobal writes don't mirror onto
+        // the global object. ECMA-262 § 9.4.6 ModuleEnvironmentRecord: a
+        // module's top-level bindings live in the Module Environment Record,
+        // not on globalThis. The TDZ pre-binding above already covers
+        // let/const/class names; this op covers the var + function names
+        // that go through hoistedVarNames / hoistedFunctions at interpret
+        // bootstrap.
+        if (moduleMode) {
+            java.util.LinkedHashSet<String> allTopLevel = new java.util.LinkedHashSet<>();
+            allTopLevel.addAll(hoistedVarNames);
+            for (Executable.HoistedFunction h : hoistedFunctions) allTopLevel.add(h.name());
+            collectTopLevelLexicalNames(program.body(), allTopLevel);
+            // Also collect export-named declarations' var bindings: `export var x`.
+            for (Statement s : program.body()) {
+                if (s instanceof ExportNamedDeclaration end
+                        && end.declaration() instanceof VariableDeclaration vd
+                        && "var".equals(vd.kind())) {
+                    for (VariableDeclarator d : vd.declarations()) {
+                        collectIdentifierLeafNames(d.id(), allTopLevel);
+                    }
+                }
+            }
+            if (!allTopLevel.isEmpty()) {
+                emit(new Op.RegisterModuleNames(allTopLevel.toArray(new String[0])));
+            }
+        }
+        // Const immutability: track top-level const names so SetGlobal throws
+        // TypeError on assignment. Applies to script and module mode; we
+        // detect them in both with the same walker.
+        {
+            java.util.LinkedHashSet<String> constNames = new java.util.LinkedHashSet<>();
+            collectTopLevelConstNames(program.body(), constNames);
+            if (!constNames.isEmpty()) {
+                emit(new Op.RegisterConstNames(constNames.toArray(new String[0])));
+            }
+        }
 
         // Pre-pass: save the lexical environment up-front if the body
         // contains any try-statement, named function expression, class
@@ -1824,6 +1884,14 @@ public final class Generator {
             if (s instanceof FunctionDeclaration fd && fd.id() != null
                 && hoistedNames.contains(fd.id().name())) {
                 continue;   // already hoisted
+            }
+            // `export function foo() {...}` — hoisted via the unwrap in the
+            // function-decl pre-pass, so skip the body-time re-emit.
+            if (s instanceof ExportNamedDeclaration end
+                    && end.declaration() instanceof FunctionDeclaration fd2
+                    && fd2.id() != null
+                    && hoistedNames.contains(fd2.id().name())) {
+                continue;
             }
             Operand value = lowerStatement(s);
             if (value != null) {
@@ -2397,6 +2465,14 @@ public final class Generator {
         for (Statement s : stmts) {
             if (s instanceof VariableDeclaration vd && "var".equals(vd.kind())) {
                 for (VariableDeclarator d : vd.declarations()) {
+                    collectVarNames(d.id());
+                }
+            }
+            // Module mode: `export var foo = ...` hoists like a plain `var`.
+            else if (s instanceof ExportNamedDeclaration end
+                    && end.declaration() instanceof VariableDeclaration vd2
+                    && "var".equals(vd2.kind())) {
+                for (VariableDeclarator d : vd2.declarations()) {
                     collectVarNames(d.id());
                 }
             }

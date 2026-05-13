@@ -1224,6 +1224,7 @@ expressions/assignment/dstr/array-elem-nested-obj-yield-expr.js
 expressions/assignment/dstr/array-elem-nested-obj-yield-ident-invalid.js
 expressions/assignment/dstr/array-elem-nested-obj-yield-ident-valid.js
 expressions/assignment/dstr/array-elem-nested-obj.js
+expressions/assignment/dstr/array-elem-put-const.js
 expressions/assignment/dstr/array-elem-put-obj-literal-optchain-prop-ref-init.js
 expressions/assignment/dstr/array-elem-put-obj-literal-prop-ref-init-active.js
 expressions/assignment/dstr/array-elem-put-obj-literal-prop-ref-init.js
@@ -1306,6 +1307,7 @@ expressions/assignment/dstr/array-rest-nested-obj-yield-expr.js
 expressions/assignment/dstr/array-rest-nested-obj-yield-ident-invalid.js
 expressions/assignment/dstr/array-rest-nested-obj-yield-ident-valid.js
 expressions/assignment/dstr/array-rest-nested-obj.js
+expressions/assignment/dstr/array-rest-put-const.js
 expressions/assignment/dstr/array-rest-put-prop-ref-no-get.js
 expressions/assignment/dstr/array-rest-put-prop-ref-user-err-iter-close-skip.js
 expressions/assignment/dstr/array-rest-put-prop-ref-user-err.js
@@ -1393,6 +1395,7 @@ expressions/assignment/dstr/obj-id-init-simple-strict.js
 expressions/assignment/dstr/obj-id-init-yield-expr.js
 expressions/assignment/dstr/obj-id-init-yield-ident-invalid.js
 expressions/assignment/dstr/obj-id-init-yield-ident-valid.js
+expressions/assignment/dstr/obj-id-put-const.js
 expressions/assignment/dstr/obj-id-put-unresolvable-no-strict.js
 expressions/assignment/dstr/obj-id-put-unresolvable-strict.js
 expressions/assignment/dstr/obj-id-simple-no-strict.js
@@ -1443,6 +1446,7 @@ expressions/assignment/dstr/obj-prop-nested-obj-yield-expr.js
 expressions/assignment/dstr/obj-prop-nested-obj-yield-ident-invalid.js
 expressions/assignment/dstr/obj-prop-nested-obj-yield-ident-valid.js
 expressions/assignment/dstr/obj-prop-nested-obj.js
+expressions/assignment/dstr/obj-prop-put-const.js
 expressions/assignment/dstr/obj-prop-put-order.js
 expressions/assignment/dstr/obj-prop-put-prop-ref-no-get.js
 expressions/assignment/dstr/obj-prop-put-prop-ref-user-err.js
@@ -1464,6 +1468,7 @@ expressions/assignment/dstr/obj-rest-non-string-computed-property-array-1e0.js
 expressions/assignment/dstr/obj-rest-non-string-computed-property-string-1.js
 expressions/assignment/dstr/obj-rest-not-last-element-invalid.js
 expressions/assignment/dstr/obj-rest-number.js
+expressions/assignment/dstr/obj-rest-put-const.js
 expressions/assignment/dstr/obj-rest-same-name.js
 expressions/assignment/dstr/obj-rest-skip-non-enumerable.js
 expressions/assignment/dstr/obj-rest-str-val.js
@@ -10932,6 +10937,7 @@ global-code/S10.1.7_A1_T1.js
 global-code/S10.4.1_A1_T2.js
 global-code/decl-func-dup.js
 global-code/decl-lex-deletion.js
+global-code/decl-lex.js
 global-code/export.js
 global-code/import.js
 global-code/invalid-private-names-call-expression-bad-reference.js
@@ -11862,11 +11868,21 @@ module-code/import-attributes/early-dup-attribute-key-export.js
 module-code/import-attributes/early-dup-attribute-key-import-nobinding.js
 module-code/import-attributes/early-dup-attribute-key-import-withbinding.js
 module-code/instn-iee-iee-cycle.js
+module-code/instn-local-bndng-cls.js
+module-code/instn-local-bndng-const.js
 module-code/instn-local-bndng-export-cls.js
 module-code/instn-local-bndng-export-const.js
+module-code/instn-local-bndng-export-fun.js
+module-code/instn-local-bndng-export-gen.js
 module-code/instn-local-bndng-export-let.js
+module-code/instn-local-bndng-export-var.js
 module-code/instn-local-bndng-for-dup.js
+module-code/instn-local-bndng-for.js
+module-code/instn-local-bndng-fun.js
+module-code/instn-local-bndng-gen.js
+module-code/instn-local-bndng-let.js
 module-code/instn-local-bndng-var-dup.js
+module-code/instn-local-bndng-var.js
 module-code/instn-once.js
 module-code/instn-uniq-env-rec.js
 module-code/invalid-private-names-call-expression-bad-reference.js
@@ -12079,6 +12095,18 @@ module-code/top-level-await/syntax/export-lex-decl-await-expr-obj-literal.js
 module-code/top-level-await/syntax/export-lex-decl-await-expr-regexp.js
 module-code/top-level-await/syntax/export-lex-decl-await-expr-template-literal.js
 module-code/top-level-await/syntax/export-lex-decl-await-expr-this.js
+module-code/top-level-await/syntax/export-var-await-expr-array-literal.js
+module-code/top-level-await/syntax/export-var-await-expr-func-expression.js
+module-code/top-level-await/syntax/export-var-await-expr-identifier.js
+module-code/top-level-await/syntax/export-var-await-expr-literal-number.js
+module-code/top-level-await/syntax/export-var-await-expr-literal-string.js
+module-code/top-level-await/syntax/export-var-await-expr-nested.js
+module-code/top-level-await/syntax/export-var-await-expr-new-expr.js
+module-code/top-level-await/syntax/export-var-await-expr-null.js
+module-code/top-level-await/syntax/export-var-await-expr-obj-literal.js
+module-code/top-level-await/syntax/export-var-await-expr-regexp.js
+module-code/top-level-await/syntax/export-var-await-expr-template-literal.js
+module-code/top-level-await/syntax/export-var-await-expr-this.js
 module-code/top-level-await/syntax/for-await-await-expr-array-literal.js
 module-code/top-level-await/syntax/for-await-await-expr-func-expression.js
 module-code/top-level-await/syntax/for-await-await-expr-identifier.js
@@ -17055,6 +17083,7 @@ statements/for-await-of/async-func-decl-dstr-array-elem-nested-obj-undefined.js
 statements/for-await-of/async-func-decl-dstr-array-elem-nested-obj-yield-ident-invalid.js
 statements/for-await-of/async-func-decl-dstr-array-elem-nested-obj-yield-ident-valid.js
 statements/for-await-of/async-func-decl-dstr-array-elem-nested-obj.js
+statements/for-await-of/async-func-decl-dstr-array-elem-put-const.js
 statements/for-await-of/async-func-decl-dstr-array-elem-put-prop-ref-no-get.js
 statements/for-await-of/async-func-decl-dstr-array-elem-put-prop-ref-user-err.js
 statements/for-await-of/async-func-decl-dstr-array-elem-put-prop-ref.js
@@ -17650,6 +17679,7 @@ statements/for-await-of/async-gen-decl-dstr-array-elem-nested-obj-undefined-own.
 statements/for-await-of/async-gen-decl-dstr-array-elem-nested-obj-undefined.js
 statements/for-await-of/async-gen-decl-dstr-array-elem-nested-obj-yield-expr.js
 statements/for-await-of/async-gen-decl-dstr-array-elem-nested-obj.js
+statements/for-await-of/async-gen-decl-dstr-array-elem-put-const.js
 statements/for-await-of/async-gen-decl-dstr-array-elem-put-prop-ref-no-get.js
 statements/for-await-of/async-gen-decl-dstr-array-elem-put-prop-ref-user-err.js
 statements/for-await-of/async-gen-decl-dstr-array-elem-put-prop-ref.js
@@ -18413,6 +18443,7 @@ statements/for-of/dstr/array-elem-nested-obj-yield-expr.js
 statements/for-of/dstr/array-elem-nested-obj-yield-ident-invalid.js
 statements/for-of/dstr/array-elem-nested-obj-yield-ident-valid.js
 statements/for-of/dstr/array-elem-nested-obj.js
+statements/for-of/dstr/array-elem-put-const.js
 statements/for-of/dstr/array-elem-put-obj-literal-optchain-prop-ref-init.js
 statements/for-of/dstr/array-elem-put-obj-literal-prop-ref-init-active.js
 statements/for-of/dstr/array-elem-put-obj-literal-prop-ref-init.js
@@ -18495,6 +18526,7 @@ statements/for-of/dstr/array-rest-nested-obj-yield-expr.js
 statements/for-of/dstr/array-rest-nested-obj-yield-ident-invalid.js
 statements/for-of/dstr/array-rest-nested-obj-yield-ident-valid.js
 statements/for-of/dstr/array-rest-nested-obj.js
+statements/for-of/dstr/array-rest-put-const.js
 statements/for-of/dstr/array-rest-put-prop-ref-no-get.js
 statements/for-of/dstr/array-rest-put-prop-ref-user-err-iter-close-skip.js
 statements/for-of/dstr/array-rest-put-prop-ref-user-err.js
@@ -18731,6 +18763,7 @@ statements/for-of/dstr/obj-id-init-simple-strict.js
 statements/for-of/dstr/obj-id-init-yield-expr.js
 statements/for-of/dstr/obj-id-init-yield-ident-invalid.js
 statements/for-of/dstr/obj-id-init-yield-ident-valid.js
+statements/for-of/dstr/obj-id-put-const.js
 statements/for-of/dstr/obj-id-put-unresolvable-no-strict.js
 statements/for-of/dstr/obj-id-put-unresolvable-strict.js
 statements/for-of/dstr/obj-id-simple-no-strict.js
@@ -18781,6 +18814,7 @@ statements/for-of/dstr/obj-prop-nested-obj-yield-expr.js
 statements/for-of/dstr/obj-prop-nested-obj-yield-ident-invalid.js
 statements/for-of/dstr/obj-prop-nested-obj-yield-ident-valid.js
 statements/for-of/dstr/obj-prop-nested-obj.js
+statements/for-of/dstr/obj-prop-put-const.js
 statements/for-of/dstr/obj-prop-put-order.js
 statements/for-of/dstr/obj-prop-put-prop-ref-no-get.js
 statements/for-of/dstr/obj-prop-put-prop-ref-user-err.js
@@ -18802,6 +18836,7 @@ statements/for-of/dstr/obj-rest-non-string-computed-property-array-1e0.js
 statements/for-of/dstr/obj-rest-non-string-computed-property-string-1.js
 statements/for-of/dstr/obj-rest-not-last-element-invalid.js
 statements/for-of/dstr/obj-rest-number.js
+statements/for-of/dstr/obj-rest-put-const.js
 statements/for-of/dstr/obj-rest-same-name.js
 statements/for-of/dstr/obj-rest-skip-non-enumerable.js
 statements/for-of/dstr/obj-rest-str-val.js
