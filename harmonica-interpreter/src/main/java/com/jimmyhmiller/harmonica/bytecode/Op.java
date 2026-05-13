@@ -2023,8 +2023,20 @@ public sealed interface Op {
                 // Tests assert args.length === 1.
                 Object[] callArgs = new Object[]{ctx.lastResumedValue()};
                 Object result = Interpreter.invokeFunction(nfn, iter, callArgs, ctx);
-                if (ctx.delegatedIsAsync() && Realm.isPromise(result)) {
-                    JSObject p = (JSObject) result;
+                // ECMA-262 Await: when in async-iterator delegation, wrap
+                // {@code result} via Promise.resolve, which performs
+                // thenable assimilation. Real Promises short-circuit;
+                // thenables call their {@code then} (or rethrow if the
+                // {@code then} getter is itself abrupt) and the inspected
+                // settled state gives us {value, done} or a rejection.
+                if (ctx.delegatedIsAsync()) {
+                    JSObject p;
+                    if (Realm.isPromise(result)) {
+                        p = (JSObject) result;
+                    } else {
+                        p = Realm.createPromise();
+                        Realm.resolvePromise(p, result, ctx);
+                    }
                     String state = (String) p.properties().get(Realm.PROM_STATE);
                     Object inner = p.properties().get(Realm.PROM_RESULT);
                     if ("fulfilled".equals(state)) result = inner;
@@ -2554,19 +2566,27 @@ public sealed interface Op {
             }
             Object result = Interpreter.invokeFunction(fn, obj, new Object[0], ctx);
             // ECMA-262 § 14.7.5.3 for-await-of step 1.b.i: Await the
-            // iterator-result Promise (or pass through a sync value).
-            // Our Promises are synchronous, so {@code Op.Await} just
-            // unwraps inline; do the same here.
-            if (isAwait && Realm.isPromise(result)) {
-                JSObject p = (JSObject) result;
-                String state = (String) p.properties().get(Realm.PROM_STATE);
-                Object inner = p.properties().get(Realm.PROM_RESULT);
-                if ("fulfilled".equals(state)) {
-                    result = inner;
-                } else if ("rejected".equals(state)) {
-                    throw new AbruptCompletion(inner);
+            // iterator-result Promise. {@code Promise.resolve} performs
+            // thenable assimilation (a non-Promise object with a
+            // callable {@code .then} gets adopted), so wrap the result
+            // in a fresh promise and inspect its settled state. Real
+            // Promises short-circuit through {@code resolvePromise}.
+            if (isAwait) {
+                JSObject p;
+                if (Realm.isPromise(result)) {
+                    p = (JSObject) result;
+                } else if (result instanceof JSObject) {
+                    p = Realm.createPromise();
+                    Realm.resolvePromise(p, result, ctx);
                 } else {
-                    throw AbruptCompletion.typeError(
+                    p = null;
+                }
+                if (p != null) {
+                    String state = (String) p.properties().get(Realm.PROM_STATE);
+                    Object inner = p.properties().get(Realm.PROM_RESULT);
+                    if ("fulfilled".equals(state)) result = inner;
+                    else if ("rejected".equals(state)) throw new AbruptCompletion(inner);
+                    else throw AbruptCompletion.typeError(
                         "for-await: iterator.next() returned a still-pending Promise");
                 }
             }

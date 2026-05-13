@@ -326,10 +326,10 @@ public final class Test262ExecRunner {
         // Async tests: an injected {@code $DONE} keeps dynamic-import
         // promise chains from blowing up on undefined, but we don't
         // (yet) observe the {@code $DONE(error)} signal — strict-mode
-        // observation still surfaces ~400 unrelated bugs (e.g. default
-        // param TDZ, thenable assimilation, async-generator throw-arg
-        // semantics) that each need their own fix. Until those land,
-        // lean soft so the visible test count keeps growing.
+        // observation still surfaces ~378 unrelated bugs (generator
+        // return/throw forwarding through yield*, default param TDZ,
+        // async-from-sync wrapper) that each need their own fix. Until
+        // those land, lean soft so the visible test count keeps growing.
         return new TestResult(file, Outcome.PASS, "");
     }
 
