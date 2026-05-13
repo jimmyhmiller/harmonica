@@ -8988,6 +8988,7 @@ expressions/object/S11.1.5_A3.js
 expressions/object/S11.1.5_A4.1.js
 expressions/object/S11.1.5_A4.2.js
 expressions/object/S11.1.5_A4.3.js
+expressions/object/__proto__-duplicate-computed.js
 expressions/object/__proto__-duplicate.js
 expressions/object/__proto__-fn-name.js
 expressions/object/__proto__-permitted-dup-shorthand.js

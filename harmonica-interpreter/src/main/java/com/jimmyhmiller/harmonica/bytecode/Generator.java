@@ -9074,13 +9074,13 @@ public final class Generator {
                         "Generator: unsupported object-literal key type " + prop.key().getClass().getSimpleName());
                 }
                 // ECMA-262 § B.3.1 __proto__ Property Names in Object
-                // Initializers: a non-computed, non-shorthand
-                // {@code __proto__: value} pair sets the object's
-                // [[Prototype]] when value is Object or Null; otherwise
-                // it's a no-op. The shorthand {@code {__proto__}} form
-                // creates a regular property — it goes through the
-                // normal InitObjectLiteralProperty path below.
-                if ("__proto__".equals(keyStr) && !prop.method() && !prop.shorthand()) {
+                // Initializers: a non-computed, non-shorthand,
+                // non-method {@code __proto__: value} pair sets the
+                // object's [[Prototype]] when value is Object or Null;
+                // otherwise it's a no-op. Computed {@code ['__proto__']}
+                // and shorthand {@code {__proto__}} create a regular
+                // property and fall through to InitObjectLiteralProperty.
+                if ("__proto__".equals(keyStr) && !prop.computed() && !prop.method() && !prop.shorthand()) {
                     emit(new Op.SetProtoOrNop(dst, asRegister(v)));
                 } else if (forceOwn) {
                     // Accessor present, runtime-computed key, or numeric
