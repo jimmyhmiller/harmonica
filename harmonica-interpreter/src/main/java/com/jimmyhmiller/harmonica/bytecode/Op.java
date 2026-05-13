@@ -1940,10 +1940,15 @@ public sealed interface Op {
         @Override public Operation operation() { return Operation.GET_SUPER_CONSTRUCTOR; }
         @Override public int interpret(InterpContext ctx, int pc) {
             Object sup = ctx.superConstructor();
-            if (sup == null) {
-                throw AbruptCompletion.syntaxError("'super' keyword is only valid inside a derived class constructor");
-            }
-            dst.store(ctx, sup);
+            // Returning {@code null} here flows the right TypeError out
+            // of the subsequent property dispatch for {@code class C
+            // extends null} (and for classes with no extends, until
+            // [[HomeObject]] tracking lands so {@code super.X} can
+            // resolve to {@code Object.prototype.X}). The previous
+            // SyntaxError was a v1 placeholder that only applies to
+            // {@code super(...)} in a non-derived constructor — and
+            // that's already enforced at parse time.
+            dst.store(ctx, sup == null ? Undefined.VALUE : sup);
             return pc + 1;
         }
     }
