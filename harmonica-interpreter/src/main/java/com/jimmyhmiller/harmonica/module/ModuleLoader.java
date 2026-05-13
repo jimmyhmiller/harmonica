@@ -222,14 +222,20 @@ public final class ModuleLoader {
         };
 
         rec.phase = ModuleRecord.Phase.EVALUATING;
-        try {
+        // See note in evaluateEsm: let AbruptCompletion propagate so the
+        // caller (dynamic-import) can wrap the original error value in a
+        // rejected promise.
+        if (Boolean.getBoolean("harmonica.cli.trace")) {
+            try {
+                Interpreter.invokeFunction(wrapperFn, Undefined.VALUE, args,
+                    new com.jimmyhmiller.harmonica.bytecode.InterpContext(exe, args, 64, wrapperGlobals));
+            } catch (AbruptCompletion ac) {
+                ac.printStackTrace();
+                throw ac;
+            }
+        } else {
             Interpreter.invokeFunction(wrapperFn, Undefined.VALUE, args,
                 new com.jimmyhmiller.harmonica.bytecode.InterpContext(exe, args, 64, wrapperGlobals));
-        } catch (AbruptCompletion ac) {
-            IOException io = new IOException("Module evaluation threw: "
-                + abruptDescribe(ac) + " (in " + rec.path + ")");
-            if (Boolean.getBoolean("harmonica.cli.trace")) ac.printStackTrace();
-            throw io;
         }
         moduleObj.set("loaded", Boolean.TRUE);
 
@@ -348,14 +354,12 @@ public final class ModuleLoader {
         rebuildNamespace(rec);
 
         rec.phase = ModuleRecord.Phase.EVALUATING;
-        try {
-            Interpreter.interpret(exe, new Object[0], 64, rec.moduleGlobals);
-        } catch (AbruptCompletion ac) {
-            // Re-raise as IOException carrying a useful message; the caller
-            // (CLI / require / outer load) will format.
-            throw new IOException("Module evaluation threw: "
-                + abruptDescribe(ac) + " (in " + rec.path + ")");
-        }
+        // ECMA-262 § 16.2.1.5 ExecuteAsyncModule: an abrupt completion
+        // during the body's evaluation surfaces to the caller (dynamic
+        // import / static-link drive) so the original error value
+        // (URIError, custom, etc.) flows into the rejected promise.
+        // Don't wrap in IOException — that loses the value.
+        Interpreter.interpret(exe, new Object[0], 64, rec.moduleGlobals);
 
         // Re-build the namespace AFTER evaluation in case re-exports' source
         // namespaces have grown (no-op in the common case).

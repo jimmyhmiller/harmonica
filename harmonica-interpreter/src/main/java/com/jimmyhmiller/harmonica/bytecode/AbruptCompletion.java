@@ -27,6 +27,25 @@ public final class AbruptCompletion extends RuntimeException {
 
     public Object value() { return value; }
 
+    /**
+     * Host-visible message derived from the JS value. JSObject errors
+     * expose {@code name + ": " + message}; primitives stringify
+     * directly. Useful when an AbruptCompletion escapes into Java
+     * frames (e.g. a module loader's caller) that want to assert on
+     * the underlying JS error text.
+     */
+    @Override
+    public String getMessage() {
+        if (value instanceof JSObject jo) {
+            Object name = jo.get("name");
+            Object msg = jo.get("message");
+            String n = name == Undefined.VALUE || name == null ? "Error" : AbstractOps.toString(name);
+            String m = msg == Undefined.VALUE || msg == null ? "" : AbstractOps.toString(msg);
+            return m.isEmpty() ? n : n + ": " + m;
+        }
+        return value == null ? "null" : AbstractOps.toString(value);
+    }
+
     /** Build a JS Error-shaped JSObject for an internal runtime error. */
     private static AbruptCompletion error(String name, String msg) {
         // Link to the realm's error-type prototype so `.constructor`,
