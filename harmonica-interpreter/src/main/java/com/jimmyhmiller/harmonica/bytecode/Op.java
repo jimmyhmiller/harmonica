@@ -2179,7 +2179,11 @@ public sealed interface Op {
             if (Realm.wellKnownIterator != null && Realm.arrayPrototype != null) {
                 Object arrIter = Realm.arrayPrototype.get(Realm.wellKnownIterator.asPropertyKey());
                 if (arrIter != null && arrIter != Undefined.VALUE) {
-                    obj.set(Realm.wellKnownIterator.asPropertyKey(), arrIter);
+                    String iterKey = Realm.wellKnownIterator.asPropertyKey();
+                    obj.set(iterKey, arrIter);
+                    // ECMA-262 § 10.4.4 + § 10.4.5: arguments @@iterator is
+                    // { writable: true, enumerable: false, configurable: true }.
+                    obj.setAttributes(iterKey, (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
                 }
             }
             // Spec step 7 — strict-mode arguments installs a %ThrowTypeError%

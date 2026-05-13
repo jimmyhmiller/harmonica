@@ -192,12 +192,14 @@ arguments-object/gen-meth-args-trailing-comma-null.js
 arguments-object/gen-meth-args-trailing-comma-single-args.js
 arguments-object/gen-meth-args-trailing-comma-spread-operator.js
 arguments-object/gen-meth-args-trailing-comma-undefined.js
+arguments-object/mapped/Symbol.iterator.js
 arguments-object/mapped/nonwritable-nonenumerable-nonconfigurable-descriptors-set-by-define-property.js
 arguments-object/meth-args-trailing-comma-multiple.js
 arguments-object/meth-args-trailing-comma-null.js
 arguments-object/meth-args-trailing-comma-single-args.js
 arguments-object/meth-args-trailing-comma-spread-operator.js
 arguments-object/meth-args-trailing-comma-undefined.js
+arguments-object/unmapped/Symbol.iterator.js
 arguments-object/unmapped/via-params-dflt.js
 arguments-object/unmapped/via-params-dstr.js
 arguments-object/unmapped/via-params-rest.js
