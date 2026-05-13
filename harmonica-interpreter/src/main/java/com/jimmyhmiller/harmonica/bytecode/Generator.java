@@ -6802,11 +6802,12 @@ public final class Generator {
         int bodyEnd = currentPc();
         // Patch break/continue placeholders.
         for (int p : loop.pendingContinuePcs) patchJumpTarget(p, updateStart);
-        // Note: break inside for-of body should ideally route through the
-        // type-dispatcher (typeReg=BREAK), but for v1 we route directly to
-        // end_block. This is observably correct for non-iterator-yielding
-        // sources but skips IteratorClose on break — TODO.
-        for (int p : loop.pendingBreakPcs) patchJumpTarget(p, d.endBlockStart());
+        // {@code break} inside for-of must close the iterator (ECMA-262
+        // § 14.7.5.7 ForIn/OfBodyEvaluation step 7.b "break" — abrupt
+        // completion → AsyncIteratorClose / IteratorClose). Route break
+        // through a dedicated block (emitted just before throw_close
+        // below) that emits IteratorClose then jumps to end_block.
+        java.util.List<Integer> pendingBreakPcs = new java.util.ArrayList<>(loop.pendingBreakPcs);
 
         // Install exception handler: body PC range → catch_preamble.
         exceptionHandlers.add(new Executable.ExceptionHandler(bodyStart, bodyEnd, catchPc));
@@ -6825,6 +6826,18 @@ public final class Generator {
                 finishDeferredIteratorClose(ic);
                 it.remove();
             }
+        }
+
+        // ---- break_close ----
+        // Dedicated block for `break` inside the for-of body: close the
+        // iterator with a normal completion, then jump to end_block.
+        if (!pendingBreakPcs.isEmpty()) {
+            startNewBlock();
+            int breakClosePc = currentPc();
+            emit(new Op.IteratorClose(d.iter(), d.next(), d.doneIter(),
+                constant(Undefined.VALUE)));
+            emit(new Op.Jump(d.endBlockStart()));
+            for (int p : pendingBreakPcs) patchJumpTarget(p, breakClosePc);
         }
 
         // ---- block6 (throw_close) ----

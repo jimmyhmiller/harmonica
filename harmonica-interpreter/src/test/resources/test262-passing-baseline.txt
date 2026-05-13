@@ -19051,7 +19051,10 @@ statements/for-of/head-var-bound-names-in-stmt.js
 statements/for-of/head-var-bound-names-let.js
 statements/for-of/head-var-init.js
 statements/for-of/head-var-no-expr.js
+statements/for-of/iterator-close-non-throw-get-method-abrupt.js
+statements/for-of/iterator-close-non-throw-get-method-is-null.js
 statements/for-of/iterator-close-throw-get-method-non-callable.js
+statements/for-of/iterator-close-via-break.js
 statements/for-of/iterator-next-error.js
 statements/for-of/iterator-next-reference.js
 statements/for-of/iterator-next-result-done-attr.js
