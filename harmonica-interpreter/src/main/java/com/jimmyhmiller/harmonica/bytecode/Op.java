@@ -373,8 +373,51 @@ public sealed interface Op {
     record DeleteVariable(Variable dst, String identifier) implements Op {
         @Override public Operation operation() { return Operation.DELETE_VARIABLE; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            // v1: globals aren't yet a real JSObject so unbound names always
-            // succeed. Bound globals would also be deletable in non-strict.
+            // ECMA-262 § 13.5.1.2 The delete Operator: identifier references
+            // resolve through the EnvironmentRecord chain. Declarative
+            // bindings (var, function, let, const, class) are never
+            // deletable — return false. Global-object properties added via
+            // `globalThis.X = Y` or by unqualified writes ARE configurable
+            // and so deletable — fall through to JSObject.delete on globalThis.
+            // (Strict-mode catches `delete <ident>` at parse time.)
+            // 1. let/const/class bindings (LEX_NAMES) — false.
+            @SuppressWarnings("unchecked")
+            java.util.Set<String> lex = (java.util.Set<String>) ctx.globals().get(LEXICAL_NAMES);
+            if (lex != null && lex.contains(identifier)) {
+                dst.store(ctx, Boolean.FALSE);
+                return pc + 1;
+            }
+            // 2. hoisted var names — false.
+            if (ctx.executable() != null) {
+                for (String n : ctx.executable().hoistedVarNames()) {
+                    if (n.equals(identifier)) {
+                        dst.store(ctx, Boolean.FALSE);
+                        return pc + 1;
+                    }
+                }
+                // 3. hoisted function declarations — false.
+                for (com.jimmyhmiller.harmonica.bytecode.Executable.HoistedFunction h
+                        : ctx.executable().hoistedFunctions()) {
+                    if (h.name().equals(identifier)) {
+                        dst.store(ctx, Boolean.FALSE);
+                        return pc + 1;
+                    }
+                }
+            }
+            // 4. Plain globalThis property — delegate to JSObject.delete.
+            Object gt = ctx.globals().get("globalThis");
+            if (gt instanceof JSObject go && go.hasOwn(identifier)) {
+                if (!go.isConfigurable(identifier)) {
+                    dst.store(ctx, Boolean.FALSE);
+                    return pc + 1;
+                }
+                go.delete(identifier);
+                ctx.globals().remove(identifier);
+                dst.store(ctx, Boolean.TRUE);
+                return pc + 1;
+            }
+            // 5. Unbound — true (vacuous success).
+            ctx.globals().remove(identifier);
             dst.store(ctx, Boolean.TRUE);
             return pc + 1;
         }

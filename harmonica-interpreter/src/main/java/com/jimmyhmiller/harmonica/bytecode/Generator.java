@@ -1721,14 +1721,16 @@ public final class Generator {
         // THIS_VALUE via the call-site setup.
         if (moduleMode) {
             emit(new Op.Mov(Variable.Register.THIS_VALUE, constant(Undefined.VALUE)));
-            // ECMA-262 § 16.2.1.6.4 InitializeEnvironment: every top-level
-            // let/const/class binding is created (uninitialized → TDZ) in
-            // the Module Environment Record BEFORE module-body evaluation.
-            // Without this priming, `typeof X` before `let X` returns
-            // "undefined" rather than throwing ReferenceError. We materialize
-            // the TDZ sentinel under each top-level lexical name in module
-            // globals so that GetGlobal / TypeofBinding observe TDZ before
-            // the user-level initializer runs.
+        }
+        // ECMA-262 § 9.4.6 GlobalDeclarationInstantiation step 16 (script) and
+        // § 16.2.1.6.4 InitializeEnvironment (module): every top-level
+        // let/const/class binding is created (uninitialized → TDZ) in the
+        // Environment Record BEFORE the body runs. Without priming, `typeof X`
+        // before `let X` returns "undefined" rather than throwing
+        // ReferenceError. The same set marks these names as lexical so
+        // SetGlobal skips the globalThis mirror — top-level let/const/class
+        // must NOT be visible as own properties of globalThis.
+        {
             java.util.LinkedHashSet<String> topLevelLexNames = new java.util.LinkedHashSet<>();
             collectTopLevelLexicalNames(program.body(), topLevelLexNames);
             if (!topLevelLexNames.isEmpty()) {
