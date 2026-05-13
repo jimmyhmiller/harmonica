@@ -173,6 +173,11 @@ public final class JSObject {
             storage[meta.offset()] = value;
             return;
         }
+        // ECMA-262 § 10.1.9.1: cannot add a new property when
+        // [[Extensible]] is false. Silently fail at the JSObject layer;
+        // strict-mode TypeError is raised by the Op layer (PutById,
+        // setProperty), which knows the strictness flag.
+        if (!extensible) return;
         Shape newShape = shape.createPutTransition(key, ATTR_DEFAULT);
         int offset = newShape.storageSize() - 1;
         ensureStorage(offset + 1);

@@ -1107,6 +1107,18 @@ public sealed interface Op {
                                     return pc + 1;
                                 }
                             } else {
+                                // ECMA-262 § 10.1.9.1 OrdinarySetWithOwnDescriptor
+                                // step 3.b: when there's no own
+                                // descriptor and {@code [[Extensible]]}
+                                // is false, the write fails — silently
+                                // in sloppy mode, TypeError in strict.
+                                if (!jo.isExtensible()) {
+                                    if (ctx.executable() != null && ctx.executable().strictMode()) {
+                                        throw AbruptCompletion.typeError(
+                                            "Cannot add property '" + property + "', object is not extensible");
+                                    }
+                                    return pc + 1;
+                                }
                                 // Inlined proto walk: skip put-transition
                                 // install if any proto level intercepts the
                                 // write (setter accessor or read-only slot).

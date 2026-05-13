@@ -1163,6 +1163,7 @@ expressions/arrow-function/unscopables-with.js
 expressions/assignment/11.13.1-1-6-s.js
 expressions/assignment/11.13.1-1-s.js
 expressions/assignment/11.13.1-2-s.js
+expressions/assignment/11.13.1-3-s.js
 expressions/assignment/11.13.1-4-1.js
 expressions/assignment/11.13.1-4-28gs.js
 expressions/assignment/11.13.1-4-29gs.js
@@ -6777,7 +6778,18 @@ expressions/compound-assignment/11.13.2-41-s.js
 expressions/compound-assignment/11.13.2-42-s.js
 expressions/compound-assignment/11.13.2-43-s.js
 expressions/compound-assignment/11.13.2-44-s.js
+expressions/compound-assignment/11.13.2-45-s.js
+expressions/compound-assignment/11.13.2-46-s.js
+expressions/compound-assignment/11.13.2-47-s.js
+expressions/compound-assignment/11.13.2-48-s.js
+expressions/compound-assignment/11.13.2-49-s.js
 expressions/compound-assignment/11.13.2-5-s.js
+expressions/compound-assignment/11.13.2-50-s.js
+expressions/compound-assignment/11.13.2-51-s.js
+expressions/compound-assignment/11.13.2-52-s.js
+expressions/compound-assignment/11.13.2-53-s.js
+expressions/compound-assignment/11.13.2-54-s.js
+expressions/compound-assignment/11.13.2-55-s.js
 expressions/compound-assignment/11.13.2-6-1gs.js
 expressions/compound-assignment/11.13.2-6-s.js
 expressions/compound-assignment/11.13.2-8-s.js
@@ -7139,6 +7151,7 @@ expressions/delete/11.4.1-4.a-3.js
 expressions/delete/11.4.1-4.a-8.js
 expressions/delete/11.4.1-4.a-9-s.js
 expressions/delete/11.4.1-4.a-9.js
+expressions/delete/11.4.1-5-a-27-s.js
 expressions/delete/11.4.1-5-a-28-s.js
 expressions/delete/11.4.4-4.a-3-s.js
 expressions/delete/S11.4.1_A2.1.js
@@ -8762,6 +8775,7 @@ expressions/logical-assignment/lgcl-nullish-arguments-strict.js
 expressions/logical-assignment/lgcl-nullish-assignment-operator-bigint.js
 expressions/logical-assignment/lgcl-nullish-assignment-operator-no-set-put.js
 expressions/logical-assignment/lgcl-nullish-assignment-operator-no-set.js
+expressions/logical-assignment/lgcl-nullish-assignment-operator-non-extensible.js
 expressions/logical-assignment/lgcl-nullish-assignment-operator-non-simple-lhs.js
 expressions/logical-assignment/lgcl-nullish-assignment-operator-non-writeable-put.js
 expressions/logical-assignment/lgcl-nullish-assignment-operator-non-writeable.js
@@ -8776,6 +8790,7 @@ expressions/logical-assignment/lgcl-or-arguments-strict.js
 expressions/logical-assignment/lgcl-or-assignment-operator-bigint.js
 expressions/logical-assignment/lgcl-or-assignment-operator-no-set-put.js
 expressions/logical-assignment/lgcl-or-assignment-operator-no-set.js
+expressions/logical-assignment/lgcl-or-assignment-operator-non-extensible.js
 expressions/logical-assignment/lgcl-or-assignment-operator-non-simple-lhs.js
 expressions/logical-assignment/lgcl-or-assignment-operator-non-writeable-put.js
 expressions/logical-assignment/lgcl-or-assignment-operator-non-writeable.js
@@ -20781,6 +20796,7 @@ types/reference/8.7.2-3-a-1gs.js
 types/reference/8.7.2-3-a-2gs.js
 types/reference/8.7.2-3-s.js
 types/reference/8.7.2-4-s.js
+types/reference/8.7.2-5-s.js
 types/reference/8.7.2-6-s.js
 types/reference/8.7.2-7-s.js
 types/reference/8.7.2-8-s.js
