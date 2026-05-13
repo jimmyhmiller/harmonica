@@ -672,7 +672,6 @@ eval-code/direct/new.target-arrow.js
 eval-code/direct/new.target.js
 eval-code/direct/non-definable-function-with-function.js
 eval-code/direct/non-definable-function-with-variable.js
-eval-code/direct/non-definable-global-var.js
 eval-code/direct/non-string-object.js
 eval-code/direct/non-string-primitive.js
 eval-code/direct/parse-failure-1.js
@@ -723,7 +722,6 @@ eval-code/indirect/lex-env-heritage.js
 eval-code/indirect/new.target.js
 eval-code/indirect/non-definable-function-with-function.js
 eval-code/indirect/non-definable-function-with-variable.js
-eval-code/indirect/non-definable-global-var.js
 eval-code/indirect/non-string-object.js
 eval-code/indirect/non-string-primitive.js
 eval-code/indirect/parse-failure-1.js
@@ -7327,6 +7325,7 @@ expressions/dynamic-import/import-attributes/2nd-param-yield-ident-invalid.js
 expressions/dynamic-import/import-attributes/2nd-param-yield-ident-valid.js
 expressions/dynamic-import/import-attributes/trailing-comma-fulfill.js
 expressions/dynamic-import/import-errored-module.js
+expressions/dynamic-import/namespace/await-ns-extensible.js
 expressions/dynamic-import/namespace/await-ns-get-nested-namespace-props-nrml.js
 expressions/dynamic-import/namespace/await-ns-get-own-property-str-not-found.js
 expressions/dynamic-import/namespace/await-ns-get-str-found.js
@@ -7340,6 +7339,7 @@ expressions/dynamic-import/namespace/await-ns-prevent-extensions-object.js
 expressions/dynamic-import/namespace/await-ns-prevent-extensions-reflect.js
 expressions/dynamic-import/namespace/await-ns-set-prototype-of-null.js
 expressions/dynamic-import/namespace/default-property-not-set-own.js
+expressions/dynamic-import/namespace/promise-then-ns-extensible.js
 expressions/dynamic-import/namespace/promise-then-ns-get-nested-namespace-props-nrml.js
 expressions/dynamic-import/namespace/promise-then-ns-get-own-property-str-not-found.js
 expressions/dynamic-import/namespace/promise-then-ns-get-str-found.js

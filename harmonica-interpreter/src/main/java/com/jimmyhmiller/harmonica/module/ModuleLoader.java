@@ -541,9 +541,19 @@ public final class ModuleLoader {
             };
             JSFunction getterFn = new JSFunction("get " + exportedName, 0, getter);
             rec.namespace.set(exportedName, new Accessor(getterFn, null));
+            // ECMA-262 § 28.3: each exported binding is enumerable +
+            // non-configurable. Writable depends on whether the export
+            // is a mutable binding; treat as writable in the descriptor
+            // (writes are silently no-ops in our setProperty for now).
+            rec.namespace.setAttributes(exportedName,
+                (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_ENUMERABLE));
         }
-        // Spec: namespace also has a Symbol.toStringTag of "Module".
+        // § 28.3.1 [%Symbol.toStringTag%] is { writable: false,
+        // enumerable: false, configurable: false }.
         rec.namespace.set("@@toStringTag", "Module");
+        rec.namespace.setAttributes("@@toStringTag", (byte) 0);
+        // § 28.3: module namespace objects are non-extensible.
+        rec.namespace.preventExtensions();
     }
 
     // ============================================================

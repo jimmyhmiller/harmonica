@@ -70,6 +70,16 @@ public final class JSObject {
      */
     private Object[] storage;
 
+    /**
+     * ECMA-262 § 6.1.7.2: every ordinary object has an [[Extensible]]
+     * boolean. Starts true; {@code Object.preventExtensions} /
+     * {@code Object.freeze} / module-namespace-create flip it to false.
+     * New properties cannot be added when false.
+     */
+    private boolean extensible = true;
+    public boolean isExtensible() { return extensible; }
+    public void preventExtensions() { this.extensible = false; }
+
     /** Default-link to {@code Object.prototype} if Realm has bootstrapped. */
     public JSObject() { this(Realm.objectPrototype); }
 

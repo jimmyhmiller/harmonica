@@ -2481,10 +2481,14 @@ public final class Realm {
         objectCtor.properties().put("isExtensible", nativeFn("isExtensible", 1, (t, a, c) -> {
             Object v = arg(a, 0);
             // § 20.1.2.13 step 1: if argument is not an Object, return false.
-            return v instanceof JSObject || v instanceof JSArray || v instanceof JSFunction;
+            if (v instanceof JSObject jo) return jo.isExtensible();
+            return v instanceof JSArray || v instanceof JSFunction;
         }));
-        objectCtor.properties().put("preventExtensions", nativeFn("preventExtensions", 1,
-            (t, a, c) -> arg(a, 0)));
+        objectCtor.properties().put("preventExtensions", nativeFn("preventExtensions", 1, (t, a, c) -> {
+            Object v = arg(a, 0);
+            if (v instanceof JSObject jo) jo.preventExtensions();
+            return v;
+        }));
         objectCtor.properties().put("isFrozen", nativeFn("isFrozen", 1, (t, a, c) -> {
             Object v = arg(a, 0);
             // § 20.1.2.17 step 1: non-Object → return true (per spec).
@@ -2993,8 +2997,16 @@ public final class Realm {
             }
             return false;
         }));
-        reflect.set("isExtensible", nativeFn("isExtensible", 1, (t, a, c) -> true));
-        reflect.set("preventExtensions", nativeFn("preventExtensions", 1, (t, a, c) -> true));
+        reflect.set("isExtensible", nativeFn("isExtensible", 1, (t, a, c) -> {
+            Object v = arg(a, 0);
+            if (v instanceof JSObject jo) return jo.isExtensible();
+            return true;
+        }));
+        reflect.set("preventExtensions", nativeFn("preventExtensions", 1, (t, a, c) -> {
+            Object v = arg(a, 0);
+            if (v instanceof JSObject jo) jo.preventExtensions();
+            return true;
+        }));
         reflect.set("apply", nativeFn("apply", 3, (t, a, c) -> {
             if (!(arg(a, 0) instanceof JSFunction fn)) {
                 throw AbruptCompletion.typeError("Reflect.apply called on non-function");
