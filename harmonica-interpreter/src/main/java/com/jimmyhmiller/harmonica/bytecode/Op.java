@@ -852,35 +852,39 @@ public sealed interface Op {
             Object b = base.retrieve(ctx);
             // Shape-keyed inline cache: on hit, the property's storage offset
             // is known and the read is a single indexed load — the V8/LibJS
-            // monomorphic-fast-path trick that makes hot OO code fly. Only
-            // viable for own data properties of plain JSObjects; accessors
-            // and proto-chain hits fall back to the generic dispatch.
+            // monomorphic-fast-path trick that makes hot OO code fly.
             if (b instanceof JSObject obj
                     && (property.isEmpty() || property.charAt(0) != '#')) {
                 Shape s = obj.shape();
                 int slot = cache.lookup(s);
+                Object resolved;
                 if (slot >= 0) {
                     Object owner = cache.ownerOf();
                     if (owner == null) {
-                        // Own-property hit.
                         Object cached = obj.getDirect(slot);
                         if (!(cached instanceof Accessor)) {
                             dst.store(ctx, cached);
                             return pc + 1;
                         }
+                        resolved = cached;
                     } else if (owner instanceof JSObject oj
                                 && oj.shape() == cache.ownerShapeOf()) {
-                        // Proto-chain hit — class method, inherited prop.
                         Object cached = oj.getDirect(slot);
                         if (!(cached instanceof Accessor)) {
                             dst.store(ctx, cached);
                             return pc + 1;
                         }
+                        resolved = cached;
+                    } else {
+                        // Stale proto entry — fall to miss path.
+                        resolved = JSObject.ABSENT;
                     }
-                    // Hit but accessor / stale proto — fall through.
                 } else {
-                    // IC miss: walk own then prototype chain, installing
-                    // wherever we find a non-accessor data slot.
+                    resolved = JSObject.ABSENT;
+                }
+                if (resolved == JSObject.ABSENT) {
+                    // Miss: walk own then prototype chain once; capture the
+                    // resolved value, install IC, and dispatch on accessor.
                     Shape.PropertyMeta meta = s.lookup(property);
                     if (meta != null) {
                         Object v = obj.getDirect(meta.offset());
@@ -889,7 +893,9 @@ public sealed interface Op {
                             dst.store(ctx, v);
                             return pc + 1;
                         }
+                        resolved = v;
                     } else {
+                        resolved = Undefined.VALUE;
                         JSObject cursor = obj.proto();
                         while (cursor != null) {
                             Shape cs = cursor.shape();
@@ -901,18 +907,20 @@ public sealed interface Op {
                                     dst.store(ctx, v);
                                     return pc + 1;
                                 }
+                                resolved = v;
                                 break;
                             }
                             cursor = cursor.proto();
                         }
                     }
                 }
-                // Non-own property or accessor — walk proto chain via obj.get.
-                Object v = obj.get(property);
-                if (!(v instanceof Accessor)) {
+                if (resolved instanceof Accessor acc && acc.getter() != null) {
+                    Object v = Interpreter.invokeFunction(acc.getter(), b, new Object[0], ctx);
                     dst.store(ctx, v);
                     return pc + 1;
                 }
+                dst.store(ctx, resolved);
+                return pc + 1;
             }
             Object v = AbstractOps.getProperty(b, property);
             if (v instanceof Accessor acc && acc.getter() != null) {
