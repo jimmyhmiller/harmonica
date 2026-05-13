@@ -1971,7 +1971,17 @@ public final class Generator {
                 emit(new Op.InitializeLexicalBinding(DEFAULT_EXPORT_BINDING, r, new EnvironmentCoordinate()));
                 release(r);
             } else if (inner instanceof Expression e) {
+                // ECMA-262 § 16.2.3.7 ExportDeclaration : `export default
+                // AssignmentExpression`: when AssignmentExpression is an
+                // anonymous {@code FunctionExpression} / {@code ClassExpression}
+                // / {@code ArrowFunctionExpression}, NamedEvaluation sets
+                // its {@code .name} to "default".
+                boolean isAnonFn = (e instanceof FunctionExpression fe && fe.id() == null)
+                                || (e instanceof ClassExpression ce && ce.id() == null)
+                                || (e instanceof ArrowFunctionExpression);
+                if (isAnonFn) pendingFunctionName = "default";
                 Operand v = lowerExpression(e);
+                pendingFunctionName = null;
                 emit(new Op.InitializeLexicalBinding(DEFAULT_EXPORT_BINDING, v, new EnvironmentCoordinate()));
                 release(v);
             } else {

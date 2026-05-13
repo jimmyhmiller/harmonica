@@ -323,14 +323,7 @@ public final class Test262ExecRunner {
         // We use {@link com.jimmyhmiller.harmonica.module.ModuleLoader} as
         // a stand-in for the active global table; the runner sees the
         // same map every test does.
-        // Async tests: $DONE-observation deferred. The remaining ~287
-        // strict-mode failures cluster into module-loader error-type
-        // categorization (SyntaxError vs TypeError for circular imports,
-        // ambiguous re-exports, parse errors in fixtures, etc.),
-        // namespace-exotic semantics (Reflect.set/delete returning the
-        // right boolean), default-param TDZ, named-FE immutable binding,
-        // async-yield resolve-fn name/length descriptors. Each is its
-        // own deeper fix.
+        // $DONE-strict observation deferred (~284 unrelated bugs).
         return new TestResult(file, Outcome.PASS, "");
     }
 
