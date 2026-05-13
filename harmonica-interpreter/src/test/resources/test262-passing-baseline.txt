@@ -20425,9 +20425,12 @@ statements/try/early-catch-duplicates.js
 statements/try/early-catch-function.js
 statements/try/early-catch-lex.js
 statements/try/optional-catch-binding-finally.js
+statements/try/optional-catch-binding-lexical.js
 statements/try/optional-catch-binding-parens.js
 statements/try/optional-catch-binding-throws.js
 statements/try/optional-catch-binding.js
+statements/try/scope-catch-block-lex-close.js
+statements/try/scope-catch-block-lex-open.js
 statements/try/scope-catch-block-var-none.js
 statements/try/scope-catch-param-var-none.js
 statements/try/static-init-await-binding-invalid.js

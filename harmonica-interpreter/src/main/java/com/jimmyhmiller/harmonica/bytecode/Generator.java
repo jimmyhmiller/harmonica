@@ -6014,6 +6014,23 @@ public final class Generator {
         // and drops the prior `last_result` Rc clone. The `Mov` then fuses
         // with the outer try-statement's transfer Mov into a Mov2.
         Variable.Register catchBodyLastCompletionReg = null;
+        // ECMA-262 § 14.15.3 CatchClauseEvaluation: the Catch's Block is
+        // a new declarative environment. Install the block's
+        // pre-allocated let/const slots into {@code locals} for the
+        // duration of the body so {@code let x} inside the catch
+        // shadows any outer same-named binding instead of writing to it.
+        java.util.LinkedHashMap<String, Integer> catchBodyLetSlots =
+            blockLetSlots.get(handler.body());
+        java.util.Map<String, Integer> savedShadowedInCatchBody = new java.util.HashMap<>();
+        java.util.Set<String> introducedInCatchBody = java.util.Set.of();
+        if (catchBodyLetSlots != null && !catchBodyLetSlots.isEmpty()) {
+            introducedInCatchBody = new java.util.HashSet<>(catchBodyLetSlots.keySet());
+            for (var e : catchBodyLetSlots.entrySet()) {
+                Integer prior = locals.get(e.getKey());
+                if (prior != null) savedShadowedInCatchBody.put(e.getKey(), prior);
+                locals.put(e.getKey(), e.getValue());
+            }
+        }
         try {
             for (Statement s : handler.body().body()) {
                 Operand v = lowerStatement(s);
@@ -6027,6 +6044,13 @@ public final class Generator {
                 }
             }
         } finally {
+            // Restore: remove names introduced by the catch body, re-add
+            // any shadowed entries that were on top before.
+            for (String name : introducedInCatchBody) {
+                Integer prior = savedShadowedInCatchBody.get(name);
+                if (prior != null) locals.put(name, prior);
+                else locals.remove(name);
+            }
             if (hasNestedBlock) doWhileWithNestedBlockDepth--;
             if (useLexEnv) lexEnvCatchBodyDepth--;
             completionRegStack.pop();
