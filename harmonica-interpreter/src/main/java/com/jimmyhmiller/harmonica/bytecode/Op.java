@@ -2697,11 +2697,64 @@ public sealed interface Op {
      * promise of the module namespace. {@code options} carries the import
      * attributes object (e.g. {@code { with: { type: "json" } }}); for
      * single-arg dynamic imports, the generator passes {@code Undefined}.
+     *
+     * <p>v1: requires the entry point (CLI / test runner / a module body)
+     * to have published an {@link com.jimmyhmiller.harmonica.module.ModuleLoader}
+     * via {@code ModuleLoader.setActive} so we know what referrer to
+     * resolve against. Without that we reject with a TypeError.
      */
     record ImportCall(Variable dst, Operand specifier, Operand options) implements Op {
         @Override public Operation operation() { return Operation.IMPORT_CALL; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            throw AbruptCompletion.typeError("ImportCall: dynamic import is not implemented at runtime");
+            // ECMA-262 § 13.3.10.2 Runtime Semantics: Evaluation
+            //   ImportCall : import(AssignmentExpression)
+            //   1-3: evaluate the AssignmentExpression and GetValue — that
+            //   already happened when {@code specifier} was retrieved into
+            //   its register, so abrupt completions propagated.
+            //   4-8: build a promise, ToString the specifier, and hand off
+            //   to HostImportModuleDynamically. We treat steps 5-6 inline:
+            //   any abrupt during ToString rejects the promise rather than
+            //   throwing synchronously.
+            Object specVal = specifier.retrieve(ctx);
+            String specStr;
+            try {
+                specStr = AbstractOps.toString(specVal);
+            } catch (AbruptCompletion ac) {
+                JSObject rejected = Realm.wrapInRejectedPromise(ac.value());
+                dst.store(ctx, rejected);
+                return pc + 1;
+            }
+            com.jimmyhmiller.harmonica.module.ModuleLoader.Active active =
+                com.jimmyhmiller.harmonica.module.ModuleLoader.active();
+            if (active == null) {
+                JSObject rejected = Realm.wrapInRejectedPromise(Realm.makeError(
+                    "TypeError",
+                    "Dynamic import is not available in this context (no active module loader)"));
+                dst.store(ctx, rejected);
+                return pc + 1;
+            }
+            try {
+                com.jimmyhmiller.harmonica.module.ModuleResolver.Resolved resolved =
+                    com.jimmyhmiller.harmonica.module.ModuleResolver.resolveEsm(specStr, active.referrer());
+                com.jimmyhmiller.harmonica.module.ModuleRecord rec =
+                    active.loader().load(resolved.path(), resolved.format());
+                Object namespace = rec.effectiveExports();
+                dst.store(ctx, Realm.wrapInPromise(namespace, ctx));
+            } catch (java.io.IOException io) {
+                JSObject rejected = Realm.wrapInRejectedPromise(Realm.makeError(
+                    "TypeError",
+                    "Module load failed: " + io.getMessage()));
+                dst.store(ctx, rejected);
+            } catch (AbruptCompletion ac) {
+                // Parse/eval errors during module load surface as
+                // AbruptCompletion from the loader's recursive interpret.
+                dst.store(ctx, Realm.wrapInRejectedPromise(ac.value()));
+            } catch (RuntimeException re) {
+                dst.store(ctx, Realm.wrapInRejectedPromise(Realm.makeError(
+                    "TypeError",
+                    "Module load failed: " + re.getMessage())));
+            }
+            return pc + 1;
         }
     }
 

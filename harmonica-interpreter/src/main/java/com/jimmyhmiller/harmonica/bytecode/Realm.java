@@ -1456,14 +1456,14 @@ public final class Realm {
     }
 
     /** Wrap {@code v} in a fulfilled Promise (for async generator results). */
-    private static JSObject wrapInPromise(Object v, InterpContext ctx) {
+    public static JSObject wrapInPromise(Object v, InterpContext ctx) {
         JSObject p = createPromise();
         resolvePromise(p, v, ctx);
         return p;
     }
 
     /** Wrap {@code reason} in a rejected Promise (for async generator throws). */
-    private static JSObject wrapInRejectedPromise(Object reason) {
+    public static JSObject wrapInRejectedPromise(Object reason) {
         JSObject p = createPromise();
         rejectPromise(p, reason);
         return p;

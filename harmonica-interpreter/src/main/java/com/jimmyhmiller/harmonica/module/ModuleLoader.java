@@ -59,6 +59,23 @@ public final class ModuleLoader {
      *  unlikely to collide with user code. */
     private static final String CJS_WRAPPER_NAME = "__harmonica_cjs_wrapper$__";
 
+    /**
+     * Per-thread active loader + referrer directory, set by the entry
+     * point (CLI / test runner / module body) before running JS code so
+     * that dynamic {@code import(...)} expressions in that code can
+     * resolve specifiers relative to the calling source. Cleared after
+     * the run via {@link #clearActive}.
+     */
+    private static final ThreadLocal<Active> ACTIVE = new ThreadLocal<>();
+
+    public record Active(ModuleLoader loader, Path referrer) {}
+
+    public static void setActive(ModuleLoader loader, Path referrer) {
+        ACTIVE.set(new Active(loader, referrer));
+    }
+    public static void clearActive() { ACTIVE.remove(); }
+    public static Active active() { return ACTIVE.get(); }
+
     /** Cache keyed by canonical absolute path. */
     private final Map<Path, ModuleRecord> cache = new HashMap<>();
 
