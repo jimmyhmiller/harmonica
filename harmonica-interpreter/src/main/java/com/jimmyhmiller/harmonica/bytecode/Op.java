@@ -1663,12 +1663,44 @@ public sealed interface Op {
      * a shape cache; the dump matches LibJS while the runtime ignores them.
      */
     record InitObjectLiteralProperty(Operand object, String property, Operand src,
-                                     int shapeCacheIndex, int propertySlot) implements Op {
+                                     int shapeCacheIndex, int propertySlot,
+                                     com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache cache) implements Op {
+        public InitObjectLiteralProperty(Operand object, String property, Operand src,
+                                         int shapeCacheIndex, int propertySlot) {
+            this(object, property, src, shapeCacheIndex, propertySlot,
+                 new com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache());
+        }
         @Override public Operation operation() { return Operation.INIT_OBJECT_LITERAL_PROPERTY; }
+        @Override public boolean equals(Object other) { return this == other; }
+        @Override public int hashCode() { return System.identityHashCode(this); }
         @Override public int interpret(InterpContext ctx, int pc) {
             Object obj = object.retrieve(ctx);
-            if (obj instanceof JSObject jo) jo.set(property, src.retrieve(ctx));
-            else throw AbruptCompletion.typeError("InitObjectLiteralProperty on non-JSObject: " + obj);
+            if (!(obj instanceof JSObject jo)) {
+                throw AbruptCompletion.typeError("InitObjectLiteralProperty on non-JSObject: " + obj);
+            }
+            Object value = src.retrieve(ctx);
+            Shape s = jo.shape();
+            int slot = cache.lookup(s);
+            if (slot >= 0
+                    && cache.ownerOf() == com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache.PUT_TRANSITION) {
+                // Object-literal init is monomorphic in practice — every
+                // execution starts from the same shape and walks the same
+                // transition chain. Hit path: transition + indexed store.
+                jo.putWithTransition((Shape) cache.ownerShapeOf(), slot, value);
+                return pc + 1;
+            }
+            // Miss: do the lookup. If the key is already present (rare —
+            // duplicate keys in a literal), fall back to set; otherwise
+            // install a put-transition for next time.
+            Shape.PropertyMeta existing = s.lookup(property);
+            if (existing == null) {
+                Shape target = s.createPutTransition(property, JSObject.ATTR_DEFAULT);
+                int offset = target.storageSize() - 1;
+                cache.installPutTransition(s, target, offset);
+                jo.putWithTransition(target, offset, value);
+            } else {
+                jo.set(property, value);
+            }
             return pc + 1;
         }
     }
