@@ -139,17 +139,29 @@ public final class AbstractOps {
     }
     public static Boolean strictlyInequals(Object lhs, Object rhs) { return !strictlyEquals(lhs, rhs); }
 
-    /** https://tc39.es/ecma262/#sec-islooselyequal — simplified, missing object-coercion paths. */
+    /** https://tc39.es/ecma262/#sec-islooselyequal */
     public static Boolean looselyEquals(Object lhs, Object rhs) {
         if (lhs == null && rhs == null) return true;
         if (lhs == Undefined.VALUE && rhs == Undefined.VALUE) return true;
         if ((lhs == null && rhs == Undefined.VALUE) || (lhs == Undefined.VALUE && rhs == null)) return true;
         if (lhs == null || rhs == null || lhs == Undefined.VALUE || rhs == Undefined.VALUE) return false;
         if (lhs instanceof Number && rhs instanceof Number) return strictlyEquals(lhs, rhs);
+        if (lhs instanceof CharSequence && rhs instanceof CharSequence) return strictlyEquals(lhs.toString(), rhs.toString());
         if (lhs instanceof Number && rhs instanceof CharSequence) return toNumber(lhs) == toNumber(rhs);
         if (lhs instanceof CharSequence && rhs instanceof Number) return toNumber(lhs) == toNumber(rhs);
         if (lhs instanceof Boolean) return looselyEquals(toNumber(lhs), rhs);
         if (rhs instanceof Boolean) return looselyEquals(lhs, toNumber(rhs));
+        // ECMA-262 § 7.2.14 IsLooselyEqual steps 9-10: Object on one side,
+        // String/Number/BigInt/Symbol on the other — coerce object via
+        // ToPrimitive (default hint) and re-compare.
+        boolean lIsObj = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction;
+        boolean rIsObj = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction;
+        if (lIsObj && (rhs instanceof Number || rhs instanceof CharSequence || rhs instanceof JSSymbol)) {
+            return looselyEquals(toPrimitive(lhs, "default"), rhs);
+        }
+        if (rIsObj && (lhs instanceof Number || lhs instanceof CharSequence || lhs instanceof JSSymbol)) {
+            return looselyEquals(lhs, toPrimitive(rhs, "default"));
+        }
         return strictlyEquals(lhs, rhs);
     }
 
