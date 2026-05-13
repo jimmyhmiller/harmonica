@@ -79,6 +79,19 @@ public final class JSObject {
         this.storage = EMPTY_STORAGE;
     }
 
+    /**
+     * Bulk-init constructor for the {@code MakeShapedObject} fused op:
+     * skip the per-property {@code set}/transition dance and adopt a
+     * precomputed shape + ready-to-use storage in one step. The caller
+     * is responsible for ensuring {@code storage.length >=
+     * shape.storageSize()} and that {@code storage[i]} matches the
+     * property at offset {@code i} per the shape's transition chain.
+     */
+    public JSObject(Shape shape, Object[] storage) {
+        this.shape = shape;
+        this.storage = storage;
+    }
+
     // ------------------------------------------------------------
     // Shape-aware accessors (Phase 2 IC hot path).
     // ------------------------------------------------------------

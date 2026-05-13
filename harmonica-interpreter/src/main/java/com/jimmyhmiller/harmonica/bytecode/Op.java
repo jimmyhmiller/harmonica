@@ -1397,6 +1397,60 @@ public sealed interface Op {
     }
 
     /**
+     * Fused object-literal construction: allocate a JSObject with a
+     * precomputed shape and pre-filled storage in one step. Replaces the
+     * sequence {@code NewObject + N×InitObjectLiteralProperty +
+     * CacheObjectShape} the generator used to emit for plain literals.
+     *
+     * <p>The first execution walks {@link Shape#createPutTransition} once
+     * per key to build the target shape (sharing the transition tree with
+     * any other literal that walks the same key sequence), caches the
+     * result, then allocates. Subsequent executions hit the cached shape
+     * and skip straight to allocation + storage fill — one JSObject
+     * allocation, one Object[] allocation, N array stores. No op-dispatch
+     * cycle per property.
+     *
+     * <p>Only emitted by the generator for plain literals where every key
+     * is a static string identifier with default attributes — no
+     * accessors, no spread, no computed-key, no numeric literal keys
+     * (those force the old PutById Own path). Duplicate keys in the same
+     * literal are also rejected at codegen time; they'd need to override
+     * a previous slot's value rather than transition.
+     */
+    record MakeShapedObject(
+        Variable dst,
+        String[] propertyNames,
+        Operand[] values,
+        ShapeCache cache
+    ) implements Op {
+        public static final class ShapeCache {
+            private volatile Shape target;
+            Shape get() { return target; }
+            void set(Shape s) { target = s; }
+        }
+
+        @Override public Operation operation() { return Operation.MAKE_SHAPED_OBJECT; }
+        @Override public boolean equals(Object other) { return this == other; }
+        @Override public int hashCode() { return System.identityHashCode(this); }
+
+        @Override public int interpret(InterpContext ctx, int pc) {
+            Shape target = cache.get();
+            if (target == null) {
+                Shape s = Realm.shapeForEmptyObject(Realm.objectPrototype);
+                for (String name : propertyNames) {
+                    s = s.createPutTransition(name, JSObject.ATTR_DEFAULT);
+                }
+                cache.set(s);
+                target = s;
+            }
+            Object[] storage = new Object[target.storageSize()];
+            for (int i = 0; i < values.length; i++) storage[i] = values[i].retrieve(ctx);
+            dst.store(ctx, new JSObject(target, storage));
+            return pc + 1;
+        }
+    }
+
+    /**
      * Construct: invoke {@code callee} as a constructor with the given args.
      * Allocates a fresh receiver, runs the body with that receiver as
      * {@code this}, then yields either the body's returned object (if any)

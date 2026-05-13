@@ -126,6 +126,7 @@ public enum Operation {
     // ---- Object / array / class / function creation ----
     NEW_OBJECT                  (OpClass.CONSTRUCT, NO_THROW | HAS_IC),
     NEW_OBJECT_WITH_NO_PROTOTYPE(OpClass.CONSTRUCT, NO_THROW),
+    MAKE_SHAPED_OBJECT          (OpClass.CONSTRUCT, NO_THROW | HAS_IC),
     NEW_ARRAY                   (OpClass.CONSTRUCT, NO_THROW),
     NEW_ARRAY_WITH_LENGTH       (OpClass.CONSTRUCT, 0),
     NEW_PRIMITIVE_ARRAY         (OpClass.CONSTRUCT, NO_THROW),

@@ -8562,7 +8562,9 @@ public final class Generator {
 
     private Operand lowerObjectExpression(ObjectExpression oe) {
         Variable.Register dst = allocRegister();
-        emit(new Op.NewObject(dst));
+        // NewObject emit deferred until we know whether the fast
+        // MakeShapedObject path applies — that op carries its own
+        // allocation.
         boolean anyInitProperty = false;
         // Detect accessors. When the literal has any get/set, LibJS lowers
         // regular properties via PutById kind:Own (instead of
@@ -8614,6 +8616,65 @@ public final class Generator {
             if (propNode instanceof SpreadElement) { hasSpread = true; break; }
         }
         boolean forceOwn = hasAccessor || hasRuntimeComputedKey || hasNumericLiteralKey || hasSpread;
+
+        // Fused fast path: plain `{a: vA, b: vB, ...}` literals with static
+        // string keys, no methods, no duplicates lower to a single
+        // {@link Op.MakeShapedObject} instead of {@code NewObject + N×
+        // InitObjectLiteralProperty + CacheObjectShape}. Saves N-1 op
+        // dispatches, the per-property IC lookup, and the intermediate
+        // shape-growth churn on the first execution. Methods are excluded
+        // because they need [[HomeObject]] set against the receiver,
+        // which doesn't exist yet at MakeShapedObject time.
+        if (!forceOwn && !oe.properties().isEmpty()) {
+            boolean qualifies = true;
+            java.util.LinkedHashSet<String> seenKeys = new java.util.LinkedHashSet<>();
+            java.util.List<String> keyList = new java.util.ArrayList<>();
+            for (Node propNode : oe.properties()) {
+                if (!(propNode instanceof Property prop) || !"init".equals(prop.kind())
+                        || prop.method()) {
+                    qualifies = false; break;
+                }
+                String keyStr;
+                if (!prop.computed() && prop.key() instanceof Identifier idKey) {
+                    keyStr = idKey.name();
+                } else if (!prop.computed() && prop.key() instanceof Literal lit
+                        && literalValue(lit) instanceof String s) {
+                    keyStr = s;
+                } else if (prop.computed() && prop.key() instanceof Literal lit2
+                        && literalValue(lit2) instanceof String s2) {
+                    keyStr = s2;
+                } else {
+                    qualifies = false; break;
+                }
+                if (!seenKeys.add(keyStr)) {
+                    // Duplicate keys would override an existing slot rather
+                    // than add a new one — skip the fast path.
+                    qualifies = false; break;
+                }
+                keyList.add(keyStr);
+            }
+            if (qualifies) {
+                Operand[] valueOps = new Operand[keyList.size()];
+                int i = 0;
+                for (Node propNode : oe.properties()) {
+                    Property prop = (Property) propNode;
+                    if (!(prop.value() instanceof Expression valueExpr)) {
+                        throw new IllegalStateException("Property value is not an Expression");
+                    }
+                    valueOps[i++] = lowerExpression(valueExpr);
+                }
+                // The outer `dst` was reserved by the NewObject path; reuse
+                // it so register-pool bookkeeping stays consistent with
+                // the existing emit (no NewObject emit on this branch).
+                emit(new Op.MakeShapedObject(dst,
+                    keyList.toArray(new String[0]),
+                    valueOps,
+                    new Op.MakeShapedObject.ShapeCache()));
+                for (Operand v : valueOps) release(v);
+                return dst;
+            }
+        }
+
         // Per-object-literal shape cache index (lazy-allocated when the
         // first init property emits, so empty/pure-spread objects don't
         // bump the counter). Property slots are 0-based within this
@@ -8633,6 +8694,9 @@ public final class Generator {
                 }
             }
         }
+        // Fast path didn't fire — emit the deferred NewObject now so the
+        // rest of the slow path can use the receiver register.
+        emit(new Op.NewObject(dst));
         int nextPropertySlot = 0;
         for (Node propNode : oe.properties()) {
             if (propNode instanceof SpreadElement se) {

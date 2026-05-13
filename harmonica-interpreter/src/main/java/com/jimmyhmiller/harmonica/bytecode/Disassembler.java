@@ -301,6 +301,16 @@ public final class Disassembler {
             case Op.Await o        -> "Await " + dst(o.dst()) + ", value:" + operand(o.value(), exe);
 
             case Op.NewObject o      -> "NewObject " + dst(o.dst());
+            case Op.MakeShapedObject o -> {
+                StringBuilder sb = new StringBuilder("MakeShapedObject " + dst(o.dst()) + ", {");
+                for (int i = 0; i < o.propertyNames().length; i++) {
+                    if (i > 0) sb.append(", ");
+                    sb.append('`').append(o.propertyNames()[i]).append("`:")
+                      .append(operand(o.values()[i], exe));
+                }
+                sb.append('}');
+                yield sb.toString();
+            }
             case Op.InitObjectLiteralProperty o -> "InitObjectLiteralProperty object:" + operand(o.object(), exe)
                                                    + ", `" + o.property() + "`"
                                                    + ", src:" + operand(o.src(), exe)
