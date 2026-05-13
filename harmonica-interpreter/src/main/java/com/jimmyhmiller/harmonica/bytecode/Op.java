@@ -1453,6 +1453,26 @@ public sealed interface Op {
     }
 
     /**
+     * Implements ECMA-262 § B.3.1: in an object initializer the
+     * non-computed key {@code __proto__} (with a regular {@code init}
+     * value, not a method/getter/setter) sets the new object's
+     * {@code [[Prototype]]} when the value is Object or Null. Other
+     * values are silently ignored — no own property is created.
+     */
+    record SetProtoOrNop(Operand target, Operand value) implements Op {
+        @Override public Operation operation() { return Operation.SET_PROTO_OR_NOP; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            Object t = target.retrieve(ctx);
+            if (!(t instanceof JSObject jo)) return pc + 1;
+            Object v = value.retrieve(ctx);
+            if (v == null) jo.setProto(null);
+            else if (v instanceof JSObject p) jo.setProto(p);
+            // Primitives (including Undefined): no-op per spec.
+            return pc + 1;
+        }
+    }
+
+    /**
      * Fused object-literal construction: allocate a JSObject with a
      * precomputed shape and pre-filled storage in one step. Replaces the
      * sequence {@code NewObject + N×InitObjectLiteralProperty +

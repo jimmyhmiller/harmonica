@@ -8811,6 +8811,15 @@ public final class Generator {
                 } else {
                     qualifies = false; break;
                 }
+                // ECMA-262 § B.3.1: a non-computed, non-shorthand
+                // {@code __proto__: value} pair sets [[Prototype]]
+                // instead of creating a property. Exclude from the
+                // fast path so the slow path can emit SetProtoOrNop.
+                // Shorthand {@code {__proto__}} creates a regular
+                // property and is still eligible for the fast path.
+                if ("__proto__".equals(keyStr) && !prop.computed() && !prop.shorthand()) {
+                    qualifies = false; break;
+                }
                 if (!seenKeys.add(keyStr)) {
                     // Duplicate keys would override an existing slot rather
                     // than add a new one — skip the fast path.
@@ -9036,7 +9045,16 @@ public final class Generator {
                     throw new UnsupportedOperationException(
                         "Generator: unsupported object-literal key type " + prop.key().getClass().getSimpleName());
                 }
-                if (forceOwn) {
+                // ECMA-262 § B.3.1 __proto__ Property Names in Object
+                // Initializers: a non-computed, non-shorthand
+                // {@code __proto__: value} pair sets the object's
+                // [[Prototype]] when value is Object or Null; otherwise
+                // it's a no-op. The shorthand {@code {__proto__}} form
+                // creates a regular property — it goes through the
+                // normal InitObjectLiteralProperty path below.
+                if ("__proto__".equals(keyStr) && !prop.method() && !prop.shorthand()) {
+                    emit(new Op.SetProtoOrNop(dst, asRegister(v)));
+                } else if (forceOwn) {
                     // Accessor present, runtime-computed key, or numeric
                     // literal key in the literal: regular properties go
                     // through PutById kind:Own (no shape cache, no

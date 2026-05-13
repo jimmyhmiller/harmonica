@@ -8977,6 +8977,10 @@ expressions/object/__proto__-duplicate.js
 expressions/object/__proto__-fn-name.js
 expressions/object/__proto__-permitted-dup-shorthand.js
 expressions/object/__proto__-permitted-dup.js
+expressions/object/__proto__-poisoned-object-prototype.js
+expressions/object/__proto__-value-non-object.js
+expressions/object/__proto__-value-null.js
+expressions/object/__proto__-value-obj.js
 expressions/object/accessor-name-computed-err-evaluation.js
 expressions/object/accessor-name-computed-err-unresolvable.js
 expressions/object/accessor-name-computed-in.js
