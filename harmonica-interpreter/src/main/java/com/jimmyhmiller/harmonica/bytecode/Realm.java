@@ -2933,6 +2933,14 @@ public final class Realm {
             String k = key instanceof String s ? s
                 : key instanceof JSSymbol sy ? sy.asPropertyKey()
                 : AbstractOps.toString(key);
+            // ECMA-262 § 9.1.7 [[HasProperty]] walks the proto chain
+            // but private names are stored in [[PrivateFieldDescriptors]]
+            // and don't participate in HasProperty / [[Get]] / the `in`
+            // operator. Treat private names as absent here so
+            // Reflect.has, like Object.prototype.hasOwnProperty, returns
+            // false. Code that legitimately uses `#x in obj` is lowered
+            // through a dedicated private-name op, not through Reflect.
+            if (isPrivateName(k)) return false;
             if (target instanceof JSObject jo) return jo.has(k);
             return false;
         }));
@@ -3059,8 +3067,28 @@ public final class Realm {
         }));
 
         JSFunction ctor = nativeFn(name, 1, (t, a, c) -> {
-            JSObject err = new JSObject(proto);
-            if (arg(a, 0) != Undefined.VALUE) err.set("message", AbstractOps.toString(a[0]));
+            // Subclass support (ECMA-262 § 20.5.6.1.1 NativeError): when
+            // {@code new Err('msg')} flows through a derived class, the
+            // caller (CallConstruct / super-call) hands us a receiver
+            // whose prototype is already the subclass's. Mutate that
+            // receiver in place so its hasOwnProperty('message')
+            // observably reflects the constructor argument. If the
+            // ctor was called as a plain function (no fresh receiver),
+            // allocate one.
+            JSObject err;
+            if (t instanceof JSObject jo) {
+                err = jo;
+                // {@code message} on a subclass instance is own. Set
+                // attributes explicitly per § 20.5.7.4 NativeError
+                // instance Properties: writable, !enumerable, configurable.
+            } else {
+                err = new JSObject(proto);
+            }
+            if (arg(a, 0) != Undefined.VALUE) {
+                err.set("message", AbstractOps.toString(a[0]));
+                err.setAttributes("message",
+                    (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+            }
             return err;
         });
         ctor.setPrototypeObject(proto);

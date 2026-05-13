@@ -1612,11 +1612,26 @@ public sealed interface Op {
                 Object superVal = superClass.retrieve(ctx);
                 JSObject parentProto = null;
                 if (superVal instanceof JSFunction sf) {
+                    // ECMA-262 § 15.7.10 ClassDefinitionEvaluation step
+                    // 6.f: IsConstructor(superclass). Arrow, async, and
+                    // generator functions lack [[Construct]] and must
+                    // throw TypeError when used as the heritage value.
+                    if (sf.isArrow() || sf.isAsync() || sf.isGenerator()) {
+                        throw AbruptCompletion.typeError(
+                            "Class extends value " + (sf.name() != null ? sf.name() : "<anonymous>")
+                                + " is not a constructor");
+                    }
                     parentProto = sf.prototypeObject();
                     ctor.setSuperConstructor(sf);
                     superCtorVal = sf;
-                } else if (superVal instanceof JSObject so) parentProto = so;
-                else if (superVal != null && superVal != Undefined.VALUE) {
+                } else if (superVal == null) {
+                    parentProto = null;
+                } else if (superVal instanceof JSObject so) {
+                    // Non-function objects aren't constructors either —
+                    // spec wants TypeError.
+                    throw AbruptCompletion.typeError(
+                        "Class extends value " + so + " is not a constructor");
+                } else if (superVal != Undefined.VALUE) {
                     throw AbruptCompletion.typeError("extends value is not a class or null: " + superVal);
                 }
                 proto.setProto(parentProto);
