@@ -211,10 +211,19 @@ public sealed interface Op {
     record TypeofBinding(Variable dst, String name) implements Op {
         @Override public Operation operation() { return Operation.TYPEOF_BINDING; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            Object value = ctx.globals().containsKey(name)
-                ? ctx.globals().get(name)
-                : Undefined.VALUE;
-            dst.store(ctx, AbstractOps.typeofValue(value));
+            // ECMA-262 § 13.5.3.1 typeof: returns "undefined" for unresolvable
+            // references. For a TDZ binding (resolvable but uninitialized),
+            // GetValue throws ReferenceError per § 9.1.1.1 BindingValue.
+            if (ctx.globals().containsKey(name)) {
+                Object value = ctx.globals().get(name);
+                if (value == InterpContext.TDZ) {
+                    throw AbruptCompletion.referenceError(
+                        "cannot access '" + name + "' before initialization");
+                }
+                dst.store(ctx, AbstractOps.typeofValue(value));
+            } else {
+                dst.store(ctx, AbstractOps.typeofValue(Undefined.VALUE));
+            }
             return pc + 1;
         }
     }
@@ -1240,6 +1249,25 @@ public sealed interface Op {
         @Override public Operation operation() { return Operation.INITIALIZE_LEXICAL_BINDING; }
         @Override public int interpret(InterpContext ctx, int pc) {
             ctx.globals().put(identifier, src.retrieve(ctx));
+            return pc + 1;
+        }
+    }
+
+    /**
+     * Module-import binding: bind {@code identifier} to {@code undefined}
+     * ONLY if it isn't already present in globals. The module loader
+     * pre-installs an {@link com.jimmyhmiller.harmonica.module.ImportRef}
+     * sentinel under each imported name before the bytecode runs; this op
+     * is a no-op in that case (preserving the live binding). For
+     * standalone runs without a loader (e.g. test262 module-flagged tests
+     * that don't go through {@code ModuleLoader}), it falls back to
+     * binding the name to {@code undefined} so subsequent reads resolve
+     * rather than throw {@code ReferenceError}.
+     */
+    record InitializeImportBinding(String identifier) implements Op {
+        @Override public Operation operation() { return Operation.INITIALIZE_LEXICAL_BINDING; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            ctx.globals().putIfAbsent(identifier, Undefined.VALUE);
             return pc + 1;
         }
     }

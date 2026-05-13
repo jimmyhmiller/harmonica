@@ -1415,6 +1415,54 @@ public final class Generator {
         }
     }
 
+    /**
+     * Collect lexical declarations at module top level (not nested in any
+     * block/function/class body) — let/const variables and class names.
+     * Used to seed TDZ sentinels in module globals before evaluation, per
+     * § 16.2.1.6.4 InitializeEnvironment.
+     */
+    private static void collectTopLevelLexicalNames(java.util.List<Statement> body, java.util.Set<String> out) {
+        for (Statement s : body) {
+            if (s instanceof VariableDeclaration vd
+                && ("let".equals(vd.kind()) || "const".equals(vd.kind()))) {
+                for (VariableDeclarator d : vd.declarations()) {
+                    collectIdentifierLeafNames(d.id(), out);
+                }
+            } else if (s instanceof ClassDeclaration cd && cd.id() != null) {
+                out.add(cd.id().name());
+            } else if (s instanceof ExportNamedDeclaration end && end.declaration() != null) {
+                Statement inner = end.declaration();
+                if (inner instanceof VariableDeclaration vd
+                    && ("let".equals(vd.kind()) || "const".equals(vd.kind()))) {
+                    for (VariableDeclarator d : vd.declarations()) {
+                        collectIdentifierLeafNames(d.id(), out);
+                    }
+                } else if (inner instanceof ClassDeclaration cd && cd.id() != null) {
+                    out.add(cd.id().name());
+                }
+            }
+        }
+    }
+
+    private static void collectIdentifierLeafNames(Node pattern, java.util.Set<String> out) {
+        if (pattern instanceof Identifier id) {
+            out.add(id.name());
+        } else if (pattern instanceof ArrayPattern ap) {
+            for (Node elem : ap.elements()) {
+                if (elem != null) collectIdentifierLeafNames(elem, out);
+            }
+        } else if (pattern instanceof ObjectPattern op) {
+            for (Node prop : op.properties()) {
+                if (prop instanceof Property p) collectIdentifierLeafNames(p.value(), out);
+                else if (prop instanceof RestElement re) collectIdentifierLeafNames(re.argument(), out);
+            }
+        } else if (pattern instanceof AssignmentPattern asn) {
+            collectIdentifierLeafNames(asn.left(), out);
+        } else if (pattern instanceof RestElement re) {
+            collectIdentifierLeafNames(re.argument(), out);
+        }
+    }
+
     private void collectLetIdsFromPattern(Node pattern, java.util.LinkedHashMap<String, Integer> map) {
         if (pattern instanceof Identifier id) {
             int slot = localNames.size();
@@ -1649,6 +1697,32 @@ public final class Generator {
     // ------------------------------------------------------------
 
     private void lowerProgram(Program program) {
+        // ECMA-262 § 9.4.3 InitializeHostDefinedRealm + ModuleNamespaceEnvironment:
+        // at module top level, the `this` binding is `undefined`. The
+        // interpreter's default seeds THIS_VALUE with globalThis for scripts;
+        // explicitly Mov undefined so `this` at module top level observes the
+        // spec value. Functions called from the module body get their own
+        // THIS_VALUE via the call-site setup.
+        if (moduleMode) {
+            emit(new Op.Mov(Variable.Register.THIS_VALUE, constant(Undefined.VALUE)));
+            // ECMA-262 § 16.2.1.6.4 InitializeEnvironment: every top-level
+            // let/const/class binding is created (uninitialized → TDZ) in
+            // the Module Environment Record BEFORE module-body evaluation.
+            // Without this priming, `typeof X` before `let X` returns
+            // "undefined" rather than throwing ReferenceError. We materialize
+            // the TDZ sentinel under each top-level lexical name in module
+            // globals so that GetGlobal / TypeofBinding observe TDZ before
+            // the user-level initializer runs.
+            java.util.LinkedHashSet<String> topLevelLexNames = new java.util.LinkedHashSet<>();
+            collectTopLevelLexicalNames(program.body(), topLevelLexNames);
+            if (!topLevelLexNames.isEmpty()) {
+                Operand tdzConst = constant(InterpContext.TDZ);
+                for (String n : topLevelLexNames) {
+                    globalNames.add(n);
+                    emit(new Op.InitializeLexicalBinding(n, tdzConst, new EnvironmentCoordinate()));
+                }
+            }
+        }
         // Pre-pass: hoist top-level `var` names. Pre-binds each on globalThis
         // to undefined at script-load. Initializers in the body emit SetGlobal.
         collectVarHoists(program.body());
@@ -1995,11 +2069,16 @@ public final class Generator {
         }
         // In module mode the loader pre-installs ImportRef sentinels under
         // each imported name in the module's globals BEFORE the body runs.
-        // Emitting an InitializeLexicalBinding here would clobber those refs
-        // with Undefined.VALUE — so we skip emission entirely.
+        // Emit a putIfAbsent-style init so the ImportRef is preserved when
+        // the loader is in play; if there is no loader (test runner
+        // executing a module-flagged test directly), the name still gets
+        // bound to undefined so references resolve rather than throw
+        // ReferenceError.
         if (moduleMode) {
             for (Node spec : id.specifiers()) {
-                globalNames.add(localNameOf(spec));
+                String localName = localNameOf(spec);
+                globalNames.add(localName);
+                emit(new Op.InitializeImportBinding(localName));
             }
             return;
         }

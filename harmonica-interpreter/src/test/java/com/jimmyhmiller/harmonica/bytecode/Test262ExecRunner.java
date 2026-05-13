@@ -253,7 +253,7 @@ public final class Test262ExecRunner {
         // expected error so the test passes if the type matches SyntaxError.
         Executable exe;
         try {
-            exe = Generator.generate(ast);
+            exe = Generator.generate(ast, /* moduleMode */ isModule);
         } catch (Throwable t) {
             if (fm.negativePhase != null
                 && (fm.negativePhase.equals("parse") || fm.negativePhase.equals("early"))

@@ -209,6 +209,7 @@ public final class Disassembler {
             // LibJS dump format places the identifier as a positional `name` argument.
             case Op.InitializeLexicalBinding o -> "InitializeLexicalBinding `" + o.identifier() + "`"
                                                   + ", src:" + operand(o.src(), exe);
+            case Op.InitializeImportBinding o  -> "InitializeImportBinding `" + o.identifier() + "`";
             case Op.GetGlobal o      -> "GetGlobal " + dst(o.dst()) + ", `" + o.identifier() + "`";
             case Op.GetBinding o     -> "GetBinding " + dst(o.dst()) + ", `" + o.identifier() + "`";
             case Op.SetGlobal o      -> "SetGlobal `" + o.identifier() + "`, src:" + operand(o.src(), exe);
