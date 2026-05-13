@@ -55,6 +55,16 @@ public final class Generator {
     private boolean isAsyncFn;
 
     /**
+     * True when the current function is a static class method. Static
+     * methods' {@code HomeObject} is the class constructor itself
+     * (not its prototype), so {@code super.X} in a static context
+     * reads the parent class directly: {@code super.X === C.[[Prototype]]
+     * .X}. We forward this flag from the class-body codegen down to
+     * {@link #lowerMemberExpression} so it picks the right base.
+     */
+    private boolean inStaticMethod;
+
+    /**
      * Local slot for the function's {@code arguments} binding, or -1 if not
      * pre-allocated (arrow functions, or non-arrow functions whose body never
      * references {@code arguments}). Populated at body entry by
@@ -834,11 +844,31 @@ public final class Generator {
         boolean isGenerator,
         boolean isAsync
     ) {
+        return generateFunction(name, params, body, isArrow, isGenerator, isAsync,
+                                /* inStaticMethod */ pendingStaticMethod);
+    }
+
+    /** One-shot flag consumed by the next {@link #generateFunction} call —
+     *  class-body codegen flips this on right before generating each
+     *  {@code static} method's body. */
+    private boolean pendingStaticMethod;
+
+    private JSFunction generateFunction(
+        String name,
+        List<Pattern> params,
+        BlockStatement body,
+        boolean isArrow,
+        boolean isGenerator,
+        boolean isAsync,
+        boolean inStaticMethod
+    ) {
+        pendingStaticMethod = false;
         Generator g = new Generator();
         g.atTopLevel = false;
         g.inFunctionBody = true;
         g.isArrow = isArrow;
         g.isAsyncFn = isAsync;
+        g.inStaticMethod = inStaticMethod;
         g.globalNames.addAll(this.globalNames);
         g.parent = this;
         // Strict mode inherits from outer function (§ 11.2.2): a function
@@ -3932,6 +3962,7 @@ public final class Generator {
             if (n instanceof MethodDefinition md) {
                 String name = classMemberKey(md.computed(), md.key());
                 Object keyValue = classMemberKeyValue(md.computed(), md.key());
+                if (md.isStatic()) pendingStaticMethod = true;
                 JSFunction fn = generateFunction(
                     name != null ? name : md.kind(),
                     md.value().params(), md.value().body(),
@@ -4281,6 +4312,7 @@ public final class Generator {
             if (n instanceof MethodDefinition md) {
                 String name = classMemberKey(md.computed(), md.key());
                 Object keyValue = classMemberKeyValue(md.computed(), md.key());
+                if (md.isStatic()) pendingStaticMethod = true;
                 JSFunction fn = generateFunction(
                     name != null ? name : md.kind(),
                     md.value().params(), md.value().body(),
@@ -8384,10 +8416,15 @@ public final class Generator {
             if (me.object() instanceof Super) {
                 Variable.Register superCtor = allocRegister();
                 emit(new Op.GetSuperConstructor(superCtor));
-                Variable.Register superBase = allocRegister();
-                emit(new Op.GetById(superBase, superCtor, "prototype", null,
-                    new com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache()));
-                release(superCtor);
+                Variable.Register superBase;
+                if (inStaticMethod) {
+                    superBase = superCtor;
+                } else {
+                    superBase = allocRegister();
+                    emit(new Op.GetById(superBase, superCtor, "prototype", null,
+                        new com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache()));
+                    release(superCtor);
+                }
                 Variable.Register calleeReg = allocRegister();
                 String foldedKey = me.computed() ? foldedComputedMemberName(me.property()) : null;
                 if (me.computed() && foldedKey == null) {
@@ -9456,10 +9493,24 @@ public final class Generator {
         if (me.object() instanceof Super) {
             Variable.Register superCtor = allocRegister();
             emit(new Op.GetSuperConstructor(superCtor));
-            Variable.Register superBase = allocRegister();
-            emit(new Op.GetById(superBase, superCtor, "prototype", null,
-                new com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache()));
-            release(superCtor);
+            Variable.Register superBase;
+            if (inStaticMethod) {
+                // ECMA-262 § 13.3.7.2: in a static method,
+                // {@code HomeObject} is the class constructor and
+                // {@code GetSuperBase()} returns its [[Prototype]] —
+                // that's the parent class itself, since
+                // {@code GetSuperConstructor} already returns it. Use
+                // superCtor as the base directly.
+                superBase = superCtor;
+            } else {
+                // Instance methods: HomeObject is the prototype, so
+                // {@code SuperBase} = parent's prototype. Read it off
+                // the captured super constructor.
+                superBase = allocRegister();
+                emit(new Op.GetById(superBase, superCtor, "prototype", null,
+                    new com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache()));
+                release(superCtor);
+            }
             Variable.Register dst = allocRegister();
             String foldedName = me.computed() ? foldedComputedMemberName(me.property()) : null;
             if (me.computed() && foldedName == null) {

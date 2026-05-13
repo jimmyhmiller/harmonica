@@ -2772,6 +2772,8 @@ public final class Realm {
         installError(globals, "ReferenceError", "ReferenceError");
         installError(globals, "SyntaxError", "SyntaxError");
         installError(globals, "URIError", "URIError");
+        installError(globals, "EvalError", "EvalError");
+        installError(globals, "AggregateError", "AggregateError");
 
         // Indirect eval — parse + run the source string. Does NOT see caller scope.
         globals.putIfAbsent("eval", nativeFn("eval", 1, (t, a, c) -> {

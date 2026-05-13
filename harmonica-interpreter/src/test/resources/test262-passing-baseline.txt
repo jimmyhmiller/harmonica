@@ -6696,9 +6696,11 @@ expressions/class/static-init-await-binding.js
 expressions/class/static-init-await-reference.js
 expressions/class/static-method-length-dflt.js
 expressions/class/static-method-param-dflt-yield.js
+expressions/class/subclass-builtins/subclass-AggregateError.js
 expressions/class/subclass-builtins/subclass-Array.js
 expressions/class/subclass-builtins/subclass-Boolean.js
 expressions/class/subclass-builtins/subclass-Error.js
+expressions/class/subclass-builtins/subclass-EvalError.js
 expressions/class/subclass-builtins/subclass-Function.js
 expressions/class/subclass-builtins/subclass-Number.js
 expressions/class/subclass-builtins/subclass-Object.js
@@ -16645,9 +16647,11 @@ statements/class/static-method-length-dflt.js
 statements/class/static-method-param-yield.js
 statements/class/strict-mode/arguments-callee.js
 statements/class/strict-mode/with.js
+statements/class/subclass-builtins/subclass-AggregateError.js
 statements/class/subclass-builtins/subclass-Array.js
 statements/class/subclass-builtins/subclass-Boolean.js
 statements/class/subclass-builtins/subclass-Error.js
+statements/class/subclass-builtins/subclass-EvalError.js
 statements/class/subclass-builtins/subclass-Function.js
 statements/class/subclass-builtins/subclass-Number.js
 statements/class/subclass-builtins/subclass-Object.js
@@ -16660,6 +16664,8 @@ statements/class/subclass-builtins/subclass-TypeError.js
 statements/class/subclass-builtins/subclass-URIError.js
 statements/class/subclass/builtin-objects/Error/message-property-assignment.js
 statements/class/subclass/builtin-objects/Error/regular-subclassing.js
+statements/class/subclass/builtin-objects/NativeError/EvalError-message.js
+statements/class/subclass/builtin-objects/NativeError/EvalError-name.js
 statements/class/subclass/builtin-objects/NativeError/RangeError-message.js
 statements/class/subclass/builtin-objects/NativeError/RangeError-name.js
 statements/class/subclass/builtin-objects/NativeError/ReferenceError-message.js
@@ -16695,6 +16701,9 @@ statements/class/super/in-constructor.js
 statements/class/super/in-getter.js
 statements/class/super/in-methods.js
 statements/class/super/in-setter.js
+statements/class/super/in-static-getter.js
+statements/class/super/in-static-methods.js
+statements/class/super/in-static-setter.js
 statements/class/syntax/class-body-has-direct-super-class-heritage.js
 statements/class/syntax/class-declaration-binding-identifier-class-element-list.js
 statements/class/syntax/class-declaration-computed-method-definition.js
@@ -20254,6 +20263,8 @@ statements/try/S12.14_A18_T4.js
 statements/try/S12.14_A18_T5.js
 statements/try/S12.14_A18_T6.js
 statements/try/S12.14_A18_T7.js
+statements/try/S12.14_A19_T1.js
+statements/try/S12.14_A19_T2.js
 statements/try/S12.14_A5.js
 statements/try/S12.14_A6.js
 statements/try/S12.14_A8.js
