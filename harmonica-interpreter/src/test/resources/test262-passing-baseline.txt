@@ -16917,6 +16917,7 @@ statements/class/syntax/class-method-propname-constructor.js
 statements/class/syntax/early-errors/class-definition-evaluation-block-duplicate-binding.js
 statements/class/syntax/early-errors/class-definition-evaluation-scriptbody-duplicate-binding.js
 statements/class/syntax/escaped-static.js
+statements/const/block-local-closure-get-before-initialization.js
 statements/const/block-local-use-before-initialization-in-declaration-statement.js
 statements/const/block-local-use-before-initialization-in-prior-statement.js
 statements/const/cptn-value.js
@@ -20198,6 +20199,7 @@ statements/labeled/value-yield-non-strict-escaped.js
 statements/labeled/value-yield-non-strict.js
 statements/labeled/value-yield-strict-escaped.js
 statements/labeled/value-yield-strict.js
+statements/let/block-local-closure-get-before-initialization.js
 statements/let/block-local-use-before-initialization-in-declaration-statement.js
 statements/let/block-local-use-before-initialization-in-prior-statement.js
 statements/let/cptn-value.js

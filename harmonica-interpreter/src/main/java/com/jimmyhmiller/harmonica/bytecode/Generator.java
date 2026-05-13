@@ -1753,6 +1753,25 @@ public final class Generator {
             preAllocateLetSlotsRecurse(s);
         }
 
+        // ECMA-262 § 9.1.1.1 Declarative Environment Record: every let/const
+        // binding is created in an "uninitialized" state. Closures captured
+        // before the declaration's initializer runs must observe the TDZ
+        // sentinel so reads throw ReferenceError. Pre-fill every block-let
+        // slot with TDZ at program entry, mirroring what generateFunction
+        // already does at function entry (lines ~1014-1021).
+        {
+            java.util.Set<Integer> tdzSlots = new java.util.TreeSet<>();
+            for (var letMap : blockLetSlots.values()) {
+                tdzSlots.addAll(letMap.values());
+            }
+            if (!tdzSlots.isEmpty()) {
+                Operand tdzConst = constant(InterpContext.TDZ);
+                for (int slot : tdzSlots) {
+                    emit(new Op.Mov(new Variable.Local(slot), tdzConst));
+                }
+            }
+        }
+
         // Pre-pass: hoist top-level FunctionDeclarations. They're bound and
         // materialized at script-load time (matches LibJS) — no ops in the
         // body. Includes async/generator declarations, which are still
