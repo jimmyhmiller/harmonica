@@ -429,9 +429,15 @@ public final class AbstractOps {
         if (base instanceof JSFunction fn) {
             // Static-style properties live on the function itself.
             if (fn.hasOwnStatic(prop)) return fn.getOwnStatic(prop);
-            // Spec virtual properties: name, length.
-            if ("name".equals(prop)) return fn.name() != null ? fn.name() : "";
-            if ("length".equals(prop)) return boxDouble(fn.paramCount());
+            // Spec virtual properties: name, length. The deleted-flag
+            // routes them through the proto-chain like any missing prop
+            // so {@code delete fn.name; fn.name} yields {@code undefined}.
+            if ("name".equals(prop) && !fn.isNameDeleted()) {
+                return fn.name() != null ? fn.name() : "";
+            }
+            if ("length".equals(prop) && !fn.isLengthDeleted()) {
+                return boxDouble(fn.paramCount());
+            }
             // `prototype` exposes the function's prototype object. Native
             // functions don't auto-create one; user functions do (so
             // `Foo.prototype.method = ...` just works without `class`).
@@ -567,6 +573,15 @@ public final class AbstractOps {
             if ("prototype".equals(prop)) {
                 if (value instanceof JSObject p) fn.setPrototypeObject(p);
                 else if (value == null || value == Undefined.VALUE) fn.setPrototypeObject(null);
+                return;
+            }
+            // ECMA-262 § 10.2.10: the virtual {@code name} and {@code length}
+            // properties on a Function have {writable: false, configurable:
+            // true}. Silently drop the write in sloppy mode to match the
+            // descriptor (and {@code verifyProperty}'s isWritable probe).
+            // A user who really wants to rebind these does so through
+            // {@code Object.defineProperty}, which takes a separate path.
+            if (("name".equals(prop) || "length".equals(prop)) && !fn.hasOwnStatic(prop)) {
                 return;
             }
             fn.properties().put(prop, value);

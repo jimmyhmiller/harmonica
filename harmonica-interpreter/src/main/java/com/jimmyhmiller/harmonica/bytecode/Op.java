@@ -239,7 +239,18 @@ public sealed interface Op {
                         "Cannot delete property '" + property + "' of " + b);
                 }
             } else if (b instanceof JSFunction jf) {
-                if (jf.hasOwnStatic(property)) {
+                // ECMA-262 § 10.2.10: the virtual {@code name} / {@code
+                // length} properties are configurable, so {@code delete}
+                // removes them. Flip the deleted flag; subsequent reads,
+                // {@code hasOwnProperty}, and {@code in} now treat the
+                // property as absent.
+                if ("name".equals(property)) {
+                    jf.markNameDeleted();
+                    result = Boolean.TRUE;
+                } else if ("length".equals(property)) {
+                    jf.markLengthDeleted();
+                    result = Boolean.TRUE;
+                } else if (jf.hasOwnStatic(property)) {
                     if (jf.isConfigurable(property)) {
                         jf.properties().remove(property);
                         result = Boolean.TRUE;
@@ -281,7 +292,13 @@ public sealed interface Op {
                         "Cannot delete property '" + prop + "' of " + b);
                 }
             } else if (b instanceof JSFunction jf) {
-                if (jf.hasOwnStatic(prop)) {
+                if ("name".equals(prop)) {
+                    jf.markNameDeleted();
+                    result = Boolean.TRUE;
+                } else if ("length".equals(prop)) {
+                    jf.markLengthDeleted();
+                    result = Boolean.TRUE;
+                } else if (jf.hasOwnStatic(prop)) {
                     if (jf.isConfigurable(prop)) {
                         jf.properties().remove(prop);
                         result = Boolean.TRUE;
@@ -2736,8 +2753,19 @@ public sealed interface Op {
             try {
                 com.jimmyhmiller.harmonica.module.ModuleResolver.Resolved resolved =
                     com.jimmyhmiller.harmonica.module.ModuleResolver.resolveEsm(specStr, active.referrer());
+                // ECMA-262 dynamic import is ESM. {@code formatForFile}
+                // would return CJS for plain {@code .js} when the closest
+                // package.json doesn't set "type": "module" (Node's
+                // default), but test262 fixtures and most ESM modules
+                // resolved by import() use ESM syntax. Honor the
+                // resolver's hint when it picked ESM/JSON; fall back to
+                // ESM when it would have routed to CJS.
+                com.jimmyhmiller.harmonica.module.ModuleResolver.Format fmt =
+                    resolved.format() == com.jimmyhmiller.harmonica.module.ModuleResolver.Format.CJS
+                        ? com.jimmyhmiller.harmonica.module.ModuleResolver.Format.ESM
+                        : resolved.format();
                 com.jimmyhmiller.harmonica.module.ModuleRecord rec =
-                    active.loader().load(resolved.path(), resolved.format());
+                    active.loader().load(resolved.path(), fmt);
                 Object namespace = rec.effectiveExports();
                 dst.store(ctx, Realm.wrapInPromise(namespace, ctx));
             } catch (java.io.IOException io) {

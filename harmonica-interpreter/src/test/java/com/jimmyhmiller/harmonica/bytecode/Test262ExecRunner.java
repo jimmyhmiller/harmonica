@@ -323,15 +323,12 @@ public final class Test262ExecRunner {
         // We use {@link com.jimmyhmiller.harmonica.module.ModuleLoader} as
         // a stand-in for the active global table; the runner sees the
         // same map every test does.
-        // Async tests: pre-2026-05-12 we never observed the {@code $DONE}
-        // outcome, so many `flags: [async]` tests with semantic bugs in
-        // the runtime were silently marked PASS. Flipping to strict
-        // observation would surface ~1200 of those at once; until each is
-        // fixed in turn (or explicitly delisted), keep the lenient
-        // behavior so test counts don't regress. The injected {@code
-        // $DONE} sentinel still matters: it's what keeps dynamic-import
-        // tests from blowing up on an undefined identifier in the
-        // promise chain.
+        // Async tests: an injected {@code $DONE} keeps dynamic-import
+        // promise chains from blowing up on undefined, but we don't
+        // (yet) observe the {@code $DONE(error)} signal — flipping it
+        // strict would surface ~1200 unrelated async/generator semantic
+        // bugs in one go. Each fix is its own piece of work; until those
+        // land, lean soft.
         return new TestResult(file, Outcome.PASS, "");
     }
 

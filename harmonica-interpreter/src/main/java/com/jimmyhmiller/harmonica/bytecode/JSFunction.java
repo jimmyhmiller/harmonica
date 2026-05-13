@@ -38,6 +38,22 @@ public final class JSFunction {
     public void setGenerator(boolean g) { this.isGenerator = g; }
 
     /**
+     * ECMA-262 § 10.2.10: a function's virtual {@code name} and {@code
+     * length} have {writable: false, configurable: true}. When user code
+     * runs {@code delete fn.name} or {@code delete fn.length}, the
+     * descriptor should be gone — subsequent reads return undefined and
+     * {@code hasOwnProperty} returns false. We mark via a flag instead
+     * of materializing the property into the static-properties map so
+     * the common (un-deleted) case still hits the cheap virtual path.
+     */
+    private boolean nameDeleted;
+    private boolean lengthDeleted;
+    public boolean isNameDeleted()   { return nameDeleted; }
+    public boolean isLengthDeleted() { return lengthDeleted; }
+    public void markNameDeleted()    { this.nameDeleted = true; }
+    public void markLengthDeleted()  { this.lengthDeleted = true; }
+
+    /**
      * True for {@code async function} declarations / expressions and async
      * methods. ECMA-262 § 27.7.5 (Async Function bodies). Calling an async
      * function always returns a Promise; the body's value resolves it (or

@@ -282,7 +282,8 @@ public final class Realm {
                 return idx >= 0 && idx < arr.length();
             }
             if (thisVal instanceof JSFunction fn) {
-                if ("name".equals(key) || "length".equals(key)) return true;
+                if ("name".equals(key))   return !fn.isNameDeleted();
+                if ("length".equals(key)) return !fn.isLengthDeleted();
                 if (fn.hasOwnStatic(key)) return true;
                 if ("prototype".equals(key) && fn.prototypeObject() != null) return true;
                 return false;
@@ -2464,14 +2465,14 @@ public final class Realm {
                 // Function virtual properties — name and length per
                 // ECMA-262 § 10.2.10 (writable: false, enumerable: false,
                 // configurable: true).
-                if ("length".equals(key)) {
+                if ("length".equals(key) && !fn.isLengthDeleted()) {
                     desc.set("value", (double) fn.paramCount());
                     desc.set("writable", false);
                     desc.set("enumerable", false);
                     desc.set("configurable", true);
                     return desc;
                 }
-                if ("name".equals(key)) {
+                if ("name".equals(key) && !fn.isNameDeleted()) {
                     desc.set("value", fn.name() != null ? fn.name() : "");
                     desc.set("writable", false);
                     desc.set("enumerable", false);
