@@ -142,6 +142,71 @@ public final class Realm {
      * mutate the shared singleton; without reset, every following test that
      * spreads/iterates an array fails.
      */
+    /**
+     * Return {@code keys} in ECMA-262 § 7.3.22 OrdinaryOwnPropertyKeys order
+     * — array-index keys first in ascending numeric order, then non-index
+     * string keys in insertion order. Filters out private names ('#'-prefixed).
+     */
+    static java.util.List<String> orderedOwnPropertyNames(java.util.Collection<String> keys) {
+        java.util.TreeMap<Long, String> indices = new java.util.TreeMap<>();
+        java.util.List<String> strings = new java.util.ArrayList<>();
+        for (String k : keys) {
+            if (k == null || k.isEmpty()) { if (k != null) strings.add(k); continue; }
+            if (k.charAt(0) == '#') continue;
+            long idx = -1;
+            char c0 = k.charAt(0);
+            if (c0 >= '0' && c0 <= '9' && (k.length() == 1 || c0 != '0')) {
+                boolean allDigits = true;
+                for (int i = 0; i < k.length(); i++) {
+                    char c = k.charAt(i);
+                    if (c < '0' || c > '9') { allDigits = false; break; }
+                }
+                if (allDigits) {
+                    try {
+                        long n = Long.parseLong(k);
+                        if (n >= 0 && n < 0xFFFFFFFFL) idx = n;
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+            if (idx >= 0) indices.put(idx, k);
+            else strings.add(k);
+        }
+        java.util.List<String> out = new java.util.ArrayList<>(indices.size() + strings.size());
+        out.addAll(indices.values());
+        out.addAll(strings);
+        return out;
+    }
+
+    private static void appendOrderedOwnPropertyNames(java.util.Collection<String> keys, JSArray out) {
+        java.util.TreeMap<Long, String> indices = new java.util.TreeMap<>();
+        java.util.List<String> strings = new java.util.ArrayList<>();
+        for (String k : keys) {
+            if (k == null || k.isEmpty()) { strings.add(k); continue; }
+            if (k.charAt(0) == '#') continue;   // private names excluded
+            // Array-index per § 7.1.21: integer in [0, 2^32 - 1] whose ToString
+            // round-trips. Leading zeros, "+", "-", "Infinity" etc. don't.
+            long idx = -1;
+            char c0 = k.charAt(0);
+            if (c0 >= '0' && c0 <= '9' && (k.length() == 1 || c0 != '0')) {
+                boolean allDigits = true;
+                for (int i = 0; i < k.length(); i++) {
+                    char c = k.charAt(i);
+                    if (c < '0' || c > '9') { allDigits = false; break; }
+                }
+                if (allDigits) {
+                    try {
+                        long n = Long.parseLong(k);
+                        if (n >= 0 && n < 0xFFFFFFFFL) idx = n;
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+            if (idx >= 0) indices.put(idx, k);
+            else strings.add(k);
+        }
+        for (String k : indices.values()) out.push(k);
+        for (String k : strings) out.push(k);
+    }
+
     public static synchronized void resetForNewRun() {
         prototypesReady = false;
         objectPrototype = null;
@@ -2417,22 +2482,24 @@ public final class Realm {
         objectCtor.properties().put("keys", nativeFn("keys", 1, (t, a, c) -> {
             JSArray out = new JSArray();
             Object v = arg(a, 0);
-            // § 15.7.1.4: private '#' keys are invisible to ownKeys/keys/etc.
+            // § 7.3.22 OrdinaryOwnPropertyKeys: array-indices first in
+            // ascending numeric order, then string keys in insertion order.
             // § 20.1.2.17: Object.keys returns only OWN ENUMERABLE keys.
-            if (v instanceof JSObject jo) for (String k : jo.properties().keySet()) {
-                if (!isPrivateName(k) && jo.isEnumerable(k)) out.push(k);
+            if (v instanceof JSObject jo) {
+                for (String k : orderedOwnPropertyNames(jo.properties().keySet())) {
+                    if (jo.isEnumerable(k)) out.push(k);
+                }
+            } else if (v instanceof JSArray arr) {
+                for (int i = 0; i < arr.length(); i++) out.push(String.valueOf(i));
             }
-            else if (v instanceof JSArray arr) for (int i = 0; i < arr.length(); i++) out.push(String.valueOf(i));
             return out;
         }));
         objectCtor.properties().put("values", nativeFn("values", 1, (t, a, c) -> {
             JSArray out = new JSArray();
             Object v = arg(a, 0);
             if (v instanceof JSObject jo) {
-                for (var e : jo.properties().entrySet()) {
-                    if (!isPrivateName(e.getKey()) && jo.isEnumerable(e.getKey())) {
-                        out.push(e.getValue());
-                    }
+                for (String k : orderedOwnPropertyNames(jo.properties().keySet())) {
+                    if (jo.isEnumerable(k)) out.push(jo.properties().get(k));
                 }
             } else if (v instanceof JSArray arr) for (Object e : arr.elements()) out.push(e);
             return out;
@@ -2441,12 +2508,11 @@ public final class Realm {
             JSArray out = new JSArray();
             Object v = arg(a, 0);
             if (v instanceof JSObject jo) {
-                for (var e : jo.properties().entrySet()) {
-                    if (isPrivateName(e.getKey())) continue;
-                    if (!jo.isEnumerable(e.getKey())) continue;
+                for (String k : orderedOwnPropertyNames(jo.properties().keySet())) {
+                    if (!jo.isEnumerable(k)) continue;
                     JSArray pair = new JSArray();
-                    pair.push(e.getKey());
-                    pair.push(e.getValue());
+                    pair.push(k);
+                    pair.push(jo.properties().get(k));
                     out.push(pair);
                 }
             }
@@ -2689,13 +2755,9 @@ public final class Realm {
             JSArray out = new JSArray();
             Object v = arg(a, 0);
             if (v instanceof JSObject jo) {
-                for (String k : jo.properties().keySet()) {
-                    if (!isPrivateName(k)) out.push(k);
-                }
+                appendOrderedOwnPropertyNames(jo.properties().keySet(), out);
             } else if (v instanceof JSFunction fn) {
-                for (String k : fn.properties().keySet()) {
-                    if (!isPrivateName(k)) out.push(k);
-                }
+                appendOrderedOwnPropertyNames(fn.properties().keySet(), out);
             } else if (v instanceof JSArray arr) {
                 for (int i = 0; i < arr.length(); i++) out.push(String.valueOf(i));
                 out.push("length");

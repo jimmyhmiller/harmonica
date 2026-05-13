@@ -492,6 +492,7 @@ comments/multi-line-asi-line-separator.js
 comments/multi-line-asi-paragraph-separator.js
 comments/multi-line-html-close-extra.js
 comments/single-line-html-close-without-lt.js
+computed-property-names/basics/number.js
 computed-property-names/basics/string.js
 computed-property-names/class/accessor/getter-duplicates.js
 computed-property-names/class/accessor/getter.js
@@ -505,6 +506,7 @@ computed-property-names/class/method/constructor-duplicate-2.js
 computed-property-names/class/method/constructor-duplicate-3.js
 computed-property-names/class/method/constructor.js
 computed-property-names/class/method/generator.js
+computed-property-names/class/method/number.js
 computed-property-names/class/method/string.js
 computed-property-names/class/static/generator-constructor.js
 computed-property-names/class/static/getter-constructor.js
@@ -518,9 +520,12 @@ computed-property-names/object/accessor/getter.js
 computed-property-names/object/accessor/setter-duplicates.js
 computed-property-names/object/accessor/setter.js
 computed-property-names/object/method/generator.js
+computed-property-names/object/method/number.js
 computed-property-names/object/method/string.js
 computed-property-names/object/property/number-duplicates.js
 computed-property-names/to-name-side-effects/class.js
+computed-property-names/to-name-side-effects/numbers-class.js
+computed-property-names/to-name-side-effects/numbers-object.js
 computed-property-names/to-name-side-effects/object.js
 destructuring/binding/initialization-requires-object-coercible-null.js
 destructuring/binding/initialization-requires-object-coercible-undefined.js
