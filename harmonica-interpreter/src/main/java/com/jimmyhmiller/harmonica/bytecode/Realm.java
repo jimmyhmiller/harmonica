@@ -2969,7 +2969,12 @@ public final class Realm {
             String k = key instanceof String s ? s
                 : key instanceof JSSymbol sy ? sy.asPropertyKey()
                 : AbstractOps.toString(key);
-            if (target instanceof JSObject jo) { jo.delete(k); return true; }
+            if (target instanceof JSObject jo) {
+                // Spec § 28.1.16 Reflect.deleteProperty calls [[Delete]]
+                // which returns false for non-configurable own props.
+                Object r = jo.delete(k);
+                return r == Boolean.TRUE;
+            }
             return false;
         }));
         reflect.set("ownKeys", nativeFn("ownKeys", 1, (t, a, c) -> {
