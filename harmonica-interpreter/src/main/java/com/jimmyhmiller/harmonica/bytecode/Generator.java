@@ -2062,6 +2062,17 @@ public final class Generator {
                 emit(new Op.GetGlobal(r, cd.id().name(), new GlobalVariableCache()));
                 emit(new Op.InitializeLexicalBinding(DEFAULT_EXPORT_BINDING, r, new EnvironmentCoordinate()));
                 release(r);
+            } else if (inner instanceof ClassDeclaration cd && cd.id() == null) {
+                // Anonymous {@code export default class { ... }} — synthesize
+                // a ClassExpression and lower as a value-producing
+                // expression. NamedEvaluation gives it {@code .name === "default"}.
+                ClassExpression syntheticCe = new ClassExpression(
+                    cd.start(), cd.end(), cd.loc(), null, cd.superClass(), cd.body());
+                pendingFunctionName = "default";
+                Operand v = lowerExpression(syntheticCe);
+                pendingFunctionName = null;
+                emit(new Op.InitializeLexicalBinding(DEFAULT_EXPORT_BINDING, v, new EnvironmentCoordinate()));
+                release(v);
             } else if (inner instanceof Expression e) {
                 // ECMA-262 § 16.2.3.7 ExportDeclaration : `export default
                 // AssignmentExpression`: when AssignmentExpression is an
