@@ -10375,6 +10375,7 @@ expressions/subtraction/S11.6.2_A4_T8.js
 expressions/subtraction/bigint-errors.js
 expressions/subtraction/order-of-evaluation.js
 expressions/super/call-arg-evaluation-err.js
+expressions/super/call-bind-this-value.js
 expressions/super/call-construct-error.js
 expressions/super/call-expr-value.js
 expressions/super/call-spread-err-mult-err-expr-throws.js

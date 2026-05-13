@@ -1485,6 +1485,23 @@ public sealed interface Op {
     }
 
     /**
+     * ECMA-262 § 13.3.7.1.1 SuperCall step 7-8: after a super() call,
+     * if the parent constructor returned an object, that becomes the
+     * derived class's {@code this}. Primitives (including
+     * {@code undefined}) leave the existing receiver in place.
+     */
+    record SuperBindThis(Operand result) implements Op {
+        @Override public Operation operation() { return Operation.SET_PROTO_OR_NOP; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            Object r = result.retrieve(ctx);
+            if (r instanceof JSObject || r instanceof JSArray || r instanceof JSFunction) {
+                ctx.registers()[Variable.Register.THIS_VALUE_INDEX] = r;
+            }
+            return pc + 1;
+        }
+    }
+
+    /**
      * Fused object-literal construction: allocate a JSObject with a
      * precomputed shape and pre-filled storage in one step. Replaces the
      * sequence {@code NewObject + N×InitObjectLiteralProperty +

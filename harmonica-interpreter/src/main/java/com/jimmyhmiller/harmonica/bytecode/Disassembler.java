@@ -303,6 +303,7 @@ public final class Disassembler {
             case Op.NewObject o      -> "NewObject " + dst(o.dst());
             case Op.SetProtoOrNop o  -> "SetProtoOrNop target:" + operand(o.target(), exe)
                                         + ", value:" + operand(o.value(), exe);
+            case Op.SuperBindThis o  -> "SuperBindThis result:" + operand(o.result(), exe);
             case Op.MakeShapedObject o -> {
                 StringBuilder sb = new StringBuilder("MakeShapedObject " + dst(o.dst()) + ", {");
                 for (int i = 0; i < o.propertyNames().length; i++) {

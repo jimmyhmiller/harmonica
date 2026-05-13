@@ -8306,6 +8306,10 @@ public final class Generator {
                     new com.jimmyhmiller.harmonica.bytecode.cache.CallSite()));
                 release(argsArr);
             }
+            // ECMA-262 § 13.3.7.1.1 SuperCall step 7-8: if the parent
+            // constructor returned an object, bind it as the new
+            // {@code this} for the rest of the derived constructor.
+            emit(new Op.SuperBindThis(dst));
             release(superFn);
             return dst;
         }
