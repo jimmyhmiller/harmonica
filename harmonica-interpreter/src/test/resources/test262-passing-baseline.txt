@@ -801,6 +801,14 @@ expressions/addition/symbol-to-string.js
 expressions/array/11.1.4-0.js
 expressions/array/11.1.4_4-5-1.js
 expressions/array/11.1.4_5-6-1.js
+expressions/array/S11.1.4_A1.1.js
+expressions/array/S11.1.4_A1.2.js
+expressions/array/S11.1.4_A1.3.js
+expressions/array/S11.1.4_A1.4.js
+expressions/array/S11.1.4_A1.5.js
+expressions/array/S11.1.4_A1.6.js
+expressions/array/S11.1.4_A1.7.js
+expressions/array/S11.1.4_A2.js
 expressions/array/spread-err-mult-err-expr-throws.js
 expressions/array/spread-err-mult-err-iter-get-value.js
 expressions/array/spread-err-mult-err-itr-get-call.js
@@ -2670,6 +2678,7 @@ expressions/async-generator/yield-star-next-then-returns-abrupt.js
 expressions/async-generator/yield-star-sync-next.js
 expressions/async-generator/yield-star-sync-return.js
 expressions/async-generator/yield-star-sync-throw.js
+expressions/await/await-BindingIdentifier-in-global.js
 expressions/await/await-BindingIdentifier-nested.js
 expressions/await/await-awaits-thenable-not-callable.js
 expressions/await/await-in-function.js
@@ -8657,8 +8666,10 @@ expressions/instanceof/S11.8.6_A5_T1.js
 expressions/instanceof/S11.8.6_A5_T2.js
 expressions/instanceof/S11.8.6_A6_T1.js
 expressions/instanceof/S11.8.6_A6_T2.js
+expressions/instanceof/S11.8.6_A6_T3.js
 expressions/instanceof/S11.8.6_A6_T4.js
 expressions/instanceof/S11.8.6_A7_T1.js
+expressions/instanceof/S11.8.6_A7_T2.js
 expressions/instanceof/S15.3.5.3_A1_T1.js
 expressions/instanceof/S15.3.5.3_A1_T2.js
 expressions/instanceof/S15.3.5.3_A1_T3.js
@@ -12464,6 +12475,7 @@ statements/async-function/returns-async-arrow.js
 statements/async-function/returns-async-function-returns-arguments-from-own-function.js
 statements/async-function/returns-async-function-returns-newtarget.js
 statements/async-function/returns-async-function.js
+statements/async-function/syntax-declaration-line-terminators-allowed.js
 statements/async-function/syntax-declaration-no-line-terminator.js
 statements/async-function/syntax-declaration.js
 statements/async-function/try-reject-finally-reject.js

@@ -569,11 +569,16 @@ public sealed interface Op {
                 throw AbruptCompletion.typeError("Right-hand side of instanceof is not callable");
             }
             JSObject proto = fn.prototypeObject();
-            if (proto == null || !(left instanceof JSObject leftObj)) {
-                dst.store(ctx, false);
-                return pc + 1;
-            }
-            JSObject cursor = leftObj.proto();
+            if (proto == null) { dst.store(ctx, false); return pc + 1; }
+            // ECMA-262 § 7.3.21 OrdinaryHasInstance: walk left's [[Prototype]]
+            // chain looking for right's [[Prototype]]. JSArrays root at
+            // arrayPrototype and JSFunctions at functionPrototype, so handle
+            // those alongside plain JSObjects.
+            JSObject cursor;
+            if (left instanceof JSObject leftObj) cursor = leftObj.proto();
+            else if (left instanceof JSArray) cursor = Realm.arrayPrototype;
+            else if (left instanceof JSFunction) cursor = Realm.functionPrototype;
+            else { dst.store(ctx, false); return pc + 1; }
             while (cursor != null) {
                 if (cursor == proto) { dst.store(ctx, true); return pc + 1; }
                 cursor = cursor.proto();
