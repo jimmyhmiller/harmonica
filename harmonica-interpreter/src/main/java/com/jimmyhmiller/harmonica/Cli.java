@@ -17,6 +17,7 @@ import com.jimmyhmiller.harmonica.module.ModuleResolver;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -168,7 +169,17 @@ public final class Cli {
             System.exit(1);
             return;
         }
-        Interpreter.interpret(exe, new Object[0], 64);
+        // Publish a module loader so dynamic {@code import(...)} in
+        // script-mode programs can resolve relative to the script's
+        // file (or the current working directory for stdin / -e).
+        ModuleLoader loader = new ModuleLoader();
+        Path referrer = Paths.get(label).toAbsolutePath();
+        ModuleLoader.setActive(loader, referrer);
+        try {
+            Interpreter.interpret(exe, new Object[0], 64);
+        } finally {
+            ModuleLoader.clearActive();
+        }
     }
 
     private static String describe(Throwable t) {

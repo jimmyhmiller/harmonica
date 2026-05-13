@@ -316,8 +316,16 @@ public final class ModuleLoader {
         Map<String, ModuleRecord> deps = new HashMap<>();
         for (String spec : records.specifiers) {
             ModuleResolver.Resolved r = ModuleResolver.resolveEsm(spec, rec.path);
+            // Transitive imports of an ESM module are themselves ESM.
+            // {@code formatForFile} routes plain {@code .js} to CJS in
+            // the absence of a {@code "type": "module"} package.json,
+            // but inside an ESM dependency graph that's wrong — the
+            // imported file contains {@code import}/{@code export}
+            // syntax that the CJS parser can't accept.
+            ModuleResolver.Format depFmt = r.format() == ModuleResolver.Format.CJS
+                ? ModuleResolver.Format.ESM : r.format();
             ModuleRecord dep = cache.get(canonicalize(r.path()));
-            if (dep == null) dep = load(r.path(), r.format());
+            if (dep == null) dep = load(r.path(), depFmt);
             deps.put(spec, dep);
         }
 

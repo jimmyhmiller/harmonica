@@ -323,7 +323,7 @@ public final class Test262ExecRunner {
         // We use {@link com.jimmyhmiller.harmonica.module.ModuleLoader} as
         // a stand-in for the active global table; the runner sees the
         // same map every test does.
-        // Async tests: $DONE observation deferred (~290 unrelated bugs).
+        // $DONE observation deferred (~287 unrelated bugs).
         return new TestResult(file, Outcome.PASS, "");
     }
 

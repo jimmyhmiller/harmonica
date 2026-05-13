@@ -12118,6 +12118,7 @@ module-code/top-level-await/dynamic-import-rejection.js
 module-code/top-level-await/dynamic-import-resolution.js
 module-code/top-level-await/early-errors-await-not-simple-assignment-target.js
 module-code/top-level-await/if-await-expr.js
+module-code/top-level-await/module-graphs-does-not-hang.js
 module-code/top-level-await/new-await-parens.js
 module-code/top-level-await/new-await-script-code.js
 module-code/top-level-await/new-await.js
