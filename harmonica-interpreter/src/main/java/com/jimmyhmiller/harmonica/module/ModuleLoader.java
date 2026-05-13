@@ -549,9 +549,14 @@ public final class ModuleLoader {
                 (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_ENUMERABLE));
         }
         // § 28.3.1 [%Symbol.toStringTag%] is { writable: false,
-        // enumerable: false, configurable: false }.
-        rec.namespace.set("@@toStringTag", "Module");
-        rec.namespace.setAttributes("@@toStringTag", (byte) 0);
+        // enumerable: false, configurable: false }. Store under the
+        // well-known symbol's property key (matches what user code
+        // does when they write {@code ns[Symbol.toStringTag]}).
+        String tagKey = com.jimmyhmiller.harmonica.bytecode.Realm.wellKnownToStringTag != null
+            ? com.jimmyhmiller.harmonica.bytecode.Realm.wellKnownToStringTag.asPropertyKey()
+            : "@@toStringTag";
+        rec.namespace.set(tagKey, "Module");
+        rec.namespace.setAttributes(tagKey, (byte) 0);
         // § 28.3: module namespace objects are non-extensible.
         rec.namespace.preventExtensions();
     }
