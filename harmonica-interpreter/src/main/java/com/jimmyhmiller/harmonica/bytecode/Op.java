@@ -1940,7 +1940,11 @@ public sealed interface Op {
      * generator's consumer. v1: lower the op but the interpreter throws since
      * suspend/resume isn't wired yet.
      */
-    record Yield(Variable dst, Operand value, boolean delegate) implements Op {
+    record Yield(Variable dst, Operand value, boolean delegate, boolean isAsync) implements Op {
+        /** Sync-generator convenience. */
+        public Yield(Variable dst, Operand value, boolean delegate) {
+            this(dst, value, delegate, /* isAsync */ false);
+        }
         @Override public Operation operation() { return Operation.YIELD; }
         @Override public int interpret(InterpContext ctx, int pc) {
             if (delegate) {
@@ -1957,9 +1961,30 @@ public sealed interface Op {
                         throw AbruptCompletion.typeError("yield* operand is not iterable: "
                             + (iterable == null ? "null" : "undefined"));
                     }
+                    // ECMA-262 § 14.4.14: in an async generator, yield* uses
+                    // GetIterator(hint=async), which tries @@asyncIterator
+                    // first and falls back to @@iterator with sync→async
+                    // wrapping. We probe @@asyncIterator only when present
+                    // and callable; otherwise drop to @@iterator. If
+                    // @@asyncIterator exists but isn't callable, that's a
+                    // hard TypeError (§ 7.4.2 GetMethod step 4).
+                    Object method = null;
+                    boolean usedAsyncIter = false;
+                    if (isAsync && Realm.wellKnownAsyncIterator != null) {
+                        Object asyncMethod = AbstractOps.getProperty(iterable,
+                            Realm.wellKnownAsyncIterator.asPropertyKey());
+                        if (asyncMethod != null && asyncMethod != Undefined.VALUE) {
+                            if (!(asyncMethod instanceof JSFunction)) {
+                                throw AbruptCompletion.typeError(
+                                    "yield*: @@asyncIterator is not callable");
+                            }
+                            method = asyncMethod;
+                            usedAsyncIter = true;
+                        }
+                    }
                     String iterKey = Realm.wellKnownIterator != null
                         ? Realm.wellKnownIterator.asPropertyKey() : "@@iterator";
-                    Object method = AbstractOps.getProperty(iterable, iterKey);
+                    if (method == null) method = AbstractOps.getProperty(iterable, iterKey);
                     if (!(method instanceof JSFunction iterMethodFn)) {
                         // Fall back to JSArray / String fast path: build a
                         // tiny synthetic iterator-object so the rest of the
@@ -1982,13 +2007,31 @@ public sealed interface Op {
                     nextFn = AbstractOps.getProperty(iter, "next");
                     ctx.setDelegatedIterator(iter);
                     ctx.setDelegatedNext(nextFn);
+                    // Remember whether to await each iterator-result for
+                    // subsequent re-entries. usedAsyncIter is set when we
+                    // resolved via @@asyncIterator above; in an async
+                    // generator we also await sync-iterator results per
+                    // § 14.4.14 (CreateAsyncFromSyncIterator).
+                    ctx.setDelegatedIsAsync(usedAsyncIter || isAsync);
                 }
                 if (!(nextFn instanceof JSFunction nfn)) {
                     throw AbruptCompletion.typeError("yield*: iterator.next is not callable");
                 }
-                Object[] callArgs = (ctx.lastResumedValue() != Undefined.VALUE)
-                    ? new Object[]{ctx.lastResumedValue()} : new Object[0];
+                // ECMA-262 § 27.5.3.8 (yield* step 7.a.i) / IteratorNext:
+                // always forward the resumed value as the first argument
+                // — even on the first iteration where it's {@code undefined}.
+                // Tests assert args.length === 1.
+                Object[] callArgs = new Object[]{ctx.lastResumedValue()};
                 Object result = Interpreter.invokeFunction(nfn, iter, callArgs, ctx);
+                if (ctx.delegatedIsAsync() && Realm.isPromise(result)) {
+                    JSObject p = (JSObject) result;
+                    String state = (String) p.properties().get(Realm.PROM_STATE);
+                    Object inner = p.properties().get(Realm.PROM_RESULT);
+                    if ("fulfilled".equals(state)) result = inner;
+                    else if ("rejected".equals(state)) throw new AbruptCompletion(inner);
+                    else throw AbruptCompletion.typeError(
+                        "yield*: iterator.next() returned a still-pending Promise");
+                }
                 if (!(result instanceof JSObject)) {
                     throw AbruptCompletion.typeError("yield*: iterator.next() did not return an object");
                 }
@@ -1999,6 +2042,7 @@ public sealed interface Op {
                     // inner's return value (§ 27.5.3.8 step 11).
                     ctx.setDelegatedIterator(null);
                     ctx.setDelegatedNext(null);
+                    ctx.setDelegatedIsAsync(false);
                     if (dst != null) dst.store(ctx, iterValue);
                     return pc + 1;
                 }
@@ -2013,7 +2057,24 @@ public sealed interface Op {
             // save where to resume, return the YIELD_DONE sentinel so the
             // suspendable interpret loop bails out and hands control back
             // to the GeneratorObject wrapping this frame.
-            ctx.setYieldedValue(value.retrieve(ctx));
+            Object yieldedValue = value.retrieve(ctx);
+            // ECMA-262 § 27.6.3.5 AsyncGeneratorYield: in an async generator,
+            // the yielded value goes through Await first. A rejected promise
+            // therefore becomes a throw inside the generator body.
+            if (isAsync && Realm.isPromise(yieldedValue)) {
+                JSObject p = (JSObject) yieldedValue;
+                String state = (String) p.properties().get(Realm.PROM_STATE);
+                Object inner = p.properties().get(Realm.PROM_RESULT);
+                if ("fulfilled".equals(state)) {
+                    yieldedValue = inner;
+                } else if ("rejected".equals(state)) {
+                    throw new AbruptCompletion(inner);
+                }
+                // Pending: leave as-is; spec would defer but we have no
+                // microtask queue. Treating it as the resolved value
+                // would deadlock the unit test, so propagate the Promise.
+            }
+            ctx.setYieldedValue(yieldedValue);
             ctx.setYieldResumePc(pc + 1);
             ctx.setYieldResumeDst(dst);
             return Op.YIELD_DONE;

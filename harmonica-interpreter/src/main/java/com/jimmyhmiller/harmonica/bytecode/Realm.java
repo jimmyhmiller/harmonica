@@ -643,21 +643,17 @@ public final class Realm {
         }));
         // ECMA-262 § 23.1.3.31 Array.prototype.values — returns an Array
         // Iterator (§ 23.1.5.1) whose .next yields each element in order.
-        JSFunction valuesFn = nativeFn("values", 0, (t, a, c) -> {
-            JSArray arr = asArray(t, "values");
-            return makeArrayIterator(arr, "value");
-        });
+        // ECMA-262 § 23.1.3.36 Array.prototype.values: this is the array's
+        // {@code @@iterator}, but the receiver only needs to be array-like
+        // (ToObject + length-driven indexed reads) — that's what makes
+        // {@code Array.prototype.values.call(arguments)} work, and what
+        // {@code arguments[@@iterator]} ends up doing via this borrow.
+        JSFunction valuesFn = nativeFn("values", 0, (t, a, c) -> makeArrayLikeIterator(t, "value"));
         arrayPrototype.set("values", valuesFn);
         // § 23.1.3.18 keys — Array Iterator over indices.
-        arrayPrototype.set("keys", nativeFn("keys", 0, (t, a, c) -> {
-            JSArray arr = asArray(t, "keys");
-            return makeArrayIterator(arr, "key");
-        }));
+        arrayPrototype.set("keys", nativeFn("keys", 0, (t, a, c) -> makeArrayLikeIterator(t, "key")));
         // § 23.1.3.4 entries — Array Iterator over [index, value] pairs.
-        arrayPrototype.set("entries", nativeFn("entries", 0, (t, a, c) -> {
-            JSArray arr = asArray(t, "entries");
-            return makeArrayIterator(arr, "key+value");
-        }));
+        arrayPrototype.set("entries", nativeFn("entries", 0, (t, a, c) -> makeArrayLikeIterator(t, "key+value")));
         // § 23.1.3.36 Array.prototype [ %Symbol.iterator% ] = .values.
         arrayPrototype.set(wellKnownIterator.asPropertyKey(), valuesFn);
         defaultArrayIterator = valuesFn;
@@ -668,6 +664,62 @@ public final class Realm {
      * with a {@code next} method that produces {@code {value, done}} records.
      * {@code kind} ∈ {@code "value"} / {@code "key"} / {@code "key+value"}.
      */
+    /**
+     * Array Iterator for an array-like receiver — JSArray, JSObject /
+     * JSFunction with numeric indexed properties and a {@code length}, or
+     * a String. Spec: § 23.1.5.1 CreateArrayIterator (which only
+     * requires array-like via ToObject + Get(length) + indexed reads,
+     * not specifically Array exotic).
+     */
+    private static JSObject makeArrayLikeIterator(Object receiver, String kind) {
+        if (receiver == null || receiver == Undefined.VALUE) {
+            throw AbruptCompletion.typeError(
+                "Array.prototype iterator: this is " + (receiver == null ? "null" : "undefined"));
+        }
+        if (receiver instanceof JSArray a) return makeArrayIterator(a, kind);
+        // Snapshot the length once at iterator-create per spec.
+        int len;
+        if (receiver instanceof String s) {
+            len = s.length();
+        } else {
+            Object lenVal = AbstractOps.getProperty(receiver, "length");
+            len = (int) AbstractOps.toNumber(lenVal);
+            if (len < 0) len = 0;
+        }
+        final int finalLen = len;
+        final Object recv = receiver;
+        JSObject iter = new JSObject();
+        int[] idx = {0};
+        iter.set("next", nativeFn("next", 0, (t, a, c) -> {
+            JSObject result = new JSObject();
+            if (idx[0] < finalLen) {
+                Object value = recv instanceof String s
+                    ? String.valueOf(s.charAt(idx[0]))
+                    : AbstractOps.getProperty(recv, Integer.toString(idx[0]));
+                Object payload = switch (kind) {
+                    case "key" -> (double) idx[0];
+                    case "key+value" -> {
+                        JSArray pair = new JSArray();
+                        pair.push((double) idx[0]);
+                        pair.push(value);
+                        yield pair;
+                    }
+                    default -> value;
+                };
+                idx[0]++;
+                result.set("value", payload);
+                result.set("done", false);
+            } else {
+                result.set("value", Undefined.VALUE);
+                result.set("done", true);
+            }
+            return result;
+        }));
+        iter.set(wellKnownIterator.asPropertyKey(), nativeFn("[Symbol.iterator]", 0,
+            (t, a, c) -> t));
+        return iter;
+    }
+
     private static JSObject makeArrayIterator(JSArray arr, String kind) {
         JSObject iter = new JSObject();
         int[] idx = {0};

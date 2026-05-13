@@ -10753,6 +10753,7 @@ expressions/yield/star-rhs-iter-get-get-err.js
 expressions/yield/star-rhs-iter-nrml-next-call-err.js
 expressions/yield/star-rhs-iter-nrml-next-call-non-obj.js
 expressions/yield/star-rhs-iter-nrml-next-get-err.js
+expressions/yield/star-rhs-iter-nrml-next-invoke.js
 expressions/yield/star-rhs-iter-nrml-res-done-err.js
 expressions/yield/star-rhs-iter-nrml-res-value-err.js
 expressions/yield/star-rhs-iter-nrml-res-value-final.js
@@ -18424,6 +18425,11 @@ statements/for-in/var-eval-strict.js
 statements/for-of/Array.prototype.Symbol.iterator.js
 statements/for-of/Array.prototype.entries.js
 statements/for-of/Array.prototype.keys.js
+statements/for-of/arguments-mapped-mutation.js
+statements/for-of/arguments-mapped.js
+statements/for-of/arguments-unmapped-aliasing.js
+statements/for-of/arguments-unmapped-mutation.js
+statements/for-of/arguments-unmapped.js
 statements/for-of/array-contract-expand.js
 statements/for-of/array-expand-contract.js
 statements/for-of/array.js

@@ -87,6 +87,15 @@ public final class InterpContext {
     private Object delegatedIterator;
     /** Cached {@code next} method of the active inner iterator, or null. */
     private Object delegatedNext;
+    /**
+     * True when the active {@code yield*} is delegating to an async
+     * iterator (or sync iterator wrapped by an async-generator context).
+     * On re-entry of the yield* op we await the iterator-result Promise
+     * before unpacking {@code value} / {@code done}.
+     */
+    private boolean delegatedIsAsync;
+    public boolean delegatedIsAsync() { return delegatedIsAsync; }
+    public void setDelegatedIsAsync(boolean v) { this.delegatedIsAsync = v; }
     public Object yieldedValue() { return yieldedValue; }
     public void setYieldedValue(Object v) { this.yieldedValue = v; }
     public int yieldResumePc() { return yieldResumePc; }

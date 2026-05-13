@@ -47,6 +47,14 @@ public final class Generator {
     private boolean isArrow;
 
     /**
+     * Whether the current Generator instance is emitting an async function
+     * body. Forwarded to {@link Op.Yield} on {@code yield*} so the iterator
+     * lookup goes through @@asyncIterator (with @@iterator fallback) instead
+     * of plain @@iterator — ECMA-262 § 14.4.14.
+     */
+    private boolean isAsyncFn;
+
+    /**
      * Local slot for the function's {@code arguments} binding, or -1 if not
      * pre-allocated (arrow functions, or non-arrow functions whose body never
      * references {@code arguments}). Populated at body entry by
@@ -830,6 +838,7 @@ public final class Generator {
         g.atTopLevel = false;
         g.inFunctionBody = true;
         g.isArrow = isArrow;
+        g.isAsyncFn = isAsync;
         g.globalNames.addAll(this.globalNames);
         g.parent = this;
         // Strict mode inherits from outer function (§ 11.2.2): a function
@@ -9049,7 +9058,7 @@ public final class Generator {
         Operand value = ye.argument() != null
             ? lowerExpression(ye.argument())
             : constant(Undefined.VALUE);
-        emit(new Op.Yield(dst, value, ye.delegate()));
+        emit(new Op.Yield(dst, value, ye.delegate(), isAsyncFn));
         release(value);
         return dst;
     }
