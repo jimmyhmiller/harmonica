@@ -1725,9 +1725,14 @@ public final class Realm {
         // top-level lets/vars do NOT show up on globalThis (we don't sync the
         // globals map back onto this object).
         JSObject globalThis = new JSObject();
+        // ECMA-262 § 19.1: undefined / NaN / Infinity are
+        // { value, writable: false, enumerable: false, configurable: false }.
         globalThis.set("undefined", Undefined.VALUE);
+        globalThis.setAttributes("undefined", (byte) 0);
         globalThis.set("NaN", Double.NaN);
+        globalThis.setAttributes("NaN", (byte) 0);
         globalThis.set("Infinity", Double.POSITIVE_INFINITY);
+        globalThis.setAttributes("Infinity", (byte) 0);
         globals.putIfAbsent("globalThis", globalThis);
 
         // console
@@ -1899,14 +1904,24 @@ public final class Realm {
         });
         numberCtor.setPrototypeObject(numberPrototype);
         numberPrototype.set("constructor", numberCtor);
+        // ECMA-262 § 21.1.2: every Number constant property has the
+        // attributes { writable: false, enumerable: false, configurable: false }.
         numberCtor.properties().put("MAX_SAFE_INTEGER", 9007199254740991.0);
+        numberCtor.setAttributes("MAX_SAFE_INTEGER", (byte) 0);
         numberCtor.properties().put("MIN_SAFE_INTEGER", -9007199254740991.0);
+        numberCtor.setAttributes("MIN_SAFE_INTEGER", (byte) 0);
         numberCtor.properties().put("MAX_VALUE", Double.MAX_VALUE);
+        numberCtor.setAttributes("MAX_VALUE", (byte) 0);
         numberCtor.properties().put("MIN_VALUE", Double.MIN_VALUE);
+        numberCtor.setAttributes("MIN_VALUE", (byte) 0);
         numberCtor.properties().put("EPSILON", Math.ulp(1.0));
+        numberCtor.setAttributes("EPSILON", (byte) 0);
         numberCtor.properties().put("POSITIVE_INFINITY", Double.POSITIVE_INFINITY);
+        numberCtor.setAttributes("POSITIVE_INFINITY", (byte) 0);
         numberCtor.properties().put("NEGATIVE_INFINITY", Double.NEGATIVE_INFINITY);
+        numberCtor.setAttributes("NEGATIVE_INFINITY", (byte) 0);
         numberCtor.properties().put("NaN", Double.NaN);
+        numberCtor.setAttributes("NaN", (byte) 0);
         numberCtor.properties().put("isInteger", nativeFn("isInteger", 1, (tt, aa, cc) -> {
             Object v = arg(aa, 0);
             if (!(v instanceof Number n)) return false;
