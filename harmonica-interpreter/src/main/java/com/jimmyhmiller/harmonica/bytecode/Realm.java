@@ -71,29 +71,39 @@ public final class Realm {
      * transition tree shares child shapes for the same property-addition
      * sequences. Keyed on the prototype's identity (null for
      * proto-less objects from {@code Object.create(null)}).
+     *
+     * <p>WeakHashMap (key) + WeakReference (value) so dead prototype trees
+     * can be collected: LibJS relies on its mark-sweep GC for this; in Java
+     * we have to be explicit. JSObject does not override {@code equals}, so
+     * WeakHashMap behaves as identity-keyed.
      */
-    private static final java.util.Map<JSObject, Shape> EMPTY_OBJECT_SHAPES =
-        new java.util.IdentityHashMap<>();
-    private static volatile Shape rootShapeForNullProto;
+    private static final java.util.Map<JSObject, java.lang.ref.WeakReference<Shape>> EMPTY_OBJECT_SHAPES =
+        new java.util.WeakHashMap<>();
+    private static volatile java.lang.ref.WeakReference<Shape> rootShapeForNullProto;
 
     public static Shape shapeForEmptyObject(JSObject proto) {
         if (proto == null) {
-            Shape s = rootShapeForNullProto;
-            if (s != null) return s;
+            java.lang.ref.WeakReference<Shape> ref = rootShapeForNullProto;
+            if (ref != null) {
+                Shape s = ref.get();
+                if (s != null) return s;
+            }
             synchronized (EMPTY_OBJECT_SHAPES) {
-                s = rootShapeForNullProto;
+                ref = rootShapeForNullProto;
+                Shape s = ref == null ? null : ref.get();
                 if (s == null) {
                     s = Shape.root(null);
-                    rootShapeForNullProto = s;
+                    rootShapeForNullProto = new java.lang.ref.WeakReference<>(s);
                 }
                 return s;
             }
         }
         synchronized (EMPTY_OBJECT_SHAPES) {
-            Shape s = EMPTY_OBJECT_SHAPES.get(proto);
+            java.lang.ref.WeakReference<Shape> ref = EMPTY_OBJECT_SHAPES.get(proto);
+            Shape s = ref == null ? null : ref.get();
             if (s == null) {
                 s = Shape.root(proto);
-                EMPTY_OBJECT_SHAPES.put(proto, s);
+                EMPTY_OBJECT_SHAPES.put(proto, new java.lang.ref.WeakReference<>(s));
             }
             return s;
         }
@@ -208,6 +218,13 @@ public final class Realm {
     }
 
     public static synchronized void resetForNewRun() {
+        // EMPTY_OBJECT_SHAPES uses weak keys + weak values, but explicit clear
+        // gives deterministic cleanup at test-sweep boundaries — we don't have
+        // to wait for a GC cycle for the old realm's prototype graphs to go.
+        synchronized (EMPTY_OBJECT_SHAPES) {
+            EMPTY_OBJECT_SHAPES.clear();
+        }
+        rootShapeForNullProto = null;
         prototypesReady = false;
         objectPrototype = null;
         functionPrototype = null;
