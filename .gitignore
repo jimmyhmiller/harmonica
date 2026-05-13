@@ -1,61 +1,59 @@
-# Java / Maven
-target/
-*.class
-*.jar
-*.war
-*.ear
-*.log
-dependency-reduced-pom.xml
 
-# IDE
-.idea/
-*.iml
-.vscode/
-*.swp
-*.swo
-.project
-.classpath
-.settings/
-
-# Node.js
-node_modules/
-dist/
-npm-debug.log*
-
-# Module loader test fixtures use synthetic node_modules trees as part of
-# the test inputs (package main/exports/imports resolution). These are
-# checked-in fixtures, not installed dependencies.
 !harmonica-core/src/test/resources/modules/**/node_modules/
 !harmonica-core/src/test/resources/modules/**/node_modules/**
-
-# OS
+.classpath
+.claude/
 .DS_Store
-Thumbs.db
-
+.idea/
+.project
+.settings/
+.vscode/
+*.class
+*.ear
+*.iml
+*.jar
+*.log
+*.swo
+*.swp
+*.war
+# Benchmarks build artifacts
+# checked-in fixtures, not installed dependencies.
+# Claude
+# Downloaded benchmark libraries (regenerate with benchmarks/download-real-world-libs.sh)
+# IDE
+# Java / Maven
+# Module loader test fixtures use synthetic node_modules trees as part of
+# Node.js
+# OS
 # Project-specific
+# test262 diff scratch
+# the test inputs (package main/exports/imports resolution). These are
 adhoc-tester-output/
+async-profiler-3.0-macos/
+async-profiler/
+benchmark-results/
+benchmarks/go/benchmark-go
+benchmarks/go/esbuild/
+benchmarks/javascript/node_modules/
+benchmarks/real-world-libs-es5/
+benchmarks/real-world-libs/
+both.txt
+dependency-reduced-pom.xml
+dist/
+libjs-only.txt
+libjs-passing.txt
+node_modules/
+npm-debug.log*
+ours-only.txt
+target/
 temp-packages/
-test-oracles/adhoc-cache/
 test-oracles/adhoc-cache-backup-test/
-test-oracles/test262-cache/
-test-oracles/test262/
+test-oracles/adhoc-cache/
 test-oracles/curated-cache/
 test-oracles/curated/
 test-oracles/ecma262/
-test-oracles/TEST262_VERSION.txt
 test-oracles/package-lock.json
-benchmark-results/
-async-profiler/
-async-profiler-3.0-macos/
-
-# Benchmarks build artifacts
-benchmarks/go/esbuild/
-benchmarks/go/benchmark-go
-
-# Downloaded benchmark libraries (regenerate with benchmarks/download-real-world-libs.sh)
-benchmarks/real-world-libs/
-benchmarks/real-world-libs-es5/
-benchmarks/javascript/node_modules/
-
-# Claude
-.claude/
+test-oracles/TEST262_VERSION.txt
+test-oracles/test262-cache/
+test-oracles/test262/
+Thumbs.db

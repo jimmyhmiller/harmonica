@@ -1166,6 +1166,8 @@ expressions/assignment/11.13.1-1-6-s.js
 expressions/assignment/11.13.1-1-s.js
 expressions/assignment/11.13.1-2-s.js
 expressions/assignment/11.13.1-4-1.js
+expressions/assignment/11.13.1-4-28gs.js
+expressions/assignment/11.13.1-4-29gs.js
 expressions/assignment/8.12.5-3-b_1.js
 expressions/assignment/8.12.5-3-b_2.js
 expressions/assignment/8.12.5-5-b_1.js
@@ -1177,6 +1179,7 @@ expressions/assignment/S11.13.1_A4_T1.js
 expressions/assignment/S11.13.1_A4_T2.js
 expressions/assignment/S11.13.1_A6_T3.js
 expressions/assignment/S11.13.1_A7_T4.js
+expressions/assignment/S8.12.4_A1.js
 expressions/assignment/S8.12.5_A1.js
 expressions/assignment/S8.12.5_A2.js
 expressions/assignment/assignment-operator-calls-putvalue-lref--rval--1.js
@@ -7128,11 +7131,16 @@ expressions/delete/11.4.1-4-a-4-s.js
 expressions/delete/11.4.1-4.a-1.js
 expressions/delete/11.4.1-4.a-10.js
 expressions/delete/11.4.1-4.a-11.js
+expressions/delete/11.4.1-4.a-12.js
+expressions/delete/11.4.1-4.a-14.js
+expressions/delete/11.4.1-4.a-15.js
 expressions/delete/11.4.1-4.a-17.js
 expressions/delete/11.4.1-4.a-2.js
 expressions/delete/11.4.1-4.a-3-s.js
 expressions/delete/11.4.1-4.a-3.js
 expressions/delete/11.4.1-4.a-8.js
+expressions/delete/11.4.1-4.a-9-s.js
+expressions/delete/11.4.1-4.a-9.js
 expressions/delete/11.4.1-5-a-28-s.js
 expressions/delete/11.4.4-4.a-3-s.js
 expressions/delete/S11.4.1_A2.1.js
@@ -7148,6 +7156,7 @@ expressions/delete/S11.4.1_A3.3_T5.js
 expressions/delete/S11.4.1_A3.3_T6.js
 expressions/delete/S11.4.1_A4.js
 expressions/delete/S11.4.1_A5.js
+expressions/delete/S8.12.7_A1.js
 expressions/delete/S8.12.7_A2_T1.js
 expressions/delete/S8.12.7_A2_T2.js
 expressions/delete/S8.12.7_A3.js
@@ -20706,6 +20715,7 @@ types/number/S8.5_A5.js
 types/number/S8.5_A6.js
 types/number/S8.5_A7.js
 types/number/S8.5_A8.js
+types/object/S8.6.1_A1.js
 types/object/S8.6.1_A2.js
 types/object/S8.6.2_A1.js
 types/object/S8.6.2_A2.js

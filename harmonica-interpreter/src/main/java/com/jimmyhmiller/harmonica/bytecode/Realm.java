@@ -1758,14 +1758,22 @@ public final class Realm {
 
         // Math namespace
         JSObject math = new JSObject();
-        math.set("PI", Math.PI);
-        math.set("E", Math.E);
-        math.set("LN2", Math.log(2));
-        math.set("LN10", Math.log(10));
-        math.set("LOG2E", 1.0 / Math.log(2));
-        math.set("LOG10E", 1.0 / Math.log(10));
-        math.set("SQRT2", Math.sqrt(2));
-        math.set("SQRT1_2", Math.sqrt(0.5));
+        // ECMA-262 § 21.3.1: Math constants are non-writable,
+        // non-enumerable, non-configurable. Without these descriptor
+        // attrs, {@code delete Math.E} returns true and writes succeed.
+        for (var entry : new java.util.LinkedHashMap<String, Double>() {{
+            put("PI", Math.PI);
+            put("E", Math.E);
+            put("LN2", Math.log(2));
+            put("LN10", Math.log(10));
+            put("LOG2E", 1.0 / Math.log(2));
+            put("LOG10E", 1.0 / Math.log(10));
+            put("SQRT2", Math.sqrt(2));
+            put("SQRT1_2", Math.sqrt(0.5));
+        }}.entrySet()) {
+            math.set(entry.getKey(), entry.getValue());
+            math.setAttributes(entry.getKey(), (byte) 0);
+        }
         math.set("abs",   nativeFn("abs",   1, (t, a, c) -> Math.abs(AbstractOps.toNumber(arg(a, 0)))));
         math.set("floor", nativeFn("floor", 1, (t, a, c) -> Math.floor(AbstractOps.toNumber(arg(a, 0)))));
         math.set("ceil",  nativeFn("ceil",  1, (t, a, c) -> Math.ceil(AbstractOps.toNumber(arg(a, 0)))));
