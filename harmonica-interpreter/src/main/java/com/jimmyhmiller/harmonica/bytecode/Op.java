@@ -2652,8 +2652,12 @@ public sealed interface Op {
                 && (iterKeyFast == null
                     || Realm.arrayPrototype == null
                     || isDefaultArrayIterator(Realm.arrayPrototype.get(iterKeyFast)))) {
-                Interpreter.IteratorState state = Interpreter.IteratorState
-                    .ofList(new java.util.ArrayList<>(a.elements()));
+                // ECMA-262 § 23.1.5.1 ArrayIteratorPrototype.next reads
+                // length + element each step from the underlying array,
+                // so mutations during iteration (push/pop/splice/assign
+                // to length) are observable. Use a live reference, not
+                // a snapshot.
+                Interpreter.IteratorState state = Interpreter.IteratorState.ofArrayLive(a);
                 iteratorObject.store(ctx, state);
                 iteratorNext.store(ctx, Undefined.VALUE);
                 iteratorDone.store(ctx, false);
@@ -2727,6 +2731,22 @@ public sealed interface Op {
             // Fast path: the Java IteratorState shim used for built-in
             // JSArray/String when no @@iterator method is present.
             if (obj instanceof Interpreter.IteratorState state) {
+                // Live JSArray fast path: re-read length each step so
+                // mid-iteration mutations are reflected.
+                if (state.liveArray != null) {
+                    int len = state.liveArray.length();
+                    if (state.index < len) {
+                        Object v = state.liveArray.get(state.index);
+                        if (v == HOLE) v = Undefined.VALUE;
+                        dstValue.store(ctx, v);
+                        state.index++;
+                        dstDone.store(ctx, false);
+                    } else {
+                        dstValue.store(ctx, Undefined.VALUE);
+                        dstDone.store(ctx, true);
+                    }
+                    return pc + 1;
+                }
                 if (state.index < state.values.size()) {
                     Object v = state.values.get(state.index);
                     // ECMA-262 § 23.1.5 Array Iterator's [[NextMethod]] reads
@@ -2812,8 +2832,18 @@ public sealed interface Op {
             // Fast path: Java IteratorState shim.
             if (obj instanceof Interpreter.IteratorState state) {
                 JSArray out = new JSArray();
-                while (state.index < state.values.size()) {
-                    out.push(state.values.get(state.index++));
+                if (state.liveArray != null) {
+                    int len = state.liveArray.length();
+                    while (state.index < len) {
+                        Object v = state.liveArray.get(state.index++);
+                        if (v == HOLE) v = Undefined.VALUE;
+                        out.push(v);
+                        len = state.liveArray.length();
+                    }
+                } else {
+                    while (state.index < state.values.size()) {
+                        out.push(state.values.get(state.index++));
+                    }
                 }
                 dst.store(ctx, out);
                 return pc + 1;

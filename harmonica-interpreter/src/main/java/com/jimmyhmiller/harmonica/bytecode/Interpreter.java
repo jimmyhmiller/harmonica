@@ -29,13 +29,27 @@ public final class Interpreter {
      * iterator-object slots — never escapes into user-visible JS values.
      */
     static final class IteratorState {
+        /**
+         * Backing array for the live JSArray fast path. When non-null,
+         * {@code values} is unused and the iterator reads the array's
+         * current length + indexed elements on each {@code .next()} —
+         * matches ECMA-262 § 23.1.5.1 ArrayIteratorPrototype.next which
+         * re-reads {@code O.length} every step. Required for tests like
+         * for-of that mutate the array during traversal.
+         */
+        final com.jimmyhmiller.harmonica.bytecode.JSArray liveArray;
         final java.util.List<Object> values;
         int index;
-        private IteratorState(java.util.List<Object> values) {
+        private IteratorState(java.util.List<Object> values,
+                              com.jimmyhmiller.harmonica.bytecode.JSArray liveArray) {
             this.values = values;
+            this.liveArray = liveArray;
             this.index = 0;
         }
-        static IteratorState ofList(java.util.List<Object> values) { return new IteratorState(values); }
+        static IteratorState ofList(java.util.List<Object> values) { return new IteratorState(values, null); }
+        static IteratorState ofArrayLive(com.jimmyhmiller.harmonica.bytecode.JSArray a) {
+            return new IteratorState(null, a);
+        }
     }
 
     public static Object interpret(Executable executable, Object[] args, int numberOfLocals) {

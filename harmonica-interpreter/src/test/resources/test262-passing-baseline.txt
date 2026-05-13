@@ -18297,7 +18297,9 @@ statements/for-of/arguments-unmapped-aliasing.js
 statements/for-of/arguments-unmapped-mutation.js
 statements/for-of/arguments-unmapped.js
 statements/for-of/array-contract-expand.js
+statements/for-of/array-contract.js
 statements/for-of/array-expand-contract.js
+statements/for-of/array-expand.js
 statements/for-of/array.js
 statements/for-of/body-dstr-assign-error.js
 statements/for-of/body-dstr-assign.js
