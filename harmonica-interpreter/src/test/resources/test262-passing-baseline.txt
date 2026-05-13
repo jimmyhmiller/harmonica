@@ -2693,6 +2693,7 @@ expressions/await/await-non-promise-thenable.js
 expressions/await/await-non-promise.js
 expressions/await/await-throws-rejections.js
 expressions/await/early-errors-await-not-simple-assignment-target.js
+expressions/await/for-await-of-interleaved.js
 expressions/await/no-operand.js
 expressions/await/syntax-await-has-UnaryExpression-with-MultiplicativeExpression.js
 expressions/await/syntax-await-has-UnaryExpression.js

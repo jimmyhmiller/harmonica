@@ -2358,7 +2358,13 @@ public sealed interface Op {
     record GetIterator(Variable iteratorObject,
                        Variable iteratorNext,
                        Variable iteratorDone,
-                       Operand iterable) implements Op {
+                       Operand iterable,
+                       boolean isAwait) implements Op {
+        /** Convenience constructor for sync for-of (await defaults to false). */
+        public GetIterator(Variable iteratorObject, Variable iteratorNext,
+                           Variable iteratorDone, Operand iterable) {
+            this(iteratorObject, iteratorNext, iteratorDone, iterable, /* isAwait */ false);
+        }
         @Override public Operation operation() { return Operation.GET_ITERATOR; }
         @Override public int interpret(InterpContext ctx, int pc) {
             // ECMA-262 § 7.4.2 / § 7.4.3 GetIterator: look up @@iterator,
@@ -2406,10 +2412,19 @@ public sealed interface Op {
                 iteratorDone.store(ctx, false);
                 return pc + 1;
             }
-            // Spec path.
-            String iterKey = Realm.wellKnownIterator != null
-                ? Realm.wellKnownIterator.asPropertyKey() : "@@iterator";
-            Object method = AbstractOps.getProperty(srcVal, iterKey);
+            // Spec path. for-await-of (ECMA-262 § 14.7.5.3 step 1.a): try
+            // @@asyncIterator first; fall back to @@iterator with implicit
+            // sync→async wrapping (our Promise.resolve unwrap is inline).
+            Object method = null;
+            if (isAwait && Realm.wellKnownAsyncIterator != null) {
+                method = AbstractOps.getProperty(srcVal, Realm.wellKnownAsyncIterator.asPropertyKey());
+                if (method == Undefined.VALUE || method == null) method = null;
+            }
+            if (method == null) {
+                String iterKey = Realm.wellKnownIterator != null
+                    ? Realm.wellKnownIterator.asPropertyKey() : "@@iterator";
+                method = AbstractOps.getProperty(srcVal, iterKey);
+            }
             if (!(method instanceof JSFunction fn)) {
                 throw AbruptCompletion.typeError("value is not iterable: " + AbstractOps.toString(srcVal));
             }
@@ -2433,7 +2448,14 @@ public sealed interface Op {
                               Variable dstDone,
                               Operand iteratorObject,
                               Operand iteratorNext,
-                              Operand iteratorDone) implements Op {
+                              Operand iteratorDone,
+                              boolean isAwait) implements Op {
+        /** Convenience for sync for-of. */
+        public IteratorNextUnpack(Variable dstValue, Variable dstDone,
+                                  Operand iteratorObject, Operand iteratorNext,
+                                  Operand iteratorDone) {
+            this(dstValue, dstDone, iteratorObject, iteratorNext, iteratorDone, /* isAwait */ false);
+        }
         @Override public Operation operation() { return Operation.ITERATOR_NEXT_UNPACK; }
         @Override public int interpret(InterpContext ctx, int pc) {
             // ECMA-262 § 7.4.4 IteratorNext / § 7.4.5 IteratorComplete /
@@ -2470,11 +2492,38 @@ public sealed interface Op {
                 throw AbruptCompletion.typeError("iterator.next is not callable");
             }
             Object result = Interpreter.invokeFunction(fn, obj, new Object[0], ctx);
+            // ECMA-262 § 14.7.5.3 for-await-of step 1.b.i: Await the
+            // iterator-result Promise (or pass through a sync value).
+            // Our Promises are synchronous, so {@code Op.Await} just
+            // unwraps inline; do the same here.
+            if (isAwait && Realm.isPromise(result)) {
+                JSObject p = (JSObject) result;
+                String state = (String) p.properties().get(Realm.PROM_STATE);
+                Object inner = p.properties().get(Realm.PROM_RESULT);
+                if ("fulfilled".equals(state)) {
+                    result = inner;
+                } else if ("rejected".equals(state)) {
+                    throw new AbruptCompletion(inner);
+                } else {
+                    throw AbruptCompletion.typeError(
+                        "for-await: iterator.next() returned a still-pending Promise");
+                }
+            }
             if (!(result instanceof JSObject)) {
                 throw AbruptCompletion.typeError("iterator.next() returned non-object");
             }
             Object value = AbstractOps.getProperty(result, "value");
             Object done = AbstractOps.getProperty(result, "done");
+            // for-await also awaits {@code value} per § 14.7.5.3 step 1.b.iii.
+            if (isAwait && Realm.isPromise(value)) {
+                JSObject pv = (JSObject) value;
+                String state = (String) pv.properties().get(Realm.PROM_STATE);
+                Object inner = pv.properties().get(Realm.PROM_RESULT);
+                if ("fulfilled".equals(state)) value = inner;
+                else if ("rejected".equals(state)) throw new AbruptCompletion(inner);
+                else throw AbruptCompletion.typeError(
+                    "for-await: yielded value is a still-pending Promise");
+            }
             dstValue.store(ctx, value);
             dstDone.store(ctx, AbstractOps.toBoolean(done));
             return pc + 1;

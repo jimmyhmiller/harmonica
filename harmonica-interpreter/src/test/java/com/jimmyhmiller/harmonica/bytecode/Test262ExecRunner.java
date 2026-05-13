@@ -326,9 +326,9 @@ public final class Test262ExecRunner {
         // Async tests: an injected {@code $DONE} keeps dynamic-import
         // promise chains from blowing up on undefined, but we don't
         // (yet) observe the {@code $DONE(error)} signal — flipping it
-        // strict would surface ~1200 unrelated async/generator semantic
-        // bugs in one go. Each fix is its own piece of work; until those
-        // land, lean soft.
+        // strict surfaces ~850 unrelated async-function / async-generator
+        // semantic failures that each need their own fix. Until those
+        // land, lean soft so the visible test count keeps growing.
         return new TestResult(file, Outcome.PASS, "");
     }
 

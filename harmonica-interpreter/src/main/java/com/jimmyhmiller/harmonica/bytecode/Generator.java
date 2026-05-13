@@ -310,7 +310,8 @@ public final class Generator {
         int endBlockStart,              // PC of end block (for body's break, etc.)
         int snapshotNextRegister,
         java.util.List<Integer> snapshotFreePool,
-        java.util.List<LoopContext> snapshotLoopStack
+        java.util.List<LoopContext> snapshotLoopStack,
+        boolean isAwait                 // for-await: awaits iter.next() result
     ) implements DeferredLoopBranch {}
 
     /**
@@ -1770,7 +1771,7 @@ public final class Generator {
             case ExportDefaultDeclaration edd -> { lowerExportDefault(edd); yield null; }
             case ExportAllDeclaration ead -> { lowerExportAll(ead); yield null; }
             case ForStatement fs -> withNonTopLevel(() -> (Operand) lowerForReturning(fs));
-            case ForOfStatement fos -> withNonTopLevel(() -> (Operand) lowerForEachReturning(fos.left(), fos.right(), fos.body(), false));
+            case ForOfStatement fos -> withNonTopLevel(() -> (Operand) lowerForEachReturning(fos.left(), fos.right(), fos.body(), false, fos.await()));
             case ForInStatement fis -> { withNonTopLevel(() -> lowerForEach(fis.left(), fis.right(), fis.body(), true)); yield null; }
             case TryStatement ts -> withNonTopLevel(() -> (Operand) lowerTry(ts));
             case WithStatement ws -> {
@@ -6519,12 +6520,16 @@ public final class Generator {
      *   }</pre>
      */
     private void lowerForEach(Node left, Expression right, Statement body, boolean forIn) {
-        lowerForEachReturning(left, right, body, forIn);
+        lowerForEachReturning(left, right, body, forIn, /* isAwait */ false);
     }
 
     private Operand lowerForEachReturning(Node left, Expression right, Statement body, boolean forIn) {
+        return lowerForEachReturning(left, right, body, forIn, /* isAwait */ false);
+    }
+
+    private Operand lowerForEachReturning(Node left, Expression right, Statement body, boolean forIn, boolean isAwait) {
         if (!forIn) {
-            return lowerForOfStatement(left, right, body);
+            return lowerForOfStatement(left, right, body, isAwait);
         }
         Operand src = lowerExpression(right);
         Variable.Register itemsArr = allocRegister();
@@ -6616,6 +6621,10 @@ public final class Generator {
      *   Exception handler: body PCs → catch_preamble.
      */
     private Variable.Register lowerForOfStatement(Node left, Expression right, Statement body) {
+        return lowerForOfStatement(left, right, body, /* isAwait */ false);
+    }
+
+    private Variable.Register lowerForOfStatement(Node left, Expression right, Statement body, boolean isAwait) {
         // 1. Save lex env (needed for SetLexicalEnvironment in catch preamble).
         if (!lexicalEnvironmentSaved) {
             emit(new Op.GetLexicalEnvironment(Variable.Register.SAVED_LEXICAL_ENVIRONMENT));
@@ -6625,11 +6634,12 @@ public final class Generator {
         // 2. Lower RHS (the iterable).
         Operand src = lowerExpression(right);
 
-        // 3. GetIterator: allocate and emit.
+        // 3. GetIterator: allocate and emit. The isAwait flag steers
+        // toward @@asyncIterator first, falling back to @@iterator.
         Variable.Register iter = allocRegister();
         Variable.Register next = allocRegister();
         Variable.Register doneIter = allocRegister();
-        emit(new Op.GetIterator(iter, next, doneIter, src));
+        emit(new Op.GetIterator(iter, next, doneIter, src, isAwait));
         release(src);
 
         // 4. Allocate the script-completion register and init to Undefined.
@@ -6687,7 +6697,8 @@ public final class Generator {
             completionReg, typeReg, exReg,
             jumpToUpdatePc, endBlockStart,
             snapshotNext, snapshotPool,
-            new ArrayList<>(loopStack)));
+            new ArrayList<>(loopStack),
+            isAwait));
         return completionReg;
     }
 
@@ -6712,7 +6723,7 @@ public final class Generator {
         Variable.Register valueReg = allocRegister();
         Variable.Register doneFlag = allocRegister();
         emit(new Op.IteratorNextUnpack(valueReg, doneFlag,
-            d.iter(), d.next(), d.doneIter()));
+            d.iter(), d.next(), d.doneIter(), d.isAwait()));
         int jumpIfDonePc = emit(new Op.JumpIf(doneFlag,
             /* trueTarget=end */ d.endBlockStart(),
             /* falseTarget=body */ -1));   // patched after body block starts
