@@ -519,6 +519,7 @@ computed-property-names/object/accessor/setter-duplicates.js
 computed-property-names/object/accessor/setter.js
 computed-property-names/object/method/generator.js
 computed-property-names/object/method/string.js
+computed-property-names/object/property/number-duplicates.js
 computed-property-names/to-name-side-effects/class.js
 computed-property-names/to-name-side-effects/object.js
 destructuring/binding/initialization-requires-object-coercible-null.js
@@ -2838,6 +2839,7 @@ expressions/class/accessor-name-inst/literal-numeric-binary.js
 expressions/class/accessor-name-inst/literal-numeric-exponent.js
 expressions/class/accessor-name-inst/literal-numeric-hex.js
 expressions/class/accessor-name-inst/literal-numeric-leading-decimal.js
+expressions/class/accessor-name-inst/literal-numeric-non-canonical.js
 expressions/class/accessor-name-inst/literal-numeric-octal.js
 expressions/class/accessor-name-inst/literal-numeric-zero.js
 expressions/class/accessor-name-inst/literal-string-char-escape.js
@@ -2859,6 +2861,7 @@ expressions/class/accessor-name-static/literal-numeric-binary.js
 expressions/class/accessor-name-static/literal-numeric-exponent.js
 expressions/class/accessor-name-static/literal-numeric-hex.js
 expressions/class/accessor-name-static/literal-numeric-leading-decimal.js
+expressions/class/accessor-name-static/literal-numeric-non-canonical.js
 expressions/class/accessor-name-static/literal-numeric-octal.js
 expressions/class/accessor-name-static/literal-numeric-zero.js
 expressions/class/accessor-name-static/literal-string-char-escape.js
@@ -9037,6 +9040,7 @@ expressions/object/accessor-name-literal-numeric-binary.js
 expressions/object/accessor-name-literal-numeric-exponent.js
 expressions/object/accessor-name-literal-numeric-hex.js
 expressions/object/accessor-name-literal-numeric-leading-decimal.js
+expressions/object/accessor-name-literal-numeric-non-canonical.js
 expressions/object/accessor-name-literal-numeric-octal.js
 expressions/object/accessor-name-literal-numeric-zero.js
 expressions/object/accessor-name-literal-string-char-escape.js
@@ -12797,6 +12801,7 @@ statements/class/accessor-name-inst/literal-numeric-binary.js
 statements/class/accessor-name-inst/literal-numeric-exponent.js
 statements/class/accessor-name-inst/literal-numeric-hex.js
 statements/class/accessor-name-inst/literal-numeric-leading-decimal.js
+statements/class/accessor-name-inst/literal-numeric-non-canonical.js
 statements/class/accessor-name-inst/literal-numeric-octal.js
 statements/class/accessor-name-inst/literal-numeric-zero.js
 statements/class/accessor-name-inst/literal-string-char-escape.js
@@ -12817,6 +12822,7 @@ statements/class/accessor-name-static/literal-numeric-binary.js
 statements/class/accessor-name-static/literal-numeric-exponent.js
 statements/class/accessor-name-static/literal-numeric-hex.js
 statements/class/accessor-name-static/literal-numeric-leading-decimal.js
+statements/class/accessor-name-static/literal-numeric-non-canonical.js
 statements/class/accessor-name-static/literal-numeric-octal.js
 statements/class/accessor-name-static/literal-numeric-zero.js
 statements/class/accessor-name-static/literal-string-char-escape.js

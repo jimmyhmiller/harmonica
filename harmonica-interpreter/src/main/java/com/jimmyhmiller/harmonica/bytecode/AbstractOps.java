@@ -619,6 +619,65 @@ public final class AbstractOps {
     //  Type conversion
     // -------------------------------------------------------------
 
+    /**
+     * ECMA-262 § 7.1.12 NumberToString. Java's {@code Double.toString} uses
+     * uppercase {@code E}, omits the {@code +} sign on positive exponents,
+     * and always emits a {@code .0} mantissa — none of which match the
+     * spec. Re-format from Java's canonical string by extracting the
+     * significant digits and a decimal exponent, then apply the spec's
+     * case rules ({@code 100} vs {@code 0.001} vs {@code 1e-7}).
+     */
+    static String numberToString(double x) {
+        if (Double.isNaN(x))    return "NaN";
+        if (x == 0.0)           return "0";
+        if (x < 0)              return "-" + numberToString(-x);
+        if (Double.isInfinite(x)) return "Infinity";
+        String javaStr = Double.toString(x);
+        int eIdx = javaStr.indexOf('E');
+        String mantissa = eIdx >= 0 ? javaStr.substring(0, eIdx) : javaStr;
+        int javaExp = eIdx >= 0 ? Integer.parseInt(javaStr.substring(eIdx + 1)) : 0;
+        int dotIdx = mantissa.indexOf('.');
+        String s;
+        int n;
+        if (dotIdx >= 0) {
+            int end = mantissa.length();
+            while (end > dotIdx + 1 && mantissa.charAt(end - 1) == '0') end--;
+            String before = mantissa.substring(0, dotIdx);
+            String after = end > dotIdx + 1 ? mantissa.substring(dotIdx + 1, end) : "";
+            s = before + after;
+            n = before.length() + javaExp;
+        } else {
+            int end = mantissa.length();
+            int trailing = 0;
+            while (end > 1 && mantissa.charAt(end - 1) == '0') { end--; trailing++; }
+            s = mantissa.substring(0, end);
+            n = end + trailing + javaExp;
+        }
+        // Strip leading zeros from s (shouldn't happen, but defensive).
+        int lead = 0;
+        while (lead < s.length() - 1 && s.charAt(lead) == '0') lead++;
+        if (lead > 0) { s = s.substring(lead); n -= lead; }
+        int k = s.length();
+        if (k <= n && n <= 21) {
+            StringBuilder b = new StringBuilder(s);
+            for (int i = 0; i < n - k; i++) b.append('0');
+            return b.toString();
+        }
+        if (0 < n && n <= 21) {
+            return s.substring(0, n) + "." + s.substring(n);
+        }
+        if (-6 < n && n <= 0) {
+            StringBuilder b = new StringBuilder("0.");
+            for (int i = 0; i < -n; i++) b.append('0');
+            b.append(s);
+            return b.toString();
+        }
+        int exp = n - 1;
+        String expStr = (exp >= 0 ? "+" : "") + exp;
+        if (k == 1) return s + "e" + expStr;
+        return s.charAt(0) + "." + s.substring(1) + "e" + expStr;
+    }
+
     /** https://tc39.es/ecma262/#sec-tostring */
     public static String toString(Object v) {
         if (v == null)            return "null";
@@ -637,8 +696,10 @@ public final class AbstractOps {
             if (Double.isNaN(d))           return "NaN";
             if (d == Double.POSITIVE_INFINITY) return "Infinity";
             if (d == Double.NEGATIVE_INFINITY) return "-Infinity";
-            if (d == (long) d && !Double.isInfinite(d)) return Long.toString((long) d);
-            return Double.toString(d);
+            if (d == (long) d && !Double.isInfinite(d) && Math.abs(d) < 1e21) {
+                return Long.toString((long) d);
+            }
+            return numberToString(d);
         }
         // Object: ToPrimitive(v, "string") then recurse. Falls back to a
         // canonical Java toString() for native types if ToPrimitive throws
