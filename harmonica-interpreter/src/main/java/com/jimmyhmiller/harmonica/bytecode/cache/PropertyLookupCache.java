@@ -19,19 +19,34 @@ public final class PropertyLookupCache {
 
     public static final int MAX_SHAPES = 4;
 
+    /**
+     * Sentinel placed in {@link #owners} to mark a put-transition entry:
+     * the cached operation is "add a new property to receiver-shape,
+     * producing target-shape (held in {@link #ownerShapes}) at the given
+     * storage offset." Used by {@code PutById} when the property is
+     * being added (not updated) — e.g., object-literal init.
+     */
+    public static final Object PUT_TRANSITION = new Object() {
+        @Override public String toString() { return "<PUT_TRANSITION>"; }
+    };
+
     /** Observed receiver shapes, MRU-first. {@code null} entries past {@link #entries}. */
     private final Object[] shapes = new Object[MAX_SHAPES];
     /** Property slot offset to load/store for the matching shape. */
     private final int[] slotOffsets = new int[MAX_SHAPES];
     /**
-     * Prototype-chain owner for each entry, or {@code null} if the
-     * property is own. When non-null, the cached slot offset refers to
-     * the owner's storage, and callers must verify {@code owner.shape()}
-     * still matches {@link #ownerShapes} (or the cached resolution is
-     * stale because the prototype mutated).
+     * Per-entry kind tag:
+     * <ul>
+     *   <li>{@code null} — own-property update at {@link #slotOffsets};</li>
+     *   <li>{@link #PUT_TRANSITION} — add a new property; the target
+     *       shape lives in {@link #ownerShapes};</li>
+     *   <li>any other non-null — prototype-chain owner; the cached slot
+     *       offset refers to the owner's storage, and callers must
+     *       verify {@code owner.shape() == ownerShapes[i]}.</li>
+     * </ul>
      */
     private final Object[] owners = new Object[MAX_SHAPES];
-    /** Owner shape when {@link #owners}{@code [i] != null}. */
+    /** Owner shape (proto-chain), or target shape (put-transition). */
     private final Object[] ownerShapes = new Object[MAX_SHAPES];
     /** Number of populated entries (0..MAX_SHAPES). */
     private int entries;
@@ -80,6 +95,17 @@ public final class PropertyLookupCache {
      */
     public void installProto(Object receiverShape, Object owner, Object ownerShape, int slotOffset) {
         installEntry(receiverShape, owner, ownerShape, slotOffset);
+    }
+
+    /**
+     * Install (or refresh) a put-transition entry. On the next access
+     * with a receiver whose shape is {@code sourceShape}, {@code PutById}
+     * can transition directly to {@code targetShape} and store the value
+     * at {@code slotOffset} — skipping the {@code Shape.lookup} probe
+     * and the {@code createPutTransition} call.
+     */
+    public void installPutTransition(Object sourceShape, Object targetShape, int slotOffset) {
+        installEntry(sourceShape, PUT_TRANSITION, targetShape, slotOffset);
     }
 
     private void installEntry(Object shape, Object owner, Object ownerShape, int slotOffset) {

@@ -1003,26 +1003,36 @@ public sealed interface Op {
                     else AbstractOps.setProperty(b, property, value);
                 }
                 case NORMAL -> {
-                    // Shape-keyed IC fast path. On hit, write goes straight
-                    // to storage[slot] — one indexed store, no map probe.
-                    // Skipped for accessors / non-writable / cross-shape
-                    // installs.
+                    // Shape-keyed IC fast path. Three cases:
+                    //  * own update: cached shape == receiver, write to slot;
+                    //  * put-transition: cached source-shape == receiver,
+                    //    transition to cached target-shape, write to slot
+                    //    (object-literal init hot path);
+                    //  * miss: probe shape, install one of the above.
                     if (b instanceof JSObject jo) {
                         Shape s = jo.shape();
                         int slot = cache.lookup(s);
                         if (slot >= 0) {
-                            Object existing = jo.getDirect(slot);
-                            if (!(existing instanceof Accessor)) {
-                                // Writability check via shape attrs.
-                                Shape.PropertyMeta meta = s.lookup(property);
-                                if (meta != null && (meta.attrs() & JSObject.ATTR_WRITABLE) != 0) {
-                                    jo.putDirect(slot, value);
-                                    return pc + 1;
+                            Object kind = cache.ownerOf();
+                            if (kind == null) {
+                                Object existing = jo.getDirect(slot);
+                                if (!(existing instanceof Accessor)) {
+                                    Shape.PropertyMeta meta = s.lookup(property);
+                                    if (meta != null
+                                            && (meta.attrs() & JSObject.ATTR_WRITABLE) != 0) {
+                                        jo.putDirect(slot, value);
+                                        return pc + 1;
+                                    }
                                 }
+                            } else if (kind == com.jimmyhmiller.harmonica.bytecode.cache.PropertyLookupCache.PUT_TRANSITION) {
+                                Shape target = (Shape) cache.ownerShapeOf();
+                                jo.putWithTransition(target, slot, value);
+                                return pc + 1;
                             }
-                            // Fall through on accessor / read-only.
+                            // Fall through on accessor / read-only / proto.
                         } else {
-                            // IC miss: install on own writable data property.
+                            // IC miss. Two install paths: existing-key
+                            // update vs new-key put-transition.
                             Shape.PropertyMeta meta = s.lookup(property);
                             if (meta != null) {
                                 Object existing = jo.getDirect(meta.offset());
@@ -1030,6 +1040,27 @@ public sealed interface Op {
                                         && (meta.attrs() & JSObject.ATTR_WRITABLE) != 0) {
                                     cache.install(s, meta.offset());
                                     jo.putDirect(meta.offset(), value);
+                                    return pc + 1;
+                                }
+                            } else {
+                                // Inlined proto walk: skip put-transition
+                                // install if any proto level intercepts the
+                                // write (setter accessor or read-only slot).
+                                JSObject probe = jo.proto();
+                                boolean intercept = false;
+                                while (probe != null) {
+                                    Object raw = probe.getOwn(property);
+                                    if (raw instanceof Accessor || raw != JSObject.ABSENT) {
+                                        intercept = true;
+                                        break;
+                                    }
+                                    probe = probe.proto();
+                                }
+                                if (!intercept) {
+                                    Shape target = s.createPutTransition(property, JSObject.ATTR_DEFAULT);
+                                    int offset = target.storageSize() - 1;
+                                    cache.installPutTransition(s, target, offset);
+                                    jo.putWithTransition(target, offset, value);
                                     return pc + 1;
                                 }
                             }

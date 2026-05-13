@@ -87,6 +87,18 @@ public final class JSObject {
     public Object getDirect(int offset) { return storage[offset]; }
     public void   putDirect(int offset, Object value) { storage[offset] = value; }
 
+    /**
+     * IC fast path for {@code PutById} adding a new property: transition
+     * to the precomputed {@code targetShape} and store {@code value} at
+     * the precomputed offset. The caller is responsible for verifying
+     * the current shape matches the transition's source.
+     */
+    public void putWithTransition(Shape targetShape, int offset, Object value) {
+        ensureStorage(offset + 1);
+        storage[offset] = value;
+        this.shape = targetShape;
+    }
+
     // ------------------------------------------------------------
     // Spec-style property access.
     // ------------------------------------------------------------
