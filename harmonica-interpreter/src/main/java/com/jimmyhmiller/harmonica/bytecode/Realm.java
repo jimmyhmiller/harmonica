@@ -2333,6 +2333,14 @@ public final class Realm {
         });
         stringCtor.setPrototypeObject(stringPrototype);
         stringPrototype.set("constructor", stringCtor);
+        // ECMA-262 § 22.1.3: String.prototype is itself a String exotic
+        // object whose [[StringData]] is the empty string. Install the
+        // matching length own-property (0, frozen).
+        if (!stringPrototype.properties().containsKey(SLOT_STRING_DATA)) {
+            stringPrototype.properties().put(SLOT_STRING_DATA, "");
+            stringPrototype.set("length", 0.0);
+            stringPrototype.setAttributes("length", (byte) 0);
+        }
         stringCtor.properties().put("fromCharCode", nativeFn("fromCharCode", 1, (t, a, c) -> {
             StringBuilder sb = new StringBuilder();
             for (Object x : a) sb.append((char) AbstractOps.toInt32(x));
