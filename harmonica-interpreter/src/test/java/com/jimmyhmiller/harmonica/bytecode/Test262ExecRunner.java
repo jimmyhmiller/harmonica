@@ -319,11 +319,20 @@ public final class Test262ExecRunner {
             return new TestResult(file, Outcome.FAIL_NEGATIVE_NOT_THROWN,
                 "expected runtime " + fm.negativeType + " but completed normally");
         }
-        // Async tests: check the $DONE outcome via the globals sentinel.
-        // We use {@link com.jimmyhmiller.harmonica.module.ModuleLoader} as
-        // a stand-in for the active global table; the runner sees the
-        // same map every test does.
-        // $DONE-strict observation deferred (~284 unrelated bugs).
+        // Async tests: observe $DONE(error) as a test failure. Without
+        // this the test silently passes whenever the body doesn't throw
+        // synchronously, even if its promise chain ultimately ran
+        // $DONE(error) — masking real bugs.
+        if (isAsync) {
+            Object stateObj = testGlobals.get("__test262_async$");
+            if (stateObj instanceof com.jimmyhmiller.harmonica.bytecode.JSObject st) {
+                Object err = st.get("error");
+                if (err != null && err != com.jimmyhmiller.harmonica.bytecode.Undefined.VALUE) {
+                    return new TestResult(file, Outcome.FAIL_RUNTIME,
+                        "async test: " + abruptDetail(new AbruptCompletion(err)));
+                }
+            }
+        }
         return new TestResult(file, Outcome.PASS, "");
     }
 
