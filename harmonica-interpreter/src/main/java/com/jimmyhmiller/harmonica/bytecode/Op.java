@@ -955,8 +955,8 @@ public sealed interface Op {
                 dst.store(ctx, AbstractOps.boxDouble(arr.length()));
                 return pc + 1;
             }
-            if (b instanceof String s) {
-                dst.store(ctx, AbstractOps.boxDouble(s.length()));
+            if (b instanceof CharSequence cs) {
+                dst.store(ctx, AbstractOps.boxDouble(cs.length()));
                 return pc + 1;
             }
             Object v = AbstractOps.getProperty(b, "length");
@@ -2981,10 +2981,11 @@ public sealed interface Op {
             if (calleeVal == globalEval && calleeVal instanceof JSFunction) {
                 Object[] argValues = new Object[args.length];
                 for (int k = 0; k < args.length; k++) argValues[k] = args[k].retrieve(ctx);
-                if (argValues.length == 0 || !(argValues[0] instanceof String src)) {
+                if (argValues.length == 0 || !(argValues[0] instanceof CharSequence cs)) {
                     dst.store(ctx, argValues.length == 0 ? Undefined.VALUE : argValues[0]);
                     return pc + 1;
                 }
+                String src = cs.toString();
                 com.jimmyhmiller.harmonica.ast.Program ast;
                 try {
                     ast = com.jimmyhmiller.harmonica.Parser.parse(src);

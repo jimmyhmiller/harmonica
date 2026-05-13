@@ -44,14 +44,17 @@ public final class AbstractOps {
         if (lhs instanceof Double dl && rhs instanceof Double dr) {
             return boxDouble(dl + dr);
         }
-        // Fast path: string + string.
-        if (lhs instanceof String sl && rhs instanceof String sr) {
-            return sl + sr;
+        // Fast path: string-ish + string-ish (covers ConsString chains).
+        // Building a cons tree instead of allocating + copying a new flat
+        // String per `+=` iteration turns the classic O(n²) accumulation
+        // into O(n) with a single flatten at consumption time.
+        if (lhs instanceof CharSequence l && rhs instanceof CharSequence r) {
+            return ConsString.cons(l, r);
         }
         Object lPrim = toPrimitive(lhs, "default");
         Object rPrim = toPrimitive(rhs, "default");
-        if (lPrim instanceof String || rPrim instanceof String) {
-            return toString(lPrim) + toString(rPrim);
+        if (lPrim instanceof CharSequence || rPrim instanceof CharSequence) {
+            return ConsString.cons(toString(lPrim), toString(rPrim));
         }
         return boxDouble(toNumber(lPrim) + toNumber(rPrim));
     }
@@ -105,10 +108,10 @@ public final class AbstractOps {
     public static String typeofValue(Object v) {
         if (v == Undefined.VALUE)    return "undefined";
         if (v == null)               return "object";
-        if (v instanceof Boolean)    return "boolean";
-        if (v instanceof Number)     return "number";
-        if (v instanceof String)     return "string";
-        if (v instanceof JSSymbol)   return "symbol";
+        if (v instanceof Boolean)       return "boolean";
+        if (v instanceof Number)        return "number";
+        if (v instanceof CharSequence)  return "string";
+        if (v instanceof JSSymbol)      return "symbol";
         if (v instanceof JSFunction) return "function";
         return "object";
     }
@@ -143,8 +146,8 @@ public final class AbstractOps {
         if ((lhs == null && rhs == Undefined.VALUE) || (lhs == Undefined.VALUE && rhs == null)) return true;
         if (lhs == null || rhs == null || lhs == Undefined.VALUE || rhs == Undefined.VALUE) return false;
         if (lhs instanceof Number && rhs instanceof Number) return strictlyEquals(lhs, rhs);
-        if (lhs instanceof Number && rhs instanceof String) return toNumber(lhs) == toNumber(rhs);
-        if (lhs instanceof String && rhs instanceof Number) return toNumber(lhs) == toNumber(rhs);
+        if (lhs instanceof Number && rhs instanceof CharSequence) return toNumber(lhs) == toNumber(rhs);
+        if (lhs instanceof CharSequence && rhs instanceof Number) return toNumber(lhs) == toNumber(rhs);
         if (lhs instanceof Boolean) return looselyEquals(toNumber(lhs), rhs);
         if (rhs instanceof Boolean) return looselyEquals(lhs, toNumber(rhs));
         return strictlyEquals(lhs, rhs);
@@ -173,6 +176,18 @@ public final class AbstractOps {
         }
         if (lhs instanceof Number nl && rhs instanceof Number nr) {
             return nl.doubleValue() == nr.doubleValue();
+        }
+        // ConsString equality is asymmetric under String.equals (a String
+        // never reports itself equal to a ConsString), so do the
+        // length-then-flat-compare ourselves whenever either side is a
+        // non-String CharSequence.
+        if ((lhs instanceof CharSequence || rhs instanceof CharSequence)
+                && !(lhs instanceof String && rhs instanceof String)) {
+            if (!(lhs instanceof CharSequence cl) || !(rhs instanceof CharSequence cr)) {
+                return false;
+            }
+            if (cl.length() != cr.length()) return false;
+            return cl.toString().equals(cr.toString());
         }
         return lhs.equals(rhs);
     }
@@ -265,8 +280,8 @@ public final class AbstractOps {
         if (v instanceof Number n)  return n.doubleValue();
         // ECMA-262 § 7.1.4.2 — ToNumber on a Symbol throws TypeError.
         if (v instanceof JSSymbol) throw AbruptCompletion.typeError("Cannot convert a Symbol value to a number");
-        if (v instanceof String s) {
-            String t = s.trim();
+        if (v instanceof CharSequence) {
+            String t = v.toString().trim();
             if (t.isEmpty()) return 0.0;   // ECMA spec: "" → 0, "  " → 0
             // Fast pre-check: most strings reaching toNumber on the lodash
             // hot path don't look like numbers. parseDouble's
@@ -305,7 +320,7 @@ public final class AbstractOps {
      */
     public static Object toPrimitive(Object v, String hint) {
         if (v == null || v == Undefined.VALUE) return v;
-        if (v instanceof Boolean || v instanceof Number || v instanceof String) return v;
+        if (v instanceof Boolean || v instanceof Number || v instanceof CharSequence) return v;
         InterpContext ctx = InterpContext.current();
         // Step 1: GetMethod(input, %Symbol.toPrimitive%). If non-null, call
         // it with the hint string. Result must be primitive or TypeError.
@@ -339,7 +354,7 @@ public final class AbstractOps {
             || v == Undefined.VALUE
             || v instanceof Boolean
             || v instanceof Number
-            || v instanceof String
+            || v instanceof CharSequence
             || v instanceof JSSymbol;
     }
 
@@ -404,10 +419,10 @@ public final class AbstractOps {
             if (Realm.arrayPrototype != null) return Realm.arrayPrototype.get(prop);
             return Undefined.VALUE;
         }
-        if (base instanceof String s) {
-            if ("length".equals(prop)) return boxDouble(s.length());
+        if (base instanceof CharSequence cs) {
+            if ("length".equals(prop)) return boxDouble(cs.length());
             int idx = parseIndex(prop);
-            if (idx >= 0 && idx < s.length()) return String.valueOf(s.charAt(idx));
+            if (idx >= 0 && idx < cs.length()) return String.valueOf(cs.charAt(idx));
             if (Realm.stringPrototype != null) return Realm.stringPrototype.get(prop);
             return Undefined.VALUE;
         }
@@ -583,6 +598,9 @@ public final class AbstractOps {
         if (v == Undefined.VALUE) return "undefined";
         if (v instanceof Boolean b) return b ? "true" : "false";
         if (v instanceof String s) return s;
+        // ConsString: flatten on coercion to a real Java String. The flatten
+        // is cached on the ConsString so subsequent toString hits are free.
+        if (v instanceof ConsString cs) return cs.toString();
         // ECMA-262 § 7.1.17.2 — ToString on a Symbol throws TypeError.
         // (The {@code String()} constructor has its own path that returns
         // the symbol's descriptive string instead — see Realm.java.)

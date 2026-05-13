@@ -2638,7 +2638,8 @@ public final class Realm {
         // Indirect eval — parse + run the source string. Does NOT see caller scope.
         globals.putIfAbsent("eval", nativeFn("eval", 1, (t, a, c) -> {
             Object v = arg(a, 0);
-            if (!(v instanceof String src)) return v;
+            if (!(v instanceof CharSequence cs)) return v;
+            String src = cs.toString();
             com.jimmyhmiller.harmonica.ast.Program ast;
             try {
                 ast = com.jimmyhmiller.harmonica.Parser.parse(src);

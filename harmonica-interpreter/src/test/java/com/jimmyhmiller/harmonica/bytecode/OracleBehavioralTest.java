@@ -56,7 +56,7 @@ class OracleBehavioralTest {
             return Double.toString(d);
         }
         if (v instanceof Boolean b) return b ? "true" : "false";
-        if (v instanceof String s) return "\"" + s + "\"";
+        if (v instanceof CharSequence cs) return "\"" + cs + "\"";
         return v.toString();
     }
 

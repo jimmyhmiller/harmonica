@@ -17,7 +17,12 @@ class RealProgramsTest {
     private static Object run(String source) {
         Program ast = Parser.parse(source);
         Executable exe = Generator.generate(ast);
-        return Interpreter.interpret(exe, new Object[0], 64);
+        Object result = Interpreter.interpret(exe, new Object[0], 64);
+        // ConsString is an implementation detail; flatten for test
+        // comparison so assertEquals("hi", result) doesn't trip on
+        // String.equals(ConsString) being asymmetric.
+        if (result instanceof ConsString cs) return cs.toString();
+        return result;
     }
 
     private static String fmt(Object v) {
