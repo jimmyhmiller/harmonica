@@ -71,7 +71,11 @@ public sealed interface Variable extends Operand permits Variable.Register, Vari
             // were paying for slots that never got captured.
             Object o = ctx.locals()[slot];
             if (o == null) return Undefined.VALUE;
-            if (o instanceof Cell c) return c.value;
+            if (o instanceof Cell c) {
+                if (c.value == InterpContext.TDZ) throw tdzError(ctx);
+                return c.value;
+            }
+            if (o == InterpContext.TDZ) throw tdzError(ctx);
             return o;
         }
 
@@ -80,6 +84,16 @@ public sealed interface Variable extends Operand permits Variable.Register, Vari
             Object o = ctx.locals()[slot];
             if (o instanceof Cell c) { c.value = value; return; }
             ctx.locals()[slot] = value;
+        }
+
+        private AbruptCompletion tdzError(InterpContext ctx) {
+            String name = "";
+            if (ctx.executable() != null && ctx.executable().localNames() != null) {
+                String[] names = ctx.executable().localNames();
+                if (slot < names.length && names[slot] != null) name = names[slot];
+            }
+            return AbruptCompletion.referenceError(
+                "Cannot access '" + name + "' before initialization");
         }
     }
 

@@ -892,6 +892,27 @@ public final class Generator {
         // named locals (captured uniformly by inner closures), while
         // destructured/defaulted params lower naturally too. A trailing
         // RestElement collects the remaining positional args into an array.
+        //
+        // ECMA-262 § 10.2.11 FunctionDeclarationInstantiation step 28:
+        // every parameter binding is created (uninitialized → TDZ) before
+        // any IteratorBindingInitialization runs. Pre-allocate the
+        // Identifier-leaf names for every param so a default initializer
+        // that self-references (e.g. {@code function f(x = x)}) finds the
+        // slot in {@code locals} and observes its TDZ sentinel rather
+        // than the outer-scope {@code x}.
+        Operand fnTdzConst = null;
+        for (Pattern p : params) {
+            java.util.List<String> paramNames = new java.util.ArrayList<>();
+            collectParamIdentifierNames(p, paramNames);
+            for (String paramName : paramNames) {
+                if (g.locals.containsKey(paramName)) continue;
+                int paramSlot = g.localNames.size();
+                g.localNames.add(paramName);
+                g.locals.put(paramName, paramSlot);
+                if (fnTdzConst == null) fnTdzConst = g.constant(InterpContext.TDZ);
+                g.emit(new Op.Mov(new Variable.Local(paramSlot), fnTdzConst));
+            }
+        }
         for (int i = 0; i < params.size(); i++) {
             Pattern p = params.get(i);
             if (p instanceof RestElement rest) {
@@ -952,6 +973,21 @@ public final class Generator {
                     g.locals.put(e.getKey(), e.getValue());
                 }
             }
+        }
+
+        // ECMA-262 § 9.1.1.1 Declarative Environment Records — let/const
+        // bindings start in TDZ ({@link InterpContext#TDZ}). Reads of a
+        // not-yet-initialized binding throw ReferenceError. Emit slot
+        // pre-fills at function entry so every let/const-scoped local
+        // observably starts in TDZ; matching {@code Mov}s land later
+        // when the declaration's initializer (or pattern-default) runs.
+        java.util.Set<Integer> tdzSlots = new java.util.TreeSet<>();
+        for (var letMap : g.blockLetSlots.values()) {
+            tdzSlots.addAll(letMap.values());
+        }
+        Operand tdzConst = g.constant(InterpContext.TDZ);
+        for (int slot : tdzSlots) {
+            g.emit(new Op.Mov(new Variable.Local(slot), tdzConst));
         }
 
         // Pre-pass: hoist top-of-body FunctionDeclarations so they're bound
@@ -1320,6 +1356,32 @@ public final class Generator {
                     collectLetIdsFromPattern(d.id(), myMap);
                 }
             }
+        }
+    }
+
+    /**
+     * Collect the Identifier leaves in a parameter pattern — used to
+     * pre-allocate the param's TDZ slots at function entry before any
+     * default initializer runs. Mirrors
+     * {@link #collectLetIdsFromPattern} but writes to a plain name list
+     * (param-slot allocation happens in the param-binding loop).
+     */
+    private static void collectParamIdentifierNames(Node pattern, java.util.List<String> out) {
+        if (pattern instanceof Identifier id) {
+            out.add(id.name());
+        } else if (pattern instanceof ArrayPattern ap) {
+            for (Node elem : ap.elements()) {
+                if (elem != null) collectParamIdentifierNames(elem, out);
+            }
+        } else if (pattern instanceof ObjectPattern op) {
+            for (Node prop : op.properties()) {
+                if (prop instanceof Property pr) collectParamIdentifierNames(pr.value(), out);
+                else if (prop instanceof RestElement re) collectParamIdentifierNames(re.argument(), out);
+            }
+        } else if (pattern instanceof AssignmentPattern asn) {
+            collectParamIdentifierNames(asn.left(), out);
+        } else if (pattern instanceof RestElement re) {
+            collectParamIdentifierNames(re.argument(), out);
         }
     }
 
@@ -2142,6 +2204,18 @@ public final class Generator {
             endOfStatementReleases.clear();
         }
         Operand v = lowerExpression(es.expression());
+        // ECMA-262: identifier evaluation goes through ResolveBinding
+        // which checks TDZ. A bare ExpressionStatement that discards the
+        // value still observes that check. Our lowerExpression returns a
+        // Local-operand without emitting anything (lazy); if the
+        // surrounding statement also discards it, the slot is never
+        // retrieved and a TDZ violation goes unobserved. Force a probe
+        // here for Locals that might hold the TDZ sentinel.
+        if (es.expression() instanceof Identifier && v instanceof Variable.Local) {
+            Variable.Register probe = allocRegister();
+            emit(new Op.Mov(probe, v));
+            release(probe);
+        }
         Variable.Register completionReg = currentCompletionReg();
         // Function bodies can't observe statement completion (only explicit
         // `return` exits), so skip the per-statement Mov-to-completionReg.

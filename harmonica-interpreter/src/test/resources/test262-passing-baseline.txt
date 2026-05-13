@@ -844,6 +844,7 @@ expressions/arrow-function/dflt-params-arg-val-undefined.js
 expressions/arrow-function/dflt-params-duplicates.js
 expressions/arrow-function/dflt-params-ref-later.js
 expressions/arrow-function/dflt-params-ref-prior.js
+expressions/arrow-function/dflt-params-ref-self.js
 expressions/arrow-function/dflt-params-rest.js
 expressions/arrow-function/dflt-params-trailing-comma.js
 expressions/arrow-function/dstr/ary-init-iter-close.js
@@ -1929,6 +1930,7 @@ expressions/async-arrow-function/dflt-params-arg-val-undefined.js
 expressions/async-arrow-function/dflt-params-duplicates.js
 expressions/async-arrow-function/dflt-params-ref-later.js
 expressions/async-arrow-function/dflt-params-ref-prior.js
+expressions/async-arrow-function/dflt-params-ref-self.js
 expressions/async-arrow-function/dflt-params-rest.js
 expressions/async-arrow-function/dflt-params-trailing-comma.js
 expressions/async-arrow-function/early-errors-arrow-NSPL-with-USD.js
@@ -2006,6 +2008,7 @@ expressions/async-function/named-dflt-params-arg-val-undefined.js
 expressions/async-function/named-dflt-params-duplicates.js
 expressions/async-function/named-dflt-params-ref-later.js
 expressions/async-function/named-dflt-params-ref-prior.js
+expressions/async-function/named-dflt-params-ref-self.js
 expressions/async-function/named-dflt-params-rest.js
 expressions/async-function/named-dflt-params-trailing-comma.js
 expressions/async-function/named-object-destructuring-param-strict-body.js
@@ -2028,6 +2031,7 @@ expressions/async-function/nameless-dflt-params-arg-val-undefined.js
 expressions/async-function/nameless-dflt-params-duplicates.js
 expressions/async-function/nameless-dflt-params-ref-later.js
 expressions/async-function/nameless-dflt-params-ref-prior.js
+expressions/async-function/nameless-dflt-params-ref-self.js
 expressions/async-function/nameless-dflt-params-rest.js
 expressions/async-function/nameless-dflt-params-trailing-comma.js
 expressions/async-function/nameless-object-destructuring-param-strict-body.js
@@ -2057,6 +2061,7 @@ expressions/async-generator/dflt-params-arg-val-undefined.js
 expressions/async-generator/dflt-params-duplicates.js
 expressions/async-generator/dflt-params-ref-later.js
 expressions/async-generator/dflt-params-ref-prior.js
+expressions/async-generator/dflt-params-ref-self.js
 expressions/async-generator/dflt-params-rest.js
 expressions/async-generator/dflt-params-trailing-comma.js
 expressions/async-generator/dstr/ary-init-iter-get-err-array-prototype.js
@@ -2478,6 +2483,7 @@ expressions/async-generator/named-dflt-params-arg-val-undefined.js
 expressions/async-generator/named-dflt-params-duplicates.js
 expressions/async-generator/named-dflt-params-ref-later.js
 expressions/async-generator/named-dflt-params-ref-prior.js
+expressions/async-generator/named-dflt-params-ref-self.js
 expressions/async-generator/named-dflt-params-rest.js
 expressions/async-generator/named-dflt-params-trailing-comma.js
 expressions/async-generator/named-object-destructuring-param-strict-body.js
@@ -2871,6 +2877,7 @@ expressions/class/async-gen-method-static/dflt-params-arg-val-undefined.js
 expressions/class/async-gen-method-static/dflt-params-duplicates.js
 expressions/class/async-gen-method-static/dflt-params-ref-later.js
 expressions/class/async-gen-method-static/dflt-params-ref-prior.js
+expressions/class/async-gen-method-static/dflt-params-ref-self.js
 expressions/class/async-gen-method-static/dflt-params-rest.js
 expressions/class/async-gen-method-static/dflt-params-trailing-comma.js
 expressions/class/async-gen-method-static/forbidden-ext/b1/cls-expr-async-gen-meth-static-forbidden-ext-direct-access-prop-arguments.js
@@ -2969,6 +2976,7 @@ expressions/class/async-gen-method/dflt-params-arg-val-undefined.js
 expressions/class/async-gen-method/dflt-params-duplicates.js
 expressions/class/async-gen-method/dflt-params-ref-later.js
 expressions/class/async-gen-method/dflt-params-ref-prior.js
+expressions/class/async-gen-method/dflt-params-ref-self.js
 expressions/class/async-gen-method/dflt-params-rest.js
 expressions/class/async-gen-method/dflt-params-trailing-comma.js
 expressions/class/async-gen-method/forbidden-ext/b1/cls-expr-async-gen-meth-forbidden-ext-direct-access-prop-arguments.js
@@ -3067,6 +3075,7 @@ expressions/class/async-method-static/dflt-params-arg-val-undefined.js
 expressions/class/async-method-static/dflt-params-duplicates.js
 expressions/class/async-method-static/dflt-params-ref-later.js
 expressions/class/async-method-static/dflt-params-ref-prior.js
+expressions/class/async-method-static/dflt-params-ref-self.js
 expressions/class/async-method-static/dflt-params-rest.js
 expressions/class/async-method-static/dflt-params-trailing-comma.js
 expressions/class/async-method-static/forbidden-ext/b1/cls-expr-async-meth-static-forbidden-ext-direct-access-prop-arguments.js
@@ -3098,6 +3107,7 @@ expressions/class/async-method/dflt-params-arg-val-undefined.js
 expressions/class/async-method/dflt-params-duplicates.js
 expressions/class/async-method/dflt-params-ref-later.js
 expressions/class/async-method/dflt-params-ref-prior.js
+expressions/class/async-method/dflt-params-ref-self.js
 expressions/class/async-method/dflt-params-rest.js
 expressions/class/async-method/dflt-params-trailing-comma.js
 expressions/class/async-method/forbidden-ext/b1/cls-expr-async-meth-forbidden-ext-direct-access-prop-arguments.js
@@ -6509,6 +6519,7 @@ expressions/class/gen-method-static/dflt-params-arg-val-undefined.js
 expressions/class/gen-method-static/dflt-params-duplicates.js
 expressions/class/gen-method-static/dflt-params-ref-later.js
 expressions/class/gen-method-static/dflt-params-ref-prior.js
+expressions/class/gen-method-static/dflt-params-ref-self.js
 expressions/class/gen-method-static/dflt-params-rest.js
 expressions/class/gen-method-static/dflt-params-trailing-comma.js
 expressions/class/gen-method-static/forbidden-ext/b1/cls-expr-gen-meth-static-forbidden-ext-direct-access-prop-arguments.js
@@ -6539,6 +6550,7 @@ expressions/class/gen-method/dflt-params-arg-val-undefined.js
 expressions/class/gen-method/dflt-params-duplicates.js
 expressions/class/gen-method/dflt-params-ref-later.js
 expressions/class/gen-method/dflt-params-ref-prior.js
+expressions/class/gen-method/dflt-params-ref-self.js
 expressions/class/gen-method/dflt-params-rest.js
 expressions/class/gen-method/dflt-params-trailing-comma.js
 expressions/class/gen-method/forbidden-ext/b1/cls-expr-gen-meth-forbidden-ext-direct-access-prop-arguments.js
@@ -6617,6 +6629,7 @@ expressions/class/method-static/dflt-params-arg-val-undefined.js
 expressions/class/method-static/dflt-params-duplicates.js
 expressions/class/method-static/dflt-params-ref-later.js
 expressions/class/method-static/dflt-params-ref-prior.js
+expressions/class/method-static/dflt-params-ref-self.js
 expressions/class/method-static/dflt-params-rest.js
 expressions/class/method-static/dflt-params-trailing-comma.js
 expressions/class/method-static/forbidden-ext/b1/cls-expr-meth-static-forbidden-ext-direct-access-prop-arguments.js
@@ -6636,6 +6649,7 @@ expressions/class/method/dflt-params-arg-val-undefined.js
 expressions/class/method/dflt-params-duplicates.js
 expressions/class/method/dflt-params-ref-later.js
 expressions/class/method/dflt-params-ref-prior.js
+expressions/class/method/dflt-params-ref-self.js
 expressions/class/method/dflt-params-rest.js
 expressions/class/method/dflt-params-trailing-comma.js
 expressions/class/method/forbidden-ext/b1/cls-expr-meth-forbidden-ext-direct-access-prop-arguments.js
@@ -7862,6 +7876,7 @@ expressions/function/dflt-params-arg-val-undefined.js
 expressions/function/dflt-params-duplicates.js
 expressions/function/dflt-params-ref-later.js
 expressions/function/dflt-params-ref-prior.js
+expressions/function/dflt-params-ref-self.js
 expressions/function/dflt-params-rest.js
 expressions/function/dflt-params-trailing-comma.js
 expressions/function/dstr/ary-init-iter-close.js
@@ -8113,6 +8128,7 @@ expressions/generators/dflt-params-arg-val-undefined.js
 expressions/generators/dflt-params-duplicates.js
 expressions/generators/dflt-params-ref-later.js
 expressions/generators/dflt-params-ref-prior.js
+expressions/generators/dflt-params-ref-self.js
 expressions/generators/dflt-params-rest.js
 expressions/generators/dflt-params-trailing-comma.js
 expressions/generators/dstr/ary-init-iter-get-err-array-prototype.js
@@ -9694,6 +9710,7 @@ expressions/object/method-definition/async-gen-meth-dflt-params-arg-val-undefine
 expressions/object/method-definition/async-gen-meth-dflt-params-duplicates.js
 expressions/object/method-definition/async-gen-meth-dflt-params-ref-later.js
 expressions/object/method-definition/async-gen-meth-dflt-params-ref-prior.js
+expressions/object/method-definition/async-gen-meth-dflt-params-ref-self.js
 expressions/object/method-definition/async-gen-meth-dflt-params-rest.js
 expressions/object/method-definition/async-gen-meth-dflt-params-trailing-comma.js
 expressions/object/method-definition/async-gen-meth-escaped-async.js
@@ -9783,6 +9800,7 @@ expressions/object/method-definition/async-meth-dflt-params-arg-val-undefined.js
 expressions/object/method-definition/async-meth-dflt-params-duplicates.js
 expressions/object/method-definition/async-meth-dflt-params-ref-later.js
 expressions/object/method-definition/async-meth-dflt-params-ref-prior.js
+expressions/object/method-definition/async-meth-dflt-params-ref-self.js
 expressions/object/method-definition/async-meth-dflt-params-rest.js
 expressions/object/method-definition/async-meth-dflt-params-trailing-comma.js
 expressions/object/method-definition/async-meth-escaped-async.js
@@ -9844,6 +9862,7 @@ expressions/object/method-definition/gen-meth-dflt-params-arg-val-undefined.js
 expressions/object/method-definition/gen-meth-dflt-params-duplicates.js
 expressions/object/method-definition/gen-meth-dflt-params-ref-later.js
 expressions/object/method-definition/gen-meth-dflt-params-ref-prior.js
+expressions/object/method-definition/gen-meth-dflt-params-ref-self.js
 expressions/object/method-definition/gen-meth-dflt-params-rest.js
 expressions/object/method-definition/gen-meth-dflt-params-trailing-comma.js
 expressions/object/method-definition/gen-meth-object-destructuring-param-strict-body.js
@@ -9891,6 +9910,7 @@ expressions/object/method-definition/meth-dflt-params-arg-val-undefined.js
 expressions/object/method-definition/meth-dflt-params-duplicates.js
 expressions/object/method-definition/meth-dflt-params-ref-later.js
 expressions/object/method-definition/meth-dflt-params-ref-prior.js
+expressions/object/method-definition/meth-dflt-params-ref-self.js
 expressions/object/method-definition/meth-dflt-params-rest.js
 expressions/object/method-definition/meth-dflt-params-trailing-comma.js
 expressions/object/method-definition/meth-object-destructuring-param-strict-body.js
@@ -12206,6 +12226,7 @@ statements/async-function/dflt-params-arg-val-undefined.js
 statements/async-function/dflt-params-duplicates.js
 statements/async-function/dflt-params-ref-later.js
 statements/async-function/dflt-params-ref-prior.js
+statements/async-function/dflt-params-ref-self.js
 statements/async-function/dflt-params-rest.js
 statements/async-function/dflt-params-trailing-comma.js
 statements/async-function/early-errors-declaration-NSPL-with-USD.js
@@ -12271,6 +12292,7 @@ statements/async-generator/dflt-params-arg-val-undefined.js
 statements/async-generator/dflt-params-duplicates.js
 statements/async-generator/dflt-params-ref-later.js
 statements/async-generator/dflt-params-ref-prior.js
+statements/async-generator/dflt-params-ref-self.js
 statements/async-generator/dflt-params-rest.js
 statements/async-generator/dflt-params-trailing-comma.js
 statements/async-generator/dstr/ary-init-iter-get-err-array-prototype.js
@@ -12672,6 +12694,7 @@ statements/class/async-gen-method-static/dflt-params-arg-val-undefined.js
 statements/class/async-gen-method-static/dflt-params-duplicates.js
 statements/class/async-gen-method-static/dflt-params-ref-later.js
 statements/class/async-gen-method-static/dflt-params-ref-prior.js
+statements/class/async-gen-method-static/dflt-params-ref-self.js
 statements/class/async-gen-method-static/dflt-params-rest.js
 statements/class/async-gen-method-static/dflt-params-trailing-comma.js
 statements/class/async-gen-method-static/forbidden-ext/b1/cls-decl-async-gen-meth-static-forbidden-ext-direct-access-prop-arguments.js
@@ -12770,6 +12793,7 @@ statements/class/async-gen-method/dflt-params-arg-val-undefined.js
 statements/class/async-gen-method/dflt-params-duplicates.js
 statements/class/async-gen-method/dflt-params-ref-later.js
 statements/class/async-gen-method/dflt-params-ref-prior.js
+statements/class/async-gen-method/dflt-params-ref-self.js
 statements/class/async-gen-method/dflt-params-rest.js
 statements/class/async-gen-method/dflt-params-trailing-comma.js
 statements/class/async-gen-method/forbidden-ext/b1/cls-decl-async-gen-meth-forbidden-ext-direct-access-prop-arguments.js
@@ -12869,6 +12893,7 @@ statements/class/async-method-static/dflt-params-arg-val-undefined.js
 statements/class/async-method-static/dflt-params-duplicates.js
 statements/class/async-method-static/dflt-params-ref-later.js
 statements/class/async-method-static/dflt-params-ref-prior.js
+statements/class/async-method-static/dflt-params-ref-self.js
 statements/class/async-method-static/dflt-params-rest.js
 statements/class/async-method-static/dflt-params-trailing-comma.js
 statements/class/async-method-static/forbidden-ext/b1/cls-decl-async-meth-static-forbidden-ext-direct-access-prop-arguments.js
@@ -12900,6 +12925,7 @@ statements/class/async-method/dflt-params-arg-val-undefined.js
 statements/class/async-method/dflt-params-duplicates.js
 statements/class/async-method/dflt-params-ref-later.js
 statements/class/async-method/dflt-params-ref-prior.js
+statements/class/async-method/dflt-params-ref-self.js
 statements/class/async-method/dflt-params-rest.js
 statements/class/async-method/dflt-params-trailing-comma.js
 statements/class/async-method/forbidden-ext/b1/cls-decl-async-meth-forbidden-ext-direct-access-prop-arguments.js
@@ -16403,6 +16429,7 @@ statements/class/gen-method-static/dflt-params-arg-val-undefined.js
 statements/class/gen-method-static/dflt-params-duplicates.js
 statements/class/gen-method-static/dflt-params-ref-later.js
 statements/class/gen-method-static/dflt-params-ref-prior.js
+statements/class/gen-method-static/dflt-params-ref-self.js
 statements/class/gen-method-static/dflt-params-rest.js
 statements/class/gen-method-static/dflt-params-trailing-comma.js
 statements/class/gen-method-static/forbidden-ext/b1/cls-decl-gen-meth-static-forbidden-ext-direct-access-prop-arguments.js
@@ -16433,6 +16460,7 @@ statements/class/gen-method/dflt-params-arg-val-undefined.js
 statements/class/gen-method/dflt-params-duplicates.js
 statements/class/gen-method/dflt-params-ref-later.js
 statements/class/gen-method/dflt-params-ref-prior.js
+statements/class/gen-method/dflt-params-ref-self.js
 statements/class/gen-method/dflt-params-rest.js
 statements/class/gen-method/dflt-params-trailing-comma.js
 statements/class/gen-method/forbidden-ext/b1/cls-decl-gen-meth-forbidden-ext-direct-access-prop-arguments.js
@@ -16511,6 +16539,7 @@ statements/class/method-static/dflt-params-arg-val-undefined.js
 statements/class/method-static/dflt-params-duplicates.js
 statements/class/method-static/dflt-params-ref-later.js
 statements/class/method-static/dflt-params-ref-prior.js
+statements/class/method-static/dflt-params-ref-self.js
 statements/class/method-static/dflt-params-rest.js
 statements/class/method-static/dflt-params-trailing-comma.js
 statements/class/method-static/forbidden-ext/b1/cls-decl-meth-static-forbidden-ext-direct-access-prop-arguments.js
@@ -16530,6 +16559,7 @@ statements/class/method/dflt-params-arg-val-undefined.js
 statements/class/method/dflt-params-duplicates.js
 statements/class/method/dflt-params-ref-later.js
 statements/class/method/dflt-params-ref-prior.js
+statements/class/method/dflt-params-ref-self.js
 statements/class/method/dflt-params-rest.js
 statements/class/method/dflt-params-trailing-comma.js
 statements/class/method/forbidden-ext/b1/cls-decl-meth-forbidden-ext-direct-access-prop-arguments.js
@@ -16658,6 +16688,8 @@ statements/class/syntax/class-method-propname-constructor.js
 statements/class/syntax/early-errors/class-definition-evaluation-block-duplicate-binding.js
 statements/class/syntax/early-errors/class-definition-evaluation-scriptbody-duplicate-binding.js
 statements/class/syntax/escaped-static.js
+statements/const/block-local-use-before-initialization-in-declaration-statement.js
+statements/const/block-local-use-before-initialization-in-prior-statement.js
 statements/const/cptn-value.js
 statements/const/dstr/ary-init-iter-close.js
 statements/const/dstr/ary-init-iter-get-err-array-prototype.js
@@ -16757,6 +16789,9 @@ statements/const/fn-name-class.js
 statements/const/fn-name-cover.js
 statements/const/fn-name-fn.js
 statements/const/fn-name-gen.js
+statements/const/function-local-closure-get-before-initialization.js
+statements/const/function-local-use-before-initialization-in-declaration-statement.js
+statements/const/function-local-use-before-initialization-in-prior-statement.js
 statements/const/global-closure-get-before-initialization.js
 statements/const/global-use-before-initialization-in-declaration-statement.js
 statements/const/global-use-before-initialization-in-prior-statement.js
@@ -19324,6 +19359,7 @@ statements/function/dflt-params-arg-val-undefined.js
 statements/function/dflt-params-duplicates.js
 statements/function/dflt-params-ref-later.js
 statements/function/dflt-params-ref-prior.js
+statements/function/dflt-params-ref-self.js
 statements/function/dflt-params-rest.js
 statements/function/dflt-params-trailing-comma.js
 statements/function/dstr/ary-init-iter-close.js
@@ -19592,6 +19628,7 @@ statements/generators/dflt-params-arg-val-undefined.js
 statements/generators/dflt-params-duplicates.js
 statements/generators/dflt-params-ref-later.js
 statements/generators/dflt-params-ref-prior.js
+statements/generators/dflt-params-ref-self.js
 statements/generators/dflt-params-rest.js
 statements/generators/dflt-params-trailing-comma.js
 statements/generators/dstr/ary-init-iter-get-err-array-prototype.js
@@ -19922,6 +19959,8 @@ statements/labeled/value-yield-non-strict-escaped.js
 statements/labeled/value-yield-non-strict.js
 statements/labeled/value-yield-strict-escaped.js
 statements/labeled/value-yield-strict.js
+statements/let/block-local-use-before-initialization-in-declaration-statement.js
+statements/let/block-local-use-before-initialization-in-prior-statement.js
 statements/let/cptn-value.js
 statements/let/dstr/ary-init-iter-close.js
 statements/let/dstr/ary-init-iter-get-err-array-prototype.js
@@ -20021,6 +20060,9 @@ statements/let/fn-name-class.js
 statements/let/fn-name-cover.js
 statements/let/fn-name-fn.js
 statements/let/fn-name-gen.js
+statements/let/function-local-closure-get-before-initialization.js
+statements/let/function-local-use-before-initialization-in-declaration-statement.js
+statements/let/function-local-use-before-initialization-in-prior-statement.js
 statements/let/global-closure-get-before-initialization.js
 statements/let/global-use-before-initialization-in-declaration-statement.js
 statements/let/global-use-before-initialization-in-prior-statement.js
