@@ -9973,6 +9973,7 @@ expressions/optional-chaining/update-expression-prefix.js
 expressions/postfix-decrement/11.3.2-2-3-s.js
 expressions/postfix-decrement/S11.3.2_A2.1_T1.js
 expressions/postfix-decrement/S11.3.2_A2.1_T2.js
+expressions/postfix-decrement/S11.3.2_A2.2_T1.js
 expressions/postfix-decrement/S11.3.2_A3_T1.js
 expressions/postfix-decrement/S11.3.2_A3_T2.js
 expressions/postfix-decrement/S11.3.2_A3_T3.js
@@ -10004,6 +10005,7 @@ expressions/postfix-increment/11.3.1-2-1gs.js
 expressions/postfix-increment/11.3.1-2-3.js
 expressions/postfix-increment/S11.3.1_A2.1_T1.js
 expressions/postfix-increment/S11.3.1_A2.1_T2.js
+expressions/postfix-increment/S11.3.1_A2.2_T1.js
 expressions/postfix-increment/S11.3.1_A3_T1.js
 expressions/postfix-increment/S11.3.1_A3_T2.js
 expressions/postfix-increment/S11.3.1_A3_T3.js
