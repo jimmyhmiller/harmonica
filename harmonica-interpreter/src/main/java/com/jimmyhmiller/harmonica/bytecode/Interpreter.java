@@ -354,6 +354,37 @@ public final class Interpreter {
         int pc = startPc;
         InterpContext prior = InterpContext.setCurrent(ctx);
         try {
+            // ECMA-262 § 27.5.3: when a generator is resumed via
+            // {@code .return(v)} or {@code .throw(v)}, the suspended
+            // yield expression's resume processes a Return / Throw
+            // completion. yield* (delegate) handles its own dispatch on
+            // re-entry; plain yields don't have an explicit op to
+            // re-enter, so we intercept the completion here before the
+            // next op runs.
+            if (ctx.resumeMode() != InterpContext.ResumeMode.NORMAL && pc != 0) {
+                Op currentOp = ops[pc];
+                Op prevOp = pc > 0 ? ops[pc - 1] : null;
+                boolean afterDelegate = prevOp instanceof Op.Yield y && y.delegate();
+                boolean atDelegate = currentOp instanceof Op.Yield y2 && y2.delegate();
+                if (!afterDelegate && !atDelegate) {
+                    InterpContext.ResumeMode mode = ctx.resumeMode();
+                    Object value = ctx.lastResumedValue();
+                    ctx.setResumeMode(InterpContext.ResumeMode.NORMAL);
+                    if (mode == InterpContext.ResumeMode.THROW) {
+                        try {
+                            throw new AbruptCompletion(value);
+                        } catch (AbruptCompletion ex) {
+                            int handlerPc = executable.findHandlerPc(pc);
+                            if (handlerPc < 0) throw ex;
+                            ctx.registers()[Variable.Register.EXCEPTION_INDEX] = ex.value();
+                            pc = handlerPc;
+                        }
+                    } else if (mode == InterpContext.ResumeMode.RETURN) {
+                        ctx.registers()[Variable.Register.RETURN_VALUE_INDEX] = value;
+                        return false;
+                    }
+                }
+            }
             while (true) {
                 try {
                     pc = ops[pc].interpret(ctx, pc);

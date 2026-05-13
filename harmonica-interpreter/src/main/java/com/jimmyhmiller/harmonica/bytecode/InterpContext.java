@@ -83,6 +83,21 @@ public final class InterpContext {
      *  from {@link #yieldResumeDst} because yield* re-enters the same op
      *  rather than storing into a destination operand. */
     private Object lastResumedValue = Undefined.VALUE;
+
+    /**
+     * Completion type with which the generator was resumed — ECMA-262
+     * § 27.5.3 NormalCompletion / ReturnCompletion / ThrowCompletion.
+     * Default {@link ResumeMode#NORMAL} (next(value)). {@code return(value)}
+     * and {@code throw(value)} flip to RETURN / THROW and the body
+     * (specifically the suspended yield / yield*) dispatches accordingly
+     * on re-entry — forwarding to the inner iterator's
+     * {@code return}/{@code throw} when delegating, or completing /
+     * throwing here when not.
+     */
+    public enum ResumeMode { NORMAL, RETURN, THROW }
+    private ResumeMode resumeMode = ResumeMode.NORMAL;
+    public ResumeMode resumeMode() { return resumeMode; }
+    public void setResumeMode(ResumeMode m) { this.resumeMode = m; }
     /** Active inner iterator object during {@code yield*}, or null. */
     private Object delegatedIterator;
     /** Cached {@code next} method of the active inner iterator, or null. */

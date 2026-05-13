@@ -1459,6 +1459,9 @@ public final class Realm {
                 // op without a destination operand and reads this slot.
                 ctx.setLastResumedValue(resumed);
             }
+            // next() is always a Normal completion (return/throw use the
+            // sibling methods below).
+            ctx.setResumeMode(InterpContext.ResumeMode.NORMAL);
             g.properties().put(GEN_STATE, "executing");
             try {
                 boolean yielded = Interpreter.interpretSuspendable(body, ctx, startPc);
@@ -1478,25 +1481,107 @@ public final class Realm {
                 throw ac;
             }
         }));
-        // § 27.5.1.4 Generator.prototype.return — abrupt completion: return
-        // the passed value and mark the generator completed.
+        // § 27.5.1.4 Generator.prototype.return — resume the body with a
+        // Return completion. If we're suspended at a {@code yield*},
+        // the inner iterator's {@code return} (if any) handles the
+        // forwarding; otherwise the yield op completes the generator
+        // here with the return value.
         generatorPrototype.set("return", nativeFn("return", 1, (thisVal, args, c) -> {
             if (!(thisVal instanceof JSObject g) || !g.properties().containsKey(GEN_STATE)) {
                 throw AbruptCompletion.typeError("Generator.prototype.return called on non-generator");
             }
-            g.properties().put(GEN_STATE, "completed");
-            return iteratorResult(arg(args, 0), true);
+            boolean isAsync = Boolean.TRUE.equals(g.properties().get(GEN_ASYNC));
+            Object retVal = arg(args, 0);
+            String state = (String) g.properties().get(GEN_STATE);
+            if ("completed".equals(state)) {
+                JSObject r = iteratorResult(retVal, true);
+                return isAsync ? wrapInPromise(r, c) : r;
+            }
+            if ("executing".equals(state)) {
+                AbruptCompletion err = AbruptCompletion.typeError("Generator is already running");
+                if (isAsync) return wrapInRejectedPromise(err.value());
+                throw err;
+            }
+            if ("suspendedStart".equals(state)) {
+                // § 27.5.1.4 step 8.b: just complete; the body never ran.
+                g.properties().put(GEN_STATE, "completed");
+                JSObject r = iteratorResult(retVal, true);
+                return isAsync ? wrapInPromise(r, c) : r;
+            }
+            // suspendedYield — resume with a Return completion.
+            Executable body = (Executable) g.properties().get(GEN_BODY);
+            InterpContext ctx = (InterpContext) g.properties().get(GEN_CTX);
+            int startPc = ctx.yieldResumePc();
+            ctx.setLastResumedValue(retVal);
+            ctx.setResumeMode(InterpContext.ResumeMode.RETURN);
+            g.properties().put(GEN_STATE, "executing");
+            try {
+                boolean yielded = Interpreter.interpretSuspendable(body, ctx, startPc);
+                JSObject result;
+                if (yielded) {
+                    g.properties().put(GEN_STATE, "suspendedYield");
+                    result = iteratorResult(ctx.yieldedValue(), false);
+                } else {
+                    g.properties().put(GEN_STATE, "completed");
+                    Object body_ret = ctx.registers()[Variable.Register.RETURN_VALUE_INDEX];
+                    result = iteratorResult(body_ret, true);
+                }
+                return isAsync ? wrapInPromise(result, c) : result;
+            } catch (AbruptCompletion ac) {
+                g.properties().put(GEN_STATE, "completed");
+                if (isAsync) return wrapInRejectedPromise(ac.value());
+                throw ac;
+            } finally {
+                ctx.setResumeMode(InterpContext.ResumeMode.NORMAL);
+            }
         }));
-        // § 27.5.1.3 Generator.prototype.throw — abrupt completion: throw
-        // the passed value into the generator. v1: just complete-with-throw;
-        // try/catch inside the generator body would need re-entry support
-        // we don't have yet.
+        // § 27.5.1.3 Generator.prototype.throw — resume the body with a
+        // Throw completion. Inside a {@code yield*} we forward to the
+        // inner iterator's {@code throw}; outside, the yield op rethrows
+        // here so any enclosing try/catch in the generator body sees it.
         generatorPrototype.set("throw", nativeFn("throw", 1, (thisVal, args, c) -> {
             if (!(thisVal instanceof JSObject g) || !g.properties().containsKey(GEN_STATE)) {
                 throw AbruptCompletion.typeError("Generator.prototype.throw called on non-generator");
             }
-            g.properties().put(GEN_STATE, "completed");
-            throw new AbruptCompletion(arg(args, 0));
+            boolean isAsync = Boolean.TRUE.equals(g.properties().get(GEN_ASYNC));
+            Object throwVal = arg(args, 0);
+            String state = (String) g.properties().get(GEN_STATE);
+            if ("suspendedStart".equals(state) || "completed".equals(state)) {
+                g.properties().put(GEN_STATE, "completed");
+                if (isAsync) return wrapInRejectedPromise(throwVal);
+                throw new AbruptCompletion(throwVal);
+            }
+            if ("executing".equals(state)) {
+                AbruptCompletion err = AbruptCompletion.typeError("Generator is already running");
+                if (isAsync) return wrapInRejectedPromise(err.value());
+                throw err;
+            }
+            // suspendedYield — resume with a Throw completion.
+            Executable body = (Executable) g.properties().get(GEN_BODY);
+            InterpContext ctx = (InterpContext) g.properties().get(GEN_CTX);
+            int startPc = ctx.yieldResumePc();
+            ctx.setLastResumedValue(throwVal);
+            ctx.setResumeMode(InterpContext.ResumeMode.THROW);
+            g.properties().put(GEN_STATE, "executing");
+            try {
+                boolean yielded = Interpreter.interpretSuspendable(body, ctx, startPc);
+                JSObject result;
+                if (yielded) {
+                    g.properties().put(GEN_STATE, "suspendedYield");
+                    result = iteratorResult(ctx.yieldedValue(), false);
+                } else {
+                    g.properties().put(GEN_STATE, "completed");
+                    Object body_ret = ctx.registers()[Variable.Register.RETURN_VALUE_INDEX];
+                    result = iteratorResult(body_ret, true);
+                }
+                return isAsync ? wrapInPromise(result, c) : result;
+            } catch (AbruptCompletion ac) {
+                g.properties().put(GEN_STATE, "completed");
+                if (isAsync) return wrapInRejectedPromise(ac.value());
+                throw ac;
+            } finally {
+                ctx.setResumeMode(InterpContext.ResumeMode.NORMAL);
+            }
         }));
         // § 27.5.1.5 Generator.prototype [ %Symbol.iterator% ] returns the
         // generator itself (generators are their own iterators).

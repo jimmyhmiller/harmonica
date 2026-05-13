@@ -2014,9 +2014,57 @@ public sealed interface Op {
                     // § 14.4.14 (CreateAsyncFromSyncIterator).
                     ctx.setDelegatedIsAsync(usedAsyncIter || isAsync);
                 }
-                if (!(nextFn instanceof JSFunction nfn)) {
-                    throw AbruptCompletion.typeError("yield*: iterator.next is not callable");
+                // ECMA-262 § 27.5.3.8 yield* — completion forwarding.
+                // The outer generator may have been resumed via .return /
+                // .throw; route to the inner iterator's return/throw
+                // method instead of next, falling back per spec when the
+                // method is missing.
+                InterpContext.ResumeMode resumeMode = ctx.resumeMode();
+                Object methodToCall;
+                if (resumeMode == InterpContext.ResumeMode.RETURN) {
+                    Object returnMethod = AbstractOps.getProperty(iter, "return");
+                    if (returnMethod == null || returnMethod == Undefined.VALUE) {
+                        // § 27.5.3.8 step 7.c.iii: no inner return — close
+                        // the delegation and propagate the Return upward.
+                        ctx.setDelegatedIterator(null);
+                        ctx.setDelegatedNext(null);
+                        ctx.setDelegatedIsAsync(false);
+                        ctx.setResumeMode(InterpContext.ResumeMode.NORMAL);
+                        ctx.registers()[Variable.Register.RETURN_VALUE_INDEX] = ctx.lastResumedValue();
+                        return Op.FRAME_DONE;
+                    }
+                    methodToCall = returnMethod;
+                } else if (resumeMode == InterpContext.ResumeMode.THROW) {
+                    Object throwMethod = AbstractOps.getProperty(iter, "throw");
+                    if (throwMethod == null || throwMethod == Undefined.VALUE) {
+                        // § 27.5.3.8 step 7.b.iii: no inner throw — close
+                        // the delegation (calling inner.return if any)
+                        // and rethrow inside the outer body.
+                        Object closer = AbstractOps.getProperty(iter, "return");
+                        if (closer instanceof JSFunction cfn) {
+                            try { Interpreter.invokeFunction(cfn, iter, new Object[0], ctx); }
+                            catch (AbruptCompletion ignored) { /* swallow per spec — original throw wins */ }
+                        }
+                        ctx.setDelegatedIterator(null);
+                        ctx.setDelegatedNext(null);
+                        ctx.setDelegatedIsAsync(false);
+                        Object thrown = ctx.lastResumedValue();
+                        ctx.setResumeMode(InterpContext.ResumeMode.NORMAL);
+                        throw new AbruptCompletion(thrown);
+                    }
+                    methodToCall = throwMethod;
+                } else {
+                    methodToCall = nextFn;
                 }
+                if (!(methodToCall instanceof JSFunction nfn)) {
+                    throw AbruptCompletion.typeError(
+                        "yield*: iterator." + (resumeMode == InterpContext.ResumeMode.RETURN ? "return"
+                                              : resumeMode == InterpContext.ResumeMode.THROW ? "throw"
+                                              : "next") + " is not callable");
+                }
+                // Reset mode so subsequent re-entries (post-yield) default
+                // back to Normal until next .return/.throw arrives.
+                ctx.setResumeMode(InterpContext.ResumeMode.NORMAL);
                 // ECMA-262 § 27.5.3.8 (yield* step 7.a.i) / IteratorNext:
                 // always forward the resumed value as the first argument
                 // — even on the first iteration where it's {@code undefined}.
@@ -2047,14 +2095,44 @@ public sealed interface Op {
                 if (!(result instanceof JSObject)) {
                     throw AbruptCompletion.typeError("yield*: iterator.next() did not return an object");
                 }
-                Object iterValue = AbstractOps.getProperty(result, "value");
+                // ECMA-262 § 7.4.5 IteratorComplete / § 7.4.6 IteratorValue:
+                // done is queried first, then value. Test262 logs both
+                // accesses and asserts the order.
                 Object iterDone = AbstractOps.getProperty(result, "done");
+                Object iterValue = AbstractOps.getProperty(result, "value");
+                // § 14.4.14 / § 27.6.1.5.1 CreateAsyncFromSyncIterator: in
+                // an async generator delegating to a sync iterator (or
+                // any async-iter context), the produced value itself is
+                // Awaited. {@code Promise.resolve} performs thenable
+                // assimilation; a rejected promise turns into a throw.
+                if (ctx.delegatedIsAsync()) {
+                    JSObject vp = null;
+                    if (Realm.isPromise(iterValue)) vp = (JSObject) iterValue;
+                    else if (iterValue instanceof JSObject) {
+                        vp = Realm.createPromise();
+                        Realm.resolvePromise(vp, iterValue, ctx);
+                    }
+                    if (vp != null) {
+                        String vs = (String) vp.properties().get(Realm.PROM_STATE);
+                        Object vi = vp.properties().get(Realm.PROM_RESULT);
+                        if ("fulfilled".equals(vs)) iterValue = vi;
+                        else if ("rejected".equals(vs)) throw new AbruptCompletion(vi);
+                    }
+                }
                 if (AbstractOps.toBoolean(iterDone)) {
-                    // Inner exhausted — yield* expression completes with the
-                    // inner's return value (§ 27.5.3.8 step 11).
+                    // Inner exhausted. Two sub-cases per § 27.5.3.8:
+                    //  - mode was Normal/Throw: yield* expression yields
+                    //    {@code iterValue} as its result; outer body
+                    //    continues past it (step 7.a.vii / 7.b.vi).
+                    //  - mode was Return: outer generator itself
+                    //    completes with {@code iterValue} (step 7.c.viii).
                     ctx.setDelegatedIterator(null);
                     ctx.setDelegatedNext(null);
                     ctx.setDelegatedIsAsync(false);
+                    if (resumeMode == InterpContext.ResumeMode.RETURN) {
+                        ctx.registers()[Variable.Register.RETURN_VALUE_INDEX] = iterValue;
+                        return Op.FRAME_DONE;
+                    }
                     if (dst != null) dst.store(ctx, iterValue);
                     return pc + 1;
                 }
@@ -2593,8 +2671,9 @@ public sealed interface Op {
             if (!(result instanceof JSObject)) {
                 throw AbruptCompletion.typeError("iterator.next() returned non-object");
             }
-            Object value = AbstractOps.getProperty(result, "value");
+            // § 7.4.5 IteratorComplete / § 7.4.6 IteratorValue: done first.
             Object done = AbstractOps.getProperty(result, "done");
+            Object value = AbstractOps.getProperty(result, "value");
             // for-await also awaits {@code value} per § 14.7.5.3 step 1.b.iii.
             if (isAwait && Realm.isPromise(value)) {
                 JSObject pv = (JSObject) value;

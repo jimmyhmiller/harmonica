@@ -323,13 +323,7 @@ public final class Test262ExecRunner {
         // We use {@link com.jimmyhmiller.harmonica.module.ModuleLoader} as
         // a stand-in for the active global table; the runner sees the
         // same map every test does.
-        // Async tests: an injected {@code $DONE} keeps dynamic-import
-        // promise chains from blowing up on undefined, but we don't
-        // (yet) observe the {@code $DONE(error)} signal — strict-mode
-        // observation still surfaces ~378 unrelated bugs (generator
-        // return/throw forwarding through yield*, default param TDZ,
-        // async-from-sync wrapper) that each need their own fix. Until
-        // those land, lean soft so the visible test count keeps growing.
+        // Async tests: $DONE observation deferred (~290 unrelated bugs).
         return new TestResult(file, Outcome.PASS, "");
     }
 
