@@ -471,10 +471,17 @@ public sealed interface Op {
     record LessThan(Variable dst, Operand lhs, Operand rhs) implements Op {
         @Override public Operation operation() { return Operation.LESS_THAN; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            // retrieveDouble skips the Double box for numeric registers and
-            // typed-literal operands; Java's `<` already handles NaN per
-            // ECMA-262 (NaN < x is false in both).
-            dst.store(ctx, lhs.retrieveDouble(ctx) < rhs.retrieveDouble(ctx));
+            // ECMA-262 § 7.2.13: ToPrimitive both sides; if both strings,
+            // lexicographic UTF-16 compare; else numeric. Fall through to
+            // AbstractOps.lessThan for any non-Double path so strings,
+            // booleans, and objects are handled correctly.
+            Object l = lhs.retrieve(ctx);
+            Object r = rhs.retrieve(ctx);
+            if (l instanceof Double dl && r instanceof Double dr) {
+                dst.store(ctx, dl < dr);
+            } else {
+                dst.store(ctx, AbstractOps.lessThan(l, r));
+            }
             return pc + 1;
         }
     }
@@ -482,7 +489,13 @@ public sealed interface Op {
     record LessThanEquals(Variable dst, Operand lhs, Operand rhs) implements Op {
         @Override public Operation operation() { return Operation.LESS_THAN_EQUALS; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, lhs.retrieveDouble(ctx) <= rhs.retrieveDouble(ctx));
+            Object l = lhs.retrieve(ctx);
+            Object r = rhs.retrieve(ctx);
+            if (l instanceof Double dl && r instanceof Double dr) {
+                dst.store(ctx, dl <= dr);
+            } else {
+                dst.store(ctx, AbstractOps.lessThanEquals(l, r));
+            }
             return pc + 1;
         }
     }
@@ -490,7 +503,13 @@ public sealed interface Op {
     record GreaterThan(Variable dst, Operand lhs, Operand rhs) implements Op {
         @Override public Operation operation() { return Operation.GREATER_THAN; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, lhs.retrieveDouble(ctx) > rhs.retrieveDouble(ctx));
+            Object l = lhs.retrieve(ctx);
+            Object r = rhs.retrieve(ctx);
+            if (l instanceof Double dl && r instanceof Double dr) {
+                dst.store(ctx, dl > dr);
+            } else {
+                dst.store(ctx, AbstractOps.greaterThan(l, r));
+            }
             return pc + 1;
         }
     }
@@ -498,7 +517,13 @@ public sealed interface Op {
     record GreaterThanEquals(Variable dst, Operand lhs, Operand rhs) implements Op {
         @Override public Operation operation() { return Operation.GREATER_THAN_EQUALS; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, lhs.retrieveDouble(ctx) >= rhs.retrieveDouble(ctx));
+            Object l = lhs.retrieve(ctx);
+            Object r = rhs.retrieve(ctx);
+            if (l instanceof Double dl && r instanceof Double dr) {
+                dst.store(ctx, dl >= dr);
+            } else {
+                dst.store(ctx, AbstractOps.greaterThanEquals(l, r));
+            }
             return pc + 1;
         }
     }

@@ -120,22 +120,54 @@ public final class AbstractOps {
     //  Comparison
     // -------------------------------------------------------------
 
-    /** https://tc39.es/ecma262/#sec-islessthan — simplified to numeric path. */
+    /**
+     * ECMA-262 § 7.2.13 IsLessThan. ToPrimitive both sides; if both are
+     * strings, compare lexicographically by UTF-16 code unit (Java's
+     * String.compareTo); otherwise coerce both to Number and compare.
+     */
     public static Boolean lessThan         (Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return dl < dr;
-        return toNumber(lhs) <  toNumber(rhs);
+        Object lp = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction
+                  ? toPrimitive(lhs, "number") : lhs;
+        Object rp = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction
+                  ? toPrimitive(rhs, "number") : rhs;
+        if (lp instanceof CharSequence ls && rp instanceof CharSequence rs) {
+            return ls.toString().compareTo(rs.toString()) <  0;
+        }
+        return toNumber(lp) <  toNumber(rp);
     }
     public static Boolean lessThanEquals   (Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return dl <= dr;
-        return toNumber(lhs) <= toNumber(rhs);
+        Object lp = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction
+                  ? toPrimitive(lhs, "number") : lhs;
+        Object rp = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction
+                  ? toPrimitive(rhs, "number") : rhs;
+        if (lp instanceof CharSequence ls && rp instanceof CharSequence rs) {
+            return ls.toString().compareTo(rs.toString()) <= 0;
+        }
+        return toNumber(lp) <= toNumber(rp);
     }
     public static Boolean greaterThan      (Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return dl > dr;
-        return toNumber(lhs) >  toNumber(rhs);
+        Object lp = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction
+                  ? toPrimitive(lhs, "number") : lhs;
+        Object rp = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction
+                  ? toPrimitive(rhs, "number") : rhs;
+        if (lp instanceof CharSequence ls && rp instanceof CharSequence rs) {
+            return ls.toString().compareTo(rs.toString()) >  0;
+        }
+        return toNumber(lp) >  toNumber(rp);
     }
     public static Boolean greaterThanEquals(Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return dl >= dr;
-        return toNumber(lhs) >= toNumber(rhs);
+        Object lp = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction
+                  ? toPrimitive(lhs, "number") : lhs;
+        Object rp = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction
+                  ? toPrimitive(rhs, "number") : rhs;
+        if (lp instanceof CharSequence ls && rp instanceof CharSequence rs) {
+            return ls.toString().compareTo(rs.toString()) >= 0;
+        }
+        return toNumber(lp) >= toNumber(rp);
     }
     public static Boolean strictlyInequals(Object lhs, Object rhs) { return !strictlyEquals(lhs, rhs); }
 
