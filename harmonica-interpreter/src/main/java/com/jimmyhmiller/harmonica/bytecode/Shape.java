@@ -1,6 +1,5 @@
 package com.jimmyhmiller.harmonica.bytecode;
 
-import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -100,17 +99,18 @@ public final class Shape {
      */
     private volatile Map<String, PropertyMeta> propertyTable;
 
-    // Transition caches hold children via WeakReference so a child shape with
-    // no live JSObjects can be collected. LibJS gets this for free from its
-    // mark-sweep GC; in Java we have to be explicit, otherwise every shape
-    // ever produced by the program stays pinned by its parent's cache. Stale
-    // (cleared) entries are reaped lazily on access.
+    // Transition caches strong-ref their children, intentionally. A child
+    // shape's life is bounded by its root: the root is held by EMPTY_OBJECT_SHAPES
+    // (weak) and by any live JSObject of that family — once both go, the root
+    // dies, and everything reachable through forward/delete/prototype
+    // transitions collapses with it. Weak refs here would just add an extra
+    // deref on the property-write hot path without enabling earlier collection.
     /** {@link TransitionType#Put} / {@link TransitionType#Configure} cache. */
-    private Map<TransitionKey, WeakReference<Shape>> forwardTransitions;
+    private Map<TransitionKey, Shape> forwardTransitions;
     /** {@link TransitionType#Prototype} cache, keyed by the new prototype identity. */
-    private Map<JSObject, WeakReference<Shape>> prototypeTransitions;
+    private Map<JSObject, Shape> prototypeTransitions;
     /** {@link TransitionType#Delete} cache, keyed by the removed key. */
-    private Map<String, WeakReference<Shape>> deleteTransitions;
+    private Map<String, Shape> deleteTransitions;
 
     // ------------------------------------------------------------
     // Construction.
@@ -201,17 +201,13 @@ public final class Shape {
     public Shape createPutTransition(String key, byte attrs) {
         TransitionKey tk = new TransitionKey(key, attrs);
         if (forwardTransitions != null) {
-            WeakReference<Shape> ref = forwardTransitions.get(tk);
-            if (ref != null) {
-                Shape cached = ref.get();
-                if (cached != null) return cached;
-                forwardTransitions.remove(tk);
-            }
+            Shape cached = forwardTransitions.get(tk);
+            if (cached != null) return cached;
         }
         Shape child = new Shape(this, key, attrs, TransitionType.Put,
                                 propertyCount + 1, storageSize + 1, prototype);
         if (forwardTransitions == null) forwardTransitions = new HashMap<>();
-        forwardTransitions.put(tk, new WeakReference<>(child));
+        forwardTransitions.put(tk, child);
         return child;
     }
 
@@ -229,17 +225,13 @@ public final class Shape {
         if (existing.attrs() == attrs) return this;
         TransitionKey tk = new TransitionKey(key, attrs);
         if (forwardTransitions != null) {
-            WeakReference<Shape> ref = forwardTransitions.get(tk);
-            if (ref != null) {
-                Shape cached = ref.get();
-                if (cached != null) return cached;
-                forwardTransitions.remove(tk);
-            }
+            Shape cached = forwardTransitions.get(tk);
+            if (cached != null) return cached;
         }
         Shape child = new Shape(this, key, attrs, TransitionType.Configure,
                                 propertyCount, storageSize, prototype);
         if (forwardTransitions == null) forwardTransitions = new HashMap<>();
-        forwardTransitions.put(tk, new WeakReference<>(child));
+        forwardTransitions.put(tk, child);
         return child;
     }
 
@@ -250,17 +242,13 @@ public final class Shape {
      */
     public Shape createDeleteTransition(String key) {
         if (deleteTransitions != null) {
-            WeakReference<Shape> ref = deleteTransitions.get(key);
-            if (ref != null) {
-                Shape cached = ref.get();
-                if (cached != null) return cached;
-                deleteTransitions.remove(key);
-            }
+            Shape cached = deleteTransitions.get(key);
+            if (cached != null) return cached;
         }
         Shape child = new Shape(this, key, (byte) 0, TransitionType.Delete,
                                 propertyCount - 1, storageSize, prototype);
         if (deleteTransitions == null) deleteTransitions = new HashMap<>();
-        deleteTransitions.put(key, new WeakReference<>(child));
+        deleteTransitions.put(key, child);
         return child;
     }
 
@@ -272,17 +260,13 @@ public final class Shape {
     public Shape createPrototypeTransition(JSObject newProto) {
         if (newProto == prototype) return this;
         if (prototypeTransitions != null) {
-            WeakReference<Shape> ref = prototypeTransitions.get(newProto);
-            if (ref != null) {
-                Shape cached = ref.get();
-                if (cached != null) return cached;
-                prototypeTransitions.remove(newProto);
-            }
+            Shape cached = prototypeTransitions.get(newProto);
+            if (cached != null) return cached;
         }
         Shape child = new Shape(this, null, (byte) 0, TransitionType.Prototype,
                                 propertyCount, storageSize, newProto);
         if (prototypeTransitions == null) prototypeTransitions = new HashMap<>();
-        prototypeTransitions.put(newProto, new WeakReference<>(child));
+        prototypeTransitions.put(newProto, child);
         return child;
     }
 
