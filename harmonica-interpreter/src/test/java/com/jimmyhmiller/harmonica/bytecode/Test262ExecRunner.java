@@ -448,13 +448,29 @@ public final class Test262ExecRunner {
     }
 
     private static String abruptDetail(AbruptCompletion ac) {
+        // Safe stringification — abruptDetail is called from the test
+        // runner thread, where InterpContext.current() is null. Going
+        // through AbstractOps.toString routes via toPrimitive, which
+        // allocates an InterpContext from current() and NPEs. Read the
+        // name/message slots directly with a Java-side coerce.
         Object v = ac.value();
         if (v instanceof JSObject jo) {
-            Object name = jo.get("name");
-            Object message = jo.get("message");
-            return AbstractOps.toString(name) + ": " + AbstractOps.toString(message);
+            return safeStr(jo.get("name"), "Error") + ": " + safeStr(jo.get("message"), "");
         }
-        return AbstractOps.toString(v);
+        return safeStr(v, String.valueOf(v));
+    }
+
+    private static String safeStr(Object v, String fallback) {
+        if (v == null || v == Undefined.VALUE) return fallback;
+        if (v instanceof String s) return s;
+        if (v instanceof CharSequence cs) return cs.toString();
+        if (v instanceof Number n) {
+            double d = n.doubleValue();
+            if (d == (long) d && !Double.isInfinite(d)) return Long.toString((long) d);
+            return Double.toString(d);
+        }
+        if (v instanceof Boolean b) return b ? "true" : "false";
+        return v.getClass().getSimpleName();
     }
 
     private static String errorName(Object v) {
