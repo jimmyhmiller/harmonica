@@ -349,6 +349,22 @@ public final class Realm {
         installWeakMapPrototype();
         installWeakSetPrototype();
 
+        // ECMA-262 § 17 — all built-in prototype methods are non-enumerable
+        // ({writable: true, enumerable: false, configurable: true}). Sweep
+        // each prototype that's been bootstrapped and flip enumerability off.
+        markMethodsNonEnumerable(objectPrototype);
+        markMethodsNonEnumerable(functionPrototype);
+        markMethodsNonEnumerable(stringPrototype);
+        markMethodsNonEnumerable(numberPrototype);
+        markMethodsNonEnumerable(booleanPrototype);
+        markMethodsNonEnumerable(symbolPrototype);
+        markMethodsNonEnumerable(promisePrototype);
+        markMethodsNonEnumerable(generatorPrototype);
+        markMethodsNonEnumerable(mapPrototype);
+        markMethodsNonEnumerable(setPrototype);
+        markMethodsNonEnumerable(weakMapPrototype);
+        markMethodsNonEnumerable(weakSetPrototype);
+
         prototypesReady = true;
     }
 
@@ -1151,6 +1167,28 @@ public final class Realm {
         // § 23.1.3.36 Array.prototype [ %Symbol.iterator% ] = .values.
         arrayPrototype.set(wellKnownIterator.asPropertyKey(), valuesFn);
         defaultArrayIterator = valuesFn;
+        // ECMA-262 § 17: every built-in prototype method has attributes
+        // { writable: true, enumerable: false, configurable: true }.
+        // The `set` calls above used ATTR_DEFAULT (enumerable=true), so
+        // batch-mark all own properties non-enumerable here.
+        markMethodsNonEnumerable(arrayPrototype);
+    }
+
+    /** Mark every own property of {@code proto} non-enumerable (writable +
+     *  configurable). Per ECMA-262 § 17 conventions for built-in methods. */
+    static void markMethodsNonEnumerable(JSObject proto) {
+        byte methodAttrs = (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE);
+        // Iterate a snapshot — setAttributes transitions the shape.
+        java.util.List<String> keys = new java.util.ArrayList<>();
+        for (String k : proto.ownKeys()) keys.add(k);
+        for (String k : keys) {
+            // Skip 'constructor' which keeps its descriptor per the existing
+            // installations (most prototypes have already set its attrs).
+            // Leave any pre-existing custom attrs (Accessor pairs etc.) alone.
+            Object v = proto.getOwn(k);
+            if (v instanceof Accessor) continue;
+            proto.setAttributes(k, methodAttrs);
+        }
     }
 
     /**
