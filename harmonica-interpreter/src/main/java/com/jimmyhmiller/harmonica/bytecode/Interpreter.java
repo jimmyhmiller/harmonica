@@ -433,8 +433,19 @@ public final class Interpreter {
     static Object runLoop(Executable executable, InterpContext ctx) {
         Op[] ops = executable.ops();
         int pc = 0;
+        int interruptTick = 0;
         while (true) {
             try {
+                // Periodic interrupt check. Future.cancel(true) from the
+                // test runner only sets the thread's interrupt flag —
+                // without this poll, a runaway test (e.g. 7500-iteration
+                // Object.defineProperty loops in
+                // staging/sm/Proxy/ownkeys-linear.js) keeps allocating
+                // forever and zombie threads stack up until the JVM OOMs.
+                // Once every 1024 ops is cheap and bounds latency to <1 ms.
+                if ((++interruptTick & 0x3FF) == 0 && Thread.interrupted()) {
+                    throw new InterpInterruptedError();
+                }
                 pc = ops[pc].interpret(ctx, pc);
                 if (pc == Op.FRAME_DONE) {
                     return ctx.registers()[Variable.Register.RETURN_VALUE_INDEX];
@@ -445,6 +456,20 @@ public final class Interpreter {
                 ctx.registers()[Variable.Register.EXCEPTION_INDEX] = ex.value();
                 pc = handlerPc;
             }
+        }
+    }
+
+    /**
+     * Thrown from the interpreter when its hosting thread has been interrupted
+     * (via {@link Thread#interrupt()} — typically from
+     * {@link java.util.concurrent.Future#cancel(boolean)} in the test runner).
+     * Distinct from {@link AbruptCompletion} so it isn't caught by JS-side
+     * try/catch — the goal is to exit the interpreter as quickly as possible.
+     */
+    public static final class InterpInterruptedError extends Error {
+        public InterpInterruptedError() {
+            super("interpreter interrupted", null,
+                /* enableSuppression */ false, /* writableStackTrace */ false);
         }
     }
 }

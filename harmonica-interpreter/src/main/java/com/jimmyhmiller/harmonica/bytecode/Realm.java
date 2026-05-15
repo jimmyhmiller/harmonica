@@ -956,9 +956,28 @@ public final class Realm {
             AbstractOps.toString(t).endsWith(AbstractOps.toString(arg(a, 0)))));
         stringPrototype.set("repeat", nativeFn("repeat", 1, (t, a, c) -> {
             String s = AbstractOps.toString(t);
-            int n = AbstractOps.toInt32(arg(a, 0));
-            if (n < 0) throw AbruptCompletion.rangeError("Invalid count value");
-            return s.repeat(n);
+            // § 22.1.3.16: convert count via ToIntegerOrInfinity; reject
+            // negative or +∞; reject count * len > 2^53 - 1 (would
+            // overflow). Use the full double conversion (toInt32 chops to
+            // 32-bit which silently turns Number.MAX_VALUE into 0).
+            double dn = AbstractOps.toNumber(arg(a, 0));
+            if (Double.isNaN(dn)) dn = 0;
+            else if (dn != 0) dn = dn < 0 ? Math.ceil(dn) : Math.floor(dn);
+            if (dn < 0 || Double.isInfinite(dn)) {
+                throw AbruptCompletion.rangeError("Invalid count value");
+            }
+            if (s.isEmpty() || dn == 0) return "";
+            // Cap product to avoid OOM on `"x".repeat(2**30)` — spec says
+            // 2^53 - 1 max but realistically we can't allocate >256 MB in
+            // a string operation without killing the test sweep.
+            double totalLen = dn * s.length();
+            if (totalLen > 9007199254740991.0) {
+                throw AbruptCompletion.rangeError("Invalid count value");
+            }
+            if (totalLen > 256 * 1024 * 1024) {
+                throw AbruptCompletion.rangeError("repeat result too large");
+            }
+            return s.repeat((int) dn);
         }));
         stringPrototype.set("concat", nativeFn("concat", 1, (t, a, c) -> {
             StringBuilder sb = new StringBuilder(AbstractOps.toString(t));

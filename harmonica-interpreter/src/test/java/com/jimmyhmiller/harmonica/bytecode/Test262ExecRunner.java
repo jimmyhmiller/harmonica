@@ -327,6 +327,9 @@ public final class Test262ExecRunner {
             if (cause instanceof StackOverflowError) {
                 return new TestResult(file, Outcome.FAIL_TIMEOUT, "stack overflow");
             }
+            if (cause instanceof Interpreter.InterpInterruptedError) {
+                return new TestResult(file, Outcome.FAIL_TIMEOUT, "interrupted (timeout)");
+            }
             return new TestResult(file, Outcome.FAIL_RUNTIME, summarize(cause));
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();

@@ -208,6 +208,13 @@ public final class Shape {
                                 propertyCount + 1, storageSize + 1, prototype);
         if (forwardTransitions == null) forwardTransitions = new HashMap<>();
         forwardTransitions.put(tk, child);
+        // We're no longer a leaf — drop our cached propertyTable. Holding
+        // it would push memory to O(n²) when an object's shape evolves
+        // through many transitions (e.g. 15 000 Object.defineProperty
+        // calls in staging/sm/Proxy/ownkeys-linear.js allocates ~9 GB of
+        // LinkedHashMap nodes if every shape keeps its table). If another
+        // object still has us as its leaf, its next lookup rebuilds.
+        propertyTable = null;
         return child;
     }
 
@@ -232,6 +239,7 @@ public final class Shape {
                                 propertyCount, storageSize, prototype);
         if (forwardTransitions == null) forwardTransitions = new HashMap<>();
         forwardTransitions.put(tk, child);
+        propertyTable = null;  // not a leaf anymore — see createPutTransition
         return child;
     }
 
@@ -249,6 +257,7 @@ public final class Shape {
                                 propertyCount - 1, storageSize, prototype);
         if (deleteTransitions == null) deleteTransitions = new HashMap<>();
         deleteTransitions.put(key, child);
+        propertyTable = null;
         return child;
     }
 
@@ -267,6 +276,7 @@ public final class Shape {
                                 propertyCount, storageSize, newProto);
         if (prototypeTransitions == null) prototypeTransitions = new HashMap<>();
         prototypeTransitions.put(newProto, child);
+        propertyTable = null;
         return child;
     }
 
