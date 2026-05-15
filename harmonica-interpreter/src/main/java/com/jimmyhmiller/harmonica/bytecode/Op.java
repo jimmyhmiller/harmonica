@@ -988,6 +988,14 @@ public sealed interface Op {
         @Override public Operation operation() { return Operation.GET_BY_ID; }
         @Override public int interpret(InterpContext ctx, int pc) {
             Object b = base.retrieve(ctx);
+            // Proxy fast-path: any [[Get]] on a Proxy invokes the handler.get
+            // trap (or falls through to the target's [[Get]]). Skip the IC
+            // entirely — proxies have observable side effects on every read.
+            if (b instanceof JSObject obj && Realm.isProxy(obj)) {
+                Object trapResult = AbstractOps.getProperty(b, property);
+                dst.store(ctx, trapResult);
+                return pc + 1;
+            }
             // Shape-keyed inline cache: on hit, the property's storage offset
             // is known and the read is a single indexed load — the V8/LibJS
             // monomorphic-fast-path trick that makes hot OO code fly.
@@ -1131,6 +1139,11 @@ public sealed interface Op {
         @Override public int interpret(InterpContext ctx, int pc) {
             Object b = base.retrieve(ctx);
             Object value = src.retrieve(ctx);
+            // Proxy fast-path: route the write through handler.set.
+            if (b instanceof JSObject obj && Realm.isProxy(obj) && kind == PutByIdKind.NORMAL) {
+                AbstractOps.setProperty(b, property, value);
+                return pc + 1;
+            }
             switch (kind) {
                 case GETTER, SETTER -> {
                     if (!(b instanceof JSObject jo)) {

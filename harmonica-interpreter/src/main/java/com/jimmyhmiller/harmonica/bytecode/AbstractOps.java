@@ -424,6 +424,26 @@ public final class AbstractOps {
             int idx = (int) d;
             if (idx == d && idx >= 0 && idx < arr.length()) return arr.get(idx);
         }
+        // ECMA-262 § 28.2.7.4 [[Get]] on a Proxy — invoke handler.get trap if
+        // present; otherwise fall through to the target's [[Get]].
+        if (base instanceof JSObject pj && Realm.isProxy(pj)) {
+            JSFunction trap = Realm.proxyTrap(pj, "get");
+            Object target = Realm.proxyTarget(pj);
+            if (target == null) {
+                throw AbruptCompletion.typeError("Cannot perform 'get' on a proxy that has been revoked");
+            }
+            String pkey = key instanceof String s ? s
+                : key instanceof JSSymbol sym ? sym.asPropertyKey()
+                : toString(key);
+            if (trap != null) {
+                InterpContext ctx = InterpContext.current();
+                if (ctx != null) {
+                    return Interpreter.invokeFunction(trap, Realm.proxyHandler(pj),
+                        new Object[]{target, pkey, pj}, ctx);
+                }
+            }
+            return getProperty(target, pkey);
+        }
         // ECMA-262 § 23.2.5.10 IntegerIndexedElementGet — typed-array
         // elements live in the buffer, not the property map. Probe for
         // ##TypedArrayState## and route integer indices through there. Out-
@@ -479,9 +499,25 @@ public final class AbstractOps {
         if (base instanceof JSArray arr) {
             if ("length".equals(prop)) return boxDouble(arr.length());
             int idx = parseIndex(prop);
-            if (idx >= 0 && idx < arr.length()) return arr.get(idx);
+            if (idx >= 0 && idx < arr.length()) {
+                Object v = arr.get(idx);
+                if (v instanceof Accessor acc && acc.getter() != null) {
+                    InterpContext ctx = InterpContext.current();
+                    if (ctx == null) return Undefined.VALUE;
+                    return Interpreter.invokeFunction(acc.getter(), base, new Object[0], ctx);
+                }
+                return v;
+            }
             // Non-index extras (e.g. tagged template strings.raw).
-            if (arr.hasExtraProperty(prop)) return arr.getExtraProperty(prop);
+            if (arr.hasExtraProperty(prop)) {
+                Object v = arr.getExtraProperty(prop);
+                if (v instanceof Accessor acc && acc.getter() != null) {
+                    InterpContext ctx = InterpContext.current();
+                    if (ctx == null) return Undefined.VALUE;
+                    return Interpreter.invokeFunction(acc.getter(), base, new Object[0], ctx);
+                }
+                return v;
+            }
             // Fall back to Array.prototype for methods (push, map, etc.).
             if (Realm.arrayPrototype != null) return Realm.arrayPrototype.get(prop);
             return Undefined.VALUE;
@@ -584,6 +620,27 @@ public final class AbstractOps {
                 return;
             }
         }
+        // ECMA-262 § 28.2.7.5 [[Set]] on a Proxy.
+        if (base instanceof JSObject pj && Realm.isProxy(pj)) {
+            JSFunction trap = Realm.proxyTrap(pj, "set");
+            Object target = Realm.proxyTarget(pj);
+            if (target == null) {
+                throw AbruptCompletion.typeError("Cannot perform 'set' on a proxy that has been revoked");
+            }
+            String pkey = key instanceof String s ? s
+                : key instanceof JSSymbol sym ? sym.asPropertyKey()
+                : toString(key);
+            if (trap != null) {
+                InterpContext ctx = InterpContext.current();
+                if (ctx != null) {
+                    Interpreter.invokeFunction(trap, Realm.proxyHandler(pj),
+                        new Object[]{target, pkey, value, pj}, ctx);
+                    return;
+                }
+            }
+            setProperty(target, pkey, value);
+            return;
+        }
         // ECMA-262 § 23.2.5.11 IntegerIndexedElementSet — typed-array
         // writes silently no-op on detached / out-of-range / non-integer
         // indices; only valid in-range integer keys store to the buffer.
@@ -668,7 +725,24 @@ public final class AbstractOps {
                 return;
             }
             int idx = parseIndex(prop);
-            if (idx >= 0) { arr.set(idx, value); return; }
+            if (idx >= 0) {
+                // Invoke setter if there's an Accessor at this index.
+                if (idx < arr.length()) {
+                    Object existing = arr.get(idx);
+                    if (existing instanceof Accessor acc) {
+                        if (acc.setter() != null) {
+                            InterpContext ctx = InterpContext.current();
+                            if (ctx != null) {
+                                Interpreter.invokeFunction(acc.setter(), base, new Object[]{value}, ctx);
+                                return;
+                            }
+                        }
+                        return;   // accessor with no setter: silent drop in sloppy mode
+                    }
+                }
+                arr.set(idx, value);
+                return;
+            }
             // Non-index property — store in the array's extra-properties
             // map so tagged-template strings.raw and similar patterns work.
             arr.setExtraProperty(prop, value);

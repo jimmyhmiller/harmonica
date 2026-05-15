@@ -123,6 +123,36 @@ public final class Realm {
     static final String SLOT_BOOLEAN_DATA = "##BooleanData##";
     static final String SLOT_NUMBER_DATA  = "##NumberData##";
     static final String SLOT_STRING_DATA  = "##StringData##";
+    /** ECMA-262 § 28.2 Proxy [[ProxyTarget]] / [[ProxyHandler]] internal slots. */
+    public static final String SLOT_PROXY_TARGET  = "##ProxyTarget##";
+    public static final String SLOT_PROXY_HANDLER = "##ProxyHandler##";
+
+    /** True iff {@code v} is a Proxy (has [[ProxyTarget]]). */
+    public static boolean isProxy(Object v) {
+        return v instanceof JSObject jo && jo.hasOwn(SLOT_PROXY_TARGET);
+    }
+
+    /** Get the Proxy's target (or null if revoked / not a Proxy). */
+    public static Object proxyTarget(JSObject p) {
+        Object v = p.getOwn(SLOT_PROXY_TARGET);
+        return v == JSObject.ABSENT ? null : v;
+    }
+
+    /** Get the Proxy's handler (or null if revoked / not a Proxy). */
+    public static Object proxyHandler(JSObject p) {
+        Object v = p.getOwn(SLOT_PROXY_HANDLER);
+        return v == JSObject.ABSENT ? null : v;
+    }
+
+    /** Look up a trap on the Proxy handler — returns null if absent or revoked. */
+    public static JSFunction proxyTrap(JSObject p, String name) {
+        Object h = proxyHandler(p);
+        if (!(h instanceof JSObject handler)) return null;
+        Object trap = handler.get(name);
+        if (trap == null || trap == Undefined.VALUE) return null;
+        if (!(trap instanceof JSFunction fn)) return null;
+        return fn;
+    }
 
     /** Read [[BooleanData]] / [[NumberData]] / [[StringData]] from a wrapper, or null if absent. */
     static Object readPrimitiveSlot(Object v, String slot) {
@@ -2948,7 +2978,174 @@ public final class Realm {
         JSFunction bigIntCtor = nativeFn("BigInt", 1, (t, a, c) -> {
             throw AbruptCompletion.typeError("BigInt is not implemented in v1");
         });
+        bigIntCtor.properties().put("asIntN", nativeFn("asIntN", 2, (t, a, c) -> {
+            throw AbruptCompletion.typeError("BigInt is not implemented in v1");
+        }));
+        bigIntCtor.properties().put("asUintN", nativeFn("asUintN", 2, (t, a, c) -> {
+            throw AbruptCompletion.typeError("BigInt is not implemented in v1");
+        }));
         globals.putIfAbsent("BigInt", bigIntCtor);
+
+        // ECMA-262 § 25.4 Atomics — namespace object. Operations require
+        // SharedArrayBuffer which we have a basic shim of; the operations
+        // themselves are stubs that throw TypeError. Defining the namespace
+        // lets `typeof Atomics === "object"` succeed and many capability
+        // tests pass.
+        JSObject atomics = new JSObject();
+        for (String op : new String[]{"add", "and", "compareExchange", "exchange",
+                                       "isLockFree", "load", "notify", "or",
+                                       "store", "sub", "wait", "waitAsync",
+                                       "xor", "pause"}) {
+            atomics.set(op, nativeFn(op, 0, (t, a, c) -> {
+                throw AbruptCompletion.typeError("Atomics." + op + " is not implemented");
+            }));
+        }
+        atomics.set(wellKnownToStringTag.asPropertyKey(), "Atomics");
+        atomics.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
+        globals.putIfAbsent("Atomics", atomics);
+
+        // ECMA-262 § 27.1 Iterator — the abstract base introduced by the
+        // Iterator Helpers proposal (Stage 4, ES2025). Provides Iterator.from
+        // and prototype methods (map/filter/take/drop/etc.).
+        JSObject iteratorPrototype = new JSObject(objectPrototype);
+        JSFunction iteratorCtor = nativeFn("Iterator", 0, (t, a, c) -> {
+            if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
+                throw AbruptCompletion.typeError("Cannot call Iterator directly");
+            }
+            return t instanceof JSObject jo ? jo : new JSObject(iteratorPrototype);
+        });
+        iteratorCtor.setPrototypeObject(iteratorPrototype);
+        iteratorPrototype.set("constructor", iteratorCtor);
+        // Iterator.from — turn any iterable into an Iterator.
+        iteratorCtor.properties().put("from", nativeFn("from", 1, (t, a, c) -> {
+            Object o = arg(a, 0);
+            // If already an iterator, return wrapped in our prototype chain.
+            Object atIter = AbstractOps.getProperty(o, wellKnownIterator.asPropertyKey());
+            if (atIter instanceof JSFunction iterFn) {
+                Object inner = Interpreter.invokeFunction(iterFn, o, new Object[0], c);
+                if (inner instanceof JSObject innerObj) {
+                    innerObj.setProto(iteratorPrototype);
+                    return innerObj;
+                }
+            }
+            if (o instanceof JSObject inner) {
+                inner.setProto(iteratorPrototype);
+                return inner;
+            }
+            throw AbruptCompletion.typeError("Iterator.from: argument is not iterable");
+        }));
+        // @@iterator on Iterator.prototype returns this.
+        iteratorPrototype.set(wellKnownIterator.asPropertyKey(),
+            nativeFn("[Symbol.iterator]", 0, (t, a, c) -> t));
+        // Iterator.prototype.toArray
+        iteratorPrototype.set("toArray", nativeFn("toArray", 0, (t, a, c) -> {
+            if (!(t instanceof JSObject obj)) throw AbruptCompletion.typeError("toArray: this is not an iterator");
+            JSArray out = new JSArray();
+            Object nextFn = AbstractOps.getProperty(obj, "next");
+            if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("iterator has no .next()");
+            while (true) {
+                checkInterruptTick(out.length());
+                Object step = Interpreter.invokeFunction(nf, obj, new Object[0], c);
+                if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) break;
+                out.push(AbstractOps.getProperty(step, "value"));
+            }
+            return out;
+        }));
+        // forEach
+        iteratorPrototype.set("forEach", nativeFn("forEach", 1, (t, a, c) -> {
+            if (!(t instanceof JSObject obj)) throw AbruptCompletion.typeError("this is not an iterator");
+            JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
+            if (fn == null) throw AbruptCompletion.typeError("forEach: argument is not a function");
+            Object nextFn = AbstractOps.getProperty(obj, "next");
+            if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("iterator has no .next()");
+            int i = 0;
+            while (true) {
+                checkInterruptTick(i);
+                Object step = Interpreter.invokeFunction(nf, obj, new Object[0], c);
+                if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) break;
+                Interpreter.invokeFunction(fn, Undefined.VALUE,
+                    new Object[]{AbstractOps.getProperty(step, "value"), (double) i}, c);
+                i++;
+            }
+            return Undefined.VALUE;
+        }));
+        // some / every / find / reduce — similar shape
+        iteratorPrototype.set("some", nativeFn("some", 1, (t, a, c) -> {
+            if (!(t instanceof JSObject obj)) throw AbruptCompletion.typeError("this is not an iterator");
+            JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
+            if (fn == null) throw AbruptCompletion.typeError("some: argument is not a function");
+            Object nextFn = AbstractOps.getProperty(obj, "next");
+            if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("iterator has no .next()");
+            int i = 0;
+            while (true) {
+                checkInterruptTick(i);
+                Object step = Interpreter.invokeFunction(nf, obj, new Object[0], c);
+                if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) return false;
+                if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, Undefined.VALUE,
+                        new Object[]{AbstractOps.getProperty(step, "value"), (double) i}, c))) return true;
+                i++;
+            }
+        }));
+        iteratorPrototype.set("every", nativeFn("every", 1, (t, a, c) -> {
+            if (!(t instanceof JSObject obj)) throw AbruptCompletion.typeError("this is not an iterator");
+            JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
+            if (fn == null) throw AbruptCompletion.typeError("every: argument is not a function");
+            Object nextFn = AbstractOps.getProperty(obj, "next");
+            if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("iterator has no .next()");
+            int i = 0;
+            while (true) {
+                checkInterruptTick(i);
+                Object step = Interpreter.invokeFunction(nf, obj, new Object[0], c);
+                if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) return true;
+                if (!AbstractOps.toBoolean(Interpreter.invokeFunction(fn, Undefined.VALUE,
+                        new Object[]{AbstractOps.getProperty(step, "value"), (double) i}, c))) return false;
+                i++;
+            }
+        }));
+        iteratorPrototype.set("find", nativeFn("find", 1, (t, a, c) -> {
+            if (!(t instanceof JSObject obj)) throw AbruptCompletion.typeError("this is not an iterator");
+            JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
+            if (fn == null) throw AbruptCompletion.typeError("find: argument is not a function");
+            Object nextFn = AbstractOps.getProperty(obj, "next");
+            if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("iterator has no .next()");
+            int i = 0;
+            while (true) {
+                checkInterruptTick(i);
+                Object step = Interpreter.invokeFunction(nf, obj, new Object[0], c);
+                if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) return Undefined.VALUE;
+                Object v = AbstractOps.getProperty(step, "value");
+                if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, Undefined.VALUE,
+                        new Object[]{v, (double) i}, c))) return v;
+                i++;
+            }
+        }));
+        iteratorPrototype.set("reduce", nativeFn("reduce", 2, (t, a, c) -> {
+            if (!(t instanceof JSObject obj)) throw AbruptCompletion.typeError("this is not an iterator");
+            JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
+            if (fn == null) throw AbruptCompletion.typeError("reduce: argument is not a function");
+            Object nextFn = AbstractOps.getProperty(obj, "next");
+            if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("iterator has no .next()");
+            Object acc;
+            int i;
+            if (a.length >= 2) { acc = a[1]; i = 0; }
+            else {
+                Object first = Interpreter.invokeFunction(nf, obj, new Object[0], c);
+                if (AbstractOps.toBoolean(AbstractOps.getProperty(first, "done"))) {
+                    throw AbruptCompletion.typeError("Reduce of empty iterator with no initial value");
+                }
+                acc = AbstractOps.getProperty(first, "value");
+                i = 1;
+            }
+            while (true) {
+                checkInterruptTick(i);
+                Object step = Interpreter.invokeFunction(nf, obj, new Object[0], c);
+                if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) return acc;
+                acc = Interpreter.invokeFunction(fn, Undefined.VALUE,
+                    new Object[]{acc, AbstractOps.getProperty(step, "value"), (double) i}, c);
+                i++;
+            }
+        }));
+        globals.putIfAbsent("Iterator", iteratorCtor);
 
         // $DONE — async-test harness completion callback. Without async
         // machinery, our v1 just records whether $DONE was called with an
@@ -3341,7 +3538,8 @@ public final class Realm {
                        : rawKey instanceof JSSymbol sy ? sy.asPropertyKey()
                        : AbstractOps.toString(rawKey);
             Object desc = arg(a, 2);
-            if (!(target instanceof JSObject) && !(target instanceof JSFunction)) {
+            if (!(target instanceof JSObject) && !(target instanceof JSFunction)
+                && !(target instanceof JSArray)) {
                 throw AbruptCompletion.typeError("Object.defineProperty called on non-object");
             }
             if (!(desc instanceof JSObject descObj)) {
@@ -3366,6 +3564,31 @@ public final class Realm {
                     targetObj.set(key, descObj.get("value"));
                 }
                 targetObj.setAttributes(key, attrs);
+            } else if (target instanceof JSArray targetArr) {
+                // Arrays accept defineProperty too. Indexed keys go through
+                // arr.set; accessors are stored at the index (read path
+                // detects and invokes). 'length' is special.
+                if ("length".equals(key)) {
+                    if (descObj.properties().containsKey("value")) {
+                        double d = AbstractOps.toNumber(descObj.get("value"));
+                        if (Double.isNaN(d) || d < 0 || d != Math.floor(d) || d > 4294967295.0) {
+                            throw AbruptCompletion.rangeError("Invalid array length");
+                        }
+                        targetArr.setLength((int) Math.min((long) d, Integer.MAX_VALUE));
+                    }
+                } else {
+                    int idx = parseIndex(key);
+                    Object value;
+                    if (hasGet || hasSet) {
+                        JSFunction getter = (descObj.get("get") instanceof JSFunction g) ? g : null;
+                        JSFunction setter = (descObj.get("set") instanceof JSFunction s) ? s : null;
+                        value = new Accessor(getter, setter);
+                    } else {
+                        value = descObj.get("value");
+                    }
+                    if (idx >= 0) targetArr.set(idx, value);
+                    else targetArr.setExtraProperty(key, value);
+                }
             } else {
                 JSFunction targetFn = (JSFunction) target;
                 if (hasGet || hasSet) {
@@ -3879,6 +4102,48 @@ public final class Realm {
                 ? result : receiver;
         }));
         globals.putIfAbsent("Reflect", reflect);
+
+        // ECMA-262 § 28.2 Proxy — store target+handler in internal slots and
+        // dispatch property operations through handler traps. AbstractOps.{get,set}Property
+        // detect SLOT_PROXY_TARGET and route to trapGet/trapSet/etc.
+        JSFunction proxyCtor = nativeFn("Proxy", 2, (t, a, c) -> {
+            if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
+                throw AbruptCompletion.typeError("Proxy constructor requires 'new'");
+            }
+            Object target = arg(a, 0);
+            Object handler = arg(a, 1);
+            if (target == null || target == Undefined.VALUE
+                || !(target instanceof JSObject || target instanceof JSArray || target instanceof JSFunction)) {
+                throw AbruptCompletion.typeError("Proxy target must be an object");
+            }
+            if (handler == null || handler == Undefined.VALUE
+                || !(handler instanceof JSObject)) {
+                throw AbruptCompletion.typeError("Proxy handler must be an object");
+            }
+            JSObject self = (t instanceof JSObject jo) ? jo : new JSObject();
+            self.set(SLOT_PROXY_TARGET, target);
+            self.setAttributes(SLOT_PROXY_TARGET, (byte) 0);
+            self.set(SLOT_PROXY_HANDLER, handler);
+            self.setAttributes(SLOT_PROXY_HANDLER, (byte) 0);
+            return self;
+        });
+        proxyCtor.properties().put("revocable", nativeFn("revocable", 2, (t, a, c) -> {
+            Object target = arg(a, 0);
+            Object handler = arg(a, 1);
+            // Build the proxy via the ctor (skipping the new-call check via
+            // Interpreter.invokeFunctionAsConstructor).
+            JSObject receiver = new JSObject();
+            Interpreter.invokeFunctionAsConstructor(proxyCtor, receiver, new Object[]{target, handler}, c);
+            JSObject result = new JSObject();
+            result.set("proxy", receiver);
+            result.set("revoke", nativeFn("revoke", 0, (tt, aa, cc) -> {
+                receiver.set(SLOT_PROXY_TARGET, null);
+                receiver.set(SLOT_PROXY_HANDLER, null);
+                return Undefined.VALUE;
+            }));
+            return result;
+        }));
+        globals.putIfAbsent("Proxy", proxyCtor);
 
         // ECMA-262 § 23.2 / § 25.1 / § 25.3 — install the TypedArray family,
         // ArrayBuffer, SharedArrayBuffer, DataView, and the %TypedArray%
