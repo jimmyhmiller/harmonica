@@ -428,7 +428,9 @@ public final class TypedArrays {
         arrayBufferPrototype = new JSObject(Realm.objectPrototype);
 
         JSFunction ctor = nativeFn("ArrayBuffer", 1, (t, a, c) -> {
-            if (!Interpreter.isNewCall()) {
+            // See per-kind ctor comment — accept JSObject receiver as
+            // construct signal to compensate for super-call codegen.
+            if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
                 throw AbruptCompletion.typeError("ArrayBuffer constructor requires 'new'");
             }
             JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(arrayBufferPrototype);
@@ -570,7 +572,7 @@ public final class TypedArrays {
     private static void installSharedArrayBuffer(Map<String, Object> globals) {
         sharedArrayBufferPrototype = new JSObject(Realm.objectPrototype);
         JSFunction ctor = nativeFn("SharedArrayBuffer", 1, (t, a, c) -> {
-            if (!Interpreter.isNewCall()) {
+            if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
                 throw AbruptCompletion.typeError("SharedArrayBuffer constructor requires 'new'");
             }
             JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(sharedArrayBufferPrototype);
@@ -629,7 +631,7 @@ public final class TypedArrays {
         dataViewPrototype = new JSObject(Realm.objectPrototype);
 
         JSFunction ctor = nativeFn("DataView", 1, (t, a, c) -> {
-            if (!Interpreter.isNewCall()) {
+            if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
                 throw AbruptCompletion.typeError("DataView constructor requires 'new'");
             }
             JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(dataViewPrototype);
@@ -1330,7 +1332,15 @@ public final class TypedArrays {
         kindPrototypes.put(kind, proto);
 
         JSFunction ctor = nativeFn(kind.name, 3, (t, a, c) -> {
-            if (!Interpreter.isNewCall()) {
+            // ECMA-262 § 23.2.5.1: TypedArray ctors require new.target.
+            // Harmonica's super-call codegen (Generator.java line 8464)
+            // emits Op.Call rather than a constructor op, so isNewCall()
+            // is false for super(...). Accept any JSObject receiver as
+            // the construct signal — the receiver provided by either
+            // CallConstruct (new) or SuperCall is always a freshly
+            // allocated JSObject with the right prototype chain.
+            boolean isConstructCall = Interpreter.isNewCall() || t instanceof JSObject;
+            if (!isConstructCall) {
                 throw AbruptCompletion.typeError(kind.name + " constructor requires 'new'");
             }
             JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(proto);
