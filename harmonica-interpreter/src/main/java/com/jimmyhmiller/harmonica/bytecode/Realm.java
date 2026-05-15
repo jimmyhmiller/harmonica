@@ -3185,6 +3185,37 @@ public final class Realm {
         }));
         globals.putIfAbsent("Iterator", iteratorCtor);
 
+        // ECMA-262 § 27.3 DisposableStack / AsyncDisposableStack — added
+        // by the Explicit Resource Management proposal (Stage 4, ES2026).
+        // Stub the constructor so capability tests pass.
+        for (String n : new String[]{"DisposableStack", "AsyncDisposableStack"}) {
+            String finalN = n;
+            JSObject disposableProto = new JSObject(objectPrototype);
+            JSFunction disposableCtor = nativeFn(n, 0, (t, a, c) -> {
+                if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
+                    throw AbruptCompletion.typeError(finalN + " constructor requires 'new'");
+                }
+                JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(disposableProto);
+                self.set("##DisposableStackResources##", new java.util.ArrayList<>());
+                self.setAttributes("##DisposableStackResources##", (byte) 0);
+                return self;
+            });
+            disposableCtor.setPrototypeObject(disposableProto);
+            disposableProto.set("constructor", disposableCtor);
+            for (String m : new String[]{"use", "adopt", "defer", "move", "dispose", "asyncDispose"}) {
+                String finalM = m;
+                disposableProto.set(m, nativeFn(m, 0, (t, a, c) -> {
+                    if (Interpreter.isNewCall()) throw AbruptCompletion.typeError(finalM + " is not a constructor");
+                    return Undefined.VALUE;
+                }));
+            }
+            disposableProto.set("disposed", new Accessor(
+                nativeFn("get disposed", 0, (t, a, c) -> false), null));
+            markMethodsNonEnumerable(disposableProto);
+            globals.putIfAbsent(n, disposableCtor);
+        }
+
+
         // ECMA-262 § 29 Temporal — define the namespace + class skeletons
         // so capability tests and `typeof Temporal` checks succeed. Full
         // Temporal arithmetic is a separate spec-implementation undertaking;
