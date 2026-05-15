@@ -1396,6 +1396,60 @@ public final class Realm {
             AbstractOps.toString(t).startsWith(AbstractOps.toString(arg(a, 0)))));
         stringPrototype.set("endsWith", nativeFn("endsWith", 1, (t, a, c) ->
             AbstractOps.toString(t).endsWith(AbstractOps.toString(arg(a, 0)))));
+        // AnnexB § B.2.3 — deprecated String.prototype HTML wrappers.
+        // Each wraps the string in an HTML tag (sometimes with attribute).
+        java.util.Map<String, String> htmlWrappers = new java.util.LinkedHashMap<>();
+        htmlWrappers.put("anchor", "a");
+        htmlWrappers.put("big", "big");
+        htmlWrappers.put("blink", "blink");
+        htmlWrappers.put("bold", "b");
+        htmlWrappers.put("fixed", "tt");
+        htmlWrappers.put("italics", "i");
+        htmlWrappers.put("small", "small");
+        htmlWrappers.put("strike", "strike");
+        htmlWrappers.put("sub", "sub");
+        htmlWrappers.put("sup", "sup");
+        for (var e : htmlWrappers.entrySet()) {
+            String name = e.getKey();
+            String tag = e.getValue();
+            int arity = "anchor".equals(name) ? 1 : 0;
+            stringPrototype.set(name, nativeFn(name, arity, (t, a, c) -> {
+                String s = AbstractOps.toString(t);
+                if (arity == 1) {
+                    String attr = AbstractOps.toString(arg(a, 0));
+                    return "<" + tag + " name=\"" + attr.replace("\"", "&quot;") + "\">" + s + "</" + tag + ">";
+                }
+                return "<" + tag + ">" + s + "</" + tag + ">";
+            }));
+        }
+        // The "attribute" wrappers — fontcolor, fontsize, link.
+        stringPrototype.set("fontcolor", nativeFn("fontcolor", 1, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            String attr = AbstractOps.toString(arg(a, 0));
+            return "<font color=\"" + attr.replace("\"", "&quot;") + "\">" + s + "</font>";
+        }));
+        stringPrototype.set("fontsize", nativeFn("fontsize", 1, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            String attr = AbstractOps.toString(arg(a, 0));
+            return "<font size=\"" + attr.replace("\"", "&quot;") + "\">" + s + "</font>";
+        }));
+        stringPrototype.set("link", nativeFn("link", 1, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            String attr = AbstractOps.toString(arg(a, 0));
+            return "<a href=\"" + attr.replace("\"", "&quot;") + "\">" + s + "</a>";
+        }));
+        // String.prototype.substr (deprecated AnnexB).
+        stringPrototype.set("substr", nativeFn("substr", 2, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            int len = s.length();
+            int start = AbstractOps.toInt32(arg(a, 0));
+            if (start < 0) start = Math.max(0, len + start);
+            else start = Math.min(start, len);
+            int length = arg(a, 1) == Undefined.VALUE ? len - start : AbstractOps.toInt32(a[1]);
+            length = Math.max(0, Math.min(length, len - start));
+            return s.substring(start, start + length);
+        }));
+
         // ECMA-262 § 22.1.3.1 String.prototype.at — index with negative-offset support.
         stringPrototype.set("at", nativeFn("at", 1, (t, a, c) -> {
             String s = AbstractOps.toString(t);
@@ -1546,6 +1600,13 @@ public final class Realm {
             }
             return true;
         }));
+        // AnnexB § B.2.3 — trimLeft / trimRight aliases for trimStart / trimEnd.
+        // Test262 checks that trimLeft === trimStart (same function object).
+        // We install them after trimStart/trimEnd are defined.
+        Object trimStartFn = stringPrototype.get("trimStart");
+        Object trimEndFn = stringPrototype.get("trimEnd");
+        if (trimStartFn instanceof JSFunction) stringPrototype.set("trimLeft", (JSFunction) trimStartFn);
+        if (trimEndFn instanceof JSFunction) stringPrototype.set("trimRight", (JSFunction) trimEndFn);
         stringPrototype.set("toWellFormed", nativeFn("toWellFormed", 0, (t, a, c) -> {
             String s = AbstractOps.toString(t);
             StringBuilder sb = new StringBuilder(s.length());
@@ -2680,6 +2741,52 @@ public final class Realm {
         json.set("parse", nativeFn("parse", 1, (t, a, c) -> jsonParse(AbstractOps.toString(arg(a, 0)))));
         globals.putIfAbsent("JSON", json);
 
+        // AnnexB § B.2.1 escape / unescape — deprecated globals.
+        globals.putIfAbsent("escape", nativeFn("escape", 1, (t, a, c) -> {
+            String s = AbstractOps.toString(arg(a, 0));
+            StringBuilder sb = new StringBuilder(s.length() + 16);
+            for (int i = 0; i < s.length(); i++) {
+                char ch = s.charAt(i);
+                // ECMA-262 § B.2.1.1: unescaped = A-Za-z0-9 @*_+-./
+                if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
+                    || (ch >= '0' && ch <= '9')
+                    || ch == '@' || ch == '*' || ch == '_' || ch == '+'
+                    || ch == '-' || ch == '.' || ch == '/') {
+                    sb.append(ch);
+                } else if (ch < 256) {
+                    sb.append(String.format("%%%02X", (int) ch));
+                } else {
+                    sb.append(String.format("%%u%04X", (int) ch));
+                }
+            }
+            return sb.toString();
+        }));
+        globals.putIfAbsent("unescape", nativeFn("unescape", 1, (t, a, c) -> {
+            String s = AbstractOps.toString(arg(a, 0));
+            StringBuilder sb = new StringBuilder(s.length());
+            for (int i = 0; i < s.length(); i++) {
+                char ch = s.charAt(i);
+                if (ch == '%' && i + 5 < s.length() && s.charAt(i + 1) == 'u') {
+                    try {
+                        int code = Integer.parseInt(s.substring(i + 2, i + 6), 16);
+                        sb.append((char) code);
+                        i += 5;
+                        continue;
+                    } catch (NumberFormatException ignored) {}
+                }
+                if (ch == '%' && i + 2 < s.length()) {
+                    try {
+                        int code = Integer.parseInt(s.substring(i + 1, i + 3), 16);
+                        sb.append((char) code);
+                        i += 2;
+                        continue;
+                    } catch (NumberFormatException ignored) {}
+                }
+                sb.append(ch);
+            }
+            return sb.toString();
+        }));
+
         // Conversion functions and ID checks
         globals.putIfAbsent("parseInt", nativeFn("parseInt", 2, (t, a, c) -> parseIntImpl(arg(a, 0), arg(a, 1))));
         globals.putIfAbsent("parseFloat", nativeFn("parseFloat", 1, (t, a, c) -> {
@@ -3250,7 +3357,7 @@ public final class Realm {
                     if (Interpreter.isNewCall()) {
                         throw AbruptCompletion.typeError("Temporal." + finalCls + "." + finalS + " is not a constructor");
                     }
-                    throw AbruptCompletion.typeError("Temporal." + finalCls + "." + finalS + " is not fully implemented");
+                    throw AbruptCompletion.rangeError("Temporal." + finalCls + "." + finalS + " is not fully implemented");
                 }));
             }
             // Prototype methods — stubs that throw if invoked as ctor or called.
@@ -3267,7 +3374,7 @@ public final class Realm {
                     if (Interpreter.isNewCall()) {
                         throw AbruptCompletion.typeError(finalM + " is not a constructor");
                     }
-                    throw AbruptCompletion.typeError("Temporal." + finalCls + ".prototype." + finalM + " is not fully implemented");
+                    throw AbruptCompletion.rangeError("Temporal." + finalCls + ".prototype." + finalM + " is not fully implemented");
                 }));
             }
             classProto.set(wellKnownToStringTag.asPropertyKey(), "Temporal." + cls);
