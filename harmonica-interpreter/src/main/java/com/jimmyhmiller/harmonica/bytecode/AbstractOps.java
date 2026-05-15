@@ -656,6 +656,17 @@ public final class AbstractOps {
             return;
         }
         if (base instanceof JSArray arr) {
+            // ECMA-262 § 10.4.2.4 ArraySetLength — writing .length truncates
+            // or extends. Validate as uint32 (RangeError otherwise) and
+            // delegate to the sparse-aware setter.
+            if ("length".equals(prop)) {
+                double d = toNumber(value);
+                if (Double.isNaN(d) || d < 0 || d != Math.floor(d) || d > 4294967295.0) {
+                    throw AbruptCompletion.rangeError("Invalid array length");
+                }
+                arr.setLength((int) Math.min((long) d, Integer.MAX_VALUE));
+                return;
+            }
             int idx = parseIndex(prop);
             if (idx >= 0) { arr.set(idx, value); return; }
             // Non-index property — store in the array's extra-properties

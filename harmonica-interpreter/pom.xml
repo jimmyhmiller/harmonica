@@ -45,7 +45,7 @@
                     <!-- test262 sweep across 51k tests retains a lot of per-test
                          state in the runner thread; default 256m OOMs around
                          the AnnexB → built-ins boundary. -->
-                    <argLine>-Xmx8g -Xss4m</argLine>
+                    <argLine>-Xmx8g -Xss4m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/harmonica-heap.hprof</argLine>
                 </configuration>
             </plugin>
             <plugin>

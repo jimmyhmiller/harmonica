@@ -112,6 +112,30 @@ class Test262ExecTest {
                     resultLines.add(rel(file, testRoot) + " FAIL " + result.outcome()
                         + " | " + truncate(result.detail(), 160));
                 }
+
+                // Periodic memory + progress log so we can see the heap-growth
+                // curve when the full sweep OOMs partway through. Set
+                // -Dtest262.heaplog=N (default 1000) — N=0 disables.
+                int logEvery = Integer.getInteger("test262.heaplog", 1000);
+                if (logEvery > 0 && total.get() % logEvery == 0) {
+                    Runtime rt = Runtime.getRuntime();
+                    long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
+                    long totalMb = rt.totalMemory() / (1024 * 1024);
+                    long maxMb = rt.maxMemory() / (1024 * 1024);
+                    int liveThreads = Thread.activeCount();
+                    System.out.printf("[mem] tested=%d  pass=%d  fail=%d  used=%dMB / total=%dMB / max=%dMB  threads=%d  last=%s%n",
+                        total.get(), pass.get(), total.get() - pass.get() - skip.get(),
+                        usedMb, totalMb, maxMb, liveThreads,
+                        rel(file, testRoot));
+                }
+                // Periodic explicit GC. Diagnostic for the leak: if heap usage
+                // stays bounded with -Dtest262.gcevery=200 (call System.gc
+                // every N tests) then the heap pressure is just GC lag,
+                // not a real leak. Default 0 = disabled.
+                int gcEvery = Integer.getInteger("test262.gcevery", 0);
+                if (gcEvery > 0 && total.get() % gcEvery == 0) {
+                    System.gc();
+                }
             }
         }
 

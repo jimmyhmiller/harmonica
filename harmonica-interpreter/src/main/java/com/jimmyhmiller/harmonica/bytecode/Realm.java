@@ -2861,8 +2861,21 @@ public final class Realm {
         JSFunction arrayCtor = nativeFn("Array", 1, (t, a, c) -> {
             JSArray arr = new JSArray();
             if (a.length == 1 && a[0] instanceof Number n) {
-                int len = (int) n.doubleValue();
-                for (int i = 0; i < len; i++) arr.push(Undefined.VALUE);
+                // ECMA-262 § 23.1.1.1 step 9: a Number arg must be a valid
+                // uint32 array length; otherwise RangeError. Crucially we
+                // DO NOT pre-fill with undefined — for `new Array(2**32-1)`
+                // that would allocate 16 GB of slots. Sparse arrays via
+                // length-tracking are legal (and how real engines work).
+                double d = n.doubleValue();
+                if (Double.isNaN(d) || d < 0 || d != Math.floor(d) || d > 4294967295.0) {
+                    throw AbruptCompletion.rangeError("Invalid array length");
+                }
+                long len = (long) d;
+                arr.setLength((int) Math.min(len, Integer.MAX_VALUE));
+            } else if (a.length == 1) {
+                // § 23.1.1.1 steps 3-8: non-Number single arg → length 1
+                // with the value at index 0.
+                arr.push(a[0]);
             } else {
                 for (Object e : a) arr.push(e);
             }
