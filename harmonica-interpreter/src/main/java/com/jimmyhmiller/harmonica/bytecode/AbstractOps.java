@@ -965,15 +965,16 @@ public final class AbstractOps {
             }
             return numberToString(d);
         }
-        // Object: ToPrimitive(v, "string") then recurse. Falls back to a
-        // canonical Java toString() for native types if ToPrimitive throws
-        // (we don't want a missing toString/valueOf to crash the whole
-        // computation when the caller just wanted a debug-friendly string).
+        // Object: ECMA-262 § 7.1.17 ToString — ToPrimitive(v, "string")
+        // then ToString on the result. ToPrimitive throws TypeError if
+        // both toString and valueOf return objects (§ 7.1.1 step 6),
+        // and that TypeError must propagate to the caller.
         if (v instanceof JSObject || v instanceof JSArray || v instanceof JSFunction) {
-            try {
-                Object prim = toPrimitive(v, "string");
-                if (prim != v) return toString(prim);
-            } catch (AbruptCompletion ignored) { /* fall through */ }
+            Object prim = toPrimitive(v, "string");
+            if (prim != v) return toString(prim);
+            // Defensive: if ToPrimitive returned the object itself (no
+            // toString/valueOf hooks present), fall back to a canonical
+            // string. Real JS engines never reach this branch.
             if (v instanceof JSArray arr)    return arr.toString();
             if (v instanceof JSFunction fn)  return "function " + (fn.name() != null ? fn.name() : "") + "() { [native code] }";
             return "[object Object]";
