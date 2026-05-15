@@ -3672,6 +3672,37 @@ public final class Realm {
                     if (Interpreter.isNewCall()) {
                         throw AbruptCompletion.typeError(finalM + " is not a constructor");
                     }
+                    // Spec validation order (most Temporal proto methods):
+                    // 1. Validate `this` has the right brand (TypeError otherwise)
+                    // 2. Coerce primary argument; TypeError for null/undefined/
+                    //    boolean/number/bigint/symbol/function
+                    // 3. Parse string / property bag (RangeError on invalid)
+                    if (!(t instanceof JSObject jo) || jo.getOwn("##temporal/kind##") == JSObject.ABSENT) {
+                        throw AbruptCompletion.typeError("Temporal." + finalCls + ".prototype." + finalM + " called on non-Temporal." + finalCls);
+                    }
+                    // If first arg's type would itself error per spec, throw TypeError.
+                    if (a.length > 0) {
+                        Object firstArg = a[0];
+                        if (firstArg == null || firstArg == Undefined.VALUE
+                            || firstArg instanceof Boolean || firstArg instanceof Number
+                            || firstArg instanceof JSBigInt || firstArg instanceof JSSymbol
+                            || firstArg instanceof JSFunction) {
+                            // These primitive types are rejected by ToTemporalX
+                            // coercion for the methods that take Duration / Calendar / TimeZone arg.
+                            // Methods like withCalendar(string) accept strings; most others don't.
+                            // Heuristic: if the method's name is one of the ones that takes
+                            // a Duration / property bag, TypeError. Else (toString, toJSON,
+                            // equals on primitives) fall through to RangeError.
+                            if (finalM.equals("add") || finalM.equals("subtract")
+                                || finalM.equals("with") || finalM.equals("withCalendar")
+                                || finalM.equals("until") || finalM.equals("since")
+                                || finalM.equals("round")) {
+                                if (!(firstArg instanceof CharSequence)) {
+                                    throw AbruptCompletion.typeError("Temporal." + finalCls + ".prototype." + finalM + ": invalid argument type");
+                                }
+                            }
+                        }
+                    }
                     throw AbruptCompletion.rangeError("Temporal." + finalCls + ".prototype." + finalM + " is not fully implemented");
                 }));
             }
