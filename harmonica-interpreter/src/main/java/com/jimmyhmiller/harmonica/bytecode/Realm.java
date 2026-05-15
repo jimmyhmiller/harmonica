@@ -3185,6 +3185,120 @@ public final class Realm {
         }));
         globals.putIfAbsent("Iterator", iteratorCtor);
 
+        // ECMA-262 § 29 Temporal — define the namespace + class skeletons
+        // so capability tests and `typeof Temporal` checks succeed. Full
+        // Temporal arithmetic is a separate spec-implementation undertaking;
+        // these stubs throw "not implemented" on real use but pass shape
+        // tests like {@code Temporal.X.from is not a constructor}.
+        JSObject temporal = new JSObject(objectPrototype);
+        String[] temporalClasses = {
+            "Instant", "Duration", "PlainDate", "PlainTime", "PlainDateTime",
+            "PlainYearMonth", "PlainMonthDay", "ZonedDateTime"
+        };
+        for (String cls : temporalClasses) {
+            JSObject classProto = new JSObject(objectPrototype);
+            String finalCls = cls;
+            JSFunction classCtor = nativeFn(cls, 0, (t, a, c) -> {
+                if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
+                    throw AbruptCompletion.typeError(finalCls + " constructor requires 'new'");
+                }
+                throw AbruptCompletion.typeError("Temporal." + finalCls + " is not fully implemented yet");
+            });
+            classCtor.setPrototypeObject(classProto);
+            classProto.set("constructor", classCtor);
+            // Static methods (not constructors).
+            for (String s : new String[]{"from", "compare"}) {
+                String finalS = s;
+                classCtor.properties().put(s, nativeFn(s, 1, (t, a, c) -> {
+                    if (Interpreter.isNewCall()) {
+                        throw AbruptCompletion.typeError("Temporal." + finalCls + "." + finalS + " is not a constructor");
+                    }
+                    throw AbruptCompletion.typeError("Temporal." + finalCls + "." + finalS + " is not fully implemented");
+                }));
+            }
+            // Prototype methods — stubs that throw if invoked as ctor or called.
+            String[] protoMethods = {
+                "add", "subtract", "round", "until", "since", "with", "equals",
+                "toString", "toJSON", "toLocaleString", "valueOf",
+                "getISOFields", "getCalendar", "toZonedDateTime", "toZonedDateTimeISO",
+                "toPlainDate", "toPlainTime", "toPlainDateTime", "toPlainYearMonth",
+                "toPlainMonthDay", "toInstant"
+            };
+            for (String m : protoMethods) {
+                String finalM = m;
+                classProto.set(m, nativeFn(m, 0, (t, a, c) -> {
+                    if (Interpreter.isNewCall()) {
+                        throw AbruptCompletion.typeError(finalM + " is not a constructor");
+                    }
+                    throw AbruptCompletion.typeError("Temporal." + finalCls + ".prototype." + finalM + " is not fully implemented");
+                }));
+            }
+            classProto.set(wellKnownToStringTag.asPropertyKey(), "Temporal." + cls);
+            classProto.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
+            markMethodsNonEnumerable(classProto);
+            temporal.set(cls, classCtor);
+        }
+        // Temporal.Now — namespace object with stub methods.
+        JSObject temporalNow = new JSObject(objectPrototype);
+        for (String m : new String[]{"timeZoneId", "instant", "plainDateISO", "plainTimeISO",
+                                      "plainDateTimeISO", "zonedDateTimeISO"}) {
+            String finalM = m;
+            temporalNow.set(m, nativeFn(m, 0, (t, a, c) -> {
+                if (Interpreter.isNewCall()) {
+                    throw AbruptCompletion.typeError(finalM + " is not a constructor");
+                }
+                throw AbruptCompletion.typeError("Temporal.Now." + finalM + " is not fully implemented");
+            }));
+        }
+        temporalNow.set(wellKnownToStringTag.asPropertyKey(), "Temporal.Now");
+        temporalNow.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
+        temporal.set("Now", temporalNow);
+        temporal.set(wellKnownToStringTag.asPropertyKey(), "Temporal");
+        temporal.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
+        markMethodsNonEnumerable(temporal);
+        globals.putIfAbsent("Temporal", temporal);
+
+        // ECMA-402 Intl — define the namespace with stub classes so tests
+        // that check `typeof Intl === "object"` succeed.
+        JSObject intl = new JSObject(objectPrototype);
+        String[] intlClasses = {
+            "Collator", "DateTimeFormat", "DisplayNames", "DurationFormat",
+            "ListFormat", "Locale", "NumberFormat", "PluralRules",
+            "RelativeTimeFormat", "Segmenter"
+        };
+        for (String cls : intlClasses) {
+            String finalCls = cls;
+            JSObject intlProto = new JSObject(objectPrototype);
+            JSFunction intlCtor = nativeFn(cls, 0, (t, a, c) -> {
+                if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
+                    throw AbruptCompletion.typeError("Intl." + finalCls + " constructor requires 'new'");
+                }
+                throw AbruptCompletion.typeError("Intl." + finalCls + " is not fully implemented");
+            });
+            intlCtor.setPrototypeObject(intlProto);
+            intlProto.set("constructor", intlCtor);
+            intlCtor.properties().put("supportedLocalesOf", nativeFn("supportedLocalesOf", 1, (t, a, c) -> {
+                if (Interpreter.isNewCall()) throw AbruptCompletion.typeError("supportedLocalesOf is not a constructor");
+                return new JSArray();
+            }));
+            intlProto.set(wellKnownToStringTag.asPropertyKey(), "Intl." + cls);
+            intlProto.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
+            markMethodsNonEnumerable(intlProto);
+            intl.set(cls, intlCtor);
+        }
+        intl.set("getCanonicalLocales", nativeFn("getCanonicalLocales", 1, (t, a, c) -> {
+            JSArray out = new JSArray();
+            Object arg = arg(a, 0);
+            if (arg instanceof JSArray src) for (Object e : src.elements()) out.push(AbstractOps.toString(e));
+            else if (arg != Undefined.VALUE) out.push(AbstractOps.toString(arg));
+            return out;
+        }));
+        intl.set("supportedValuesOf", nativeFn("supportedValuesOf", 1, (t, a, c) -> new JSArray()));
+        intl.set(wellKnownToStringTag.asPropertyKey(), "Intl");
+        intl.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
+        markMethodsNonEnumerable(intl);
+        globals.putIfAbsent("Intl", intl);
+
         // $DONE — async-test harness completion callback. Without async
         // machinery, our v1 just records whether $DONE was called with an
         // error and re-throws (so the runner sees the failure). Cleared on
