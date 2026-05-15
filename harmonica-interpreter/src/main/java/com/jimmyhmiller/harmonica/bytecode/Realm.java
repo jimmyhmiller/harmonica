@@ -504,117 +504,265 @@ public final class Realm {
         throw AbruptCompletion.typeError("Array.prototype." + method + " called on non-array");
     }
 
+    // ECMA-262 § 7.3.19 LengthOfArrayLike — accepts any object with a numeric
+    // {@code length} property. Almost every Array.prototype method (indexOf,
+    // map, filter, reduce, etc.) is defined to operate on array-likes, not
+    // just dense JSArrays. Test262 hammers this via
+    // {@code Array.prototype.indexOf.call({length: 5, [0]: ...}, ...)}.
+    static int lengthOfArrayLike(Object t) {
+        if (t instanceof JSArray arr) return arr.length();
+        if (t == null || t == Undefined.VALUE) {
+            throw AbruptCompletion.typeError("cannot read property 'length' of null/undefined");
+        }
+        Object lenVal = AbstractOps.getProperty(t, "length");
+        double d = AbstractOps.toNumber(lenVal);
+        if (Double.isNaN(d) || d <= 0) return 0;
+        if (d > 0x7FFFFFFFL) return Integer.MAX_VALUE;
+        return (int) d;
+    }
+
+    /**
+     * Yield to the interpreter's interrupt poll inside long native loops.
+     * Without this, a test that calls {@code Array.prototype.X.call({length:
+     * Infinity, …})} keeps the Java loop running for 2 billion iterations,
+     * allocating per-iteration garbage faster than GC can free, OOMing the
+     * JVM long before the per-test timeout fires. Called every 1024 iterations.
+     */
+    static void checkInterruptTick(int i) {
+        if ((i & 0x3FF) == 0 && Thread.interrupted()) {
+            throw new Interpreter.InterpInterruptedError();
+        }
+    }
+
+    /** Index-keyed read that works on both JSArrays and array-like objects.
+     *  Yields to the interpreter's interrupt poll on long loops. */
+    static Object getIndexed(Object t, int i) {
+        checkInterruptTick(i);
+        if (t instanceof JSArray arr) return arr.get(i);
+        return AbstractOps.getProperty(t, Integer.toString(i));
+    }
+
+    /** Index-keyed write that works on both JSArrays and array-like objects. */
+    static void setIndexed(Object t, int i, Object v) {
+        checkInterruptTick(i);
+        if (t instanceof JSArray arr) { arr.set(i, v); return; }
+        AbstractOps.setProperty(t, Integer.toString(i), v);
+    }
+
+    /** {@code HasProperty(O, ToString(i))} for the integer index. */
+    static boolean hasIndexed(Object t, int i) {
+        checkInterruptTick(i);
+        if (t instanceof JSArray arr) return i >= 0 && i < arr.length();
+        if (t instanceof JSObject obj) {
+            return obj.has(Integer.toString(i));
+        }
+        return false;
+    }
+
     private static void installArrayPrototype() {
+        // ECMA-262 § 23.1.3.* — Array.prototype methods MUST operate on
+        // array-likes (anything with a numeric .length), not just JSArrays.
+        // Test262 calls these via `.call({length: 5, [0]: 'a'}, ...)`
+        // hundreds of times. Below: every method uses lengthOfArrayLike +
+        // getIndexed/setIndexed, with JSArray-specific fast paths where
+        // they matter for perf (push/pop/shift/unshift/reverse/sort).
         arrayPrototype.set("push", nativeFn("push", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "push");
-            for (Object v : a) arr.push(v);
-            return (double) arr.length();
+            if (t instanceof JSArray arr) {
+                for (Object v : a) arr.push(v);
+                return (double) arr.length();
+            }
+            int len = lengthOfArrayLike(t);
+            for (int i = 0; i < a.length; i++) setIndexed(t, len + i, a[i]);
+            int newLen = len + a.length;
+            AbstractOps.setProperty(t, "length", (double) newLen);
+            return (double) newLen;
         }));
         arrayPrototype.set("pop", nativeFn("pop", 0, (t, a, c) -> {
-            JSArray arr = asArray(t, "pop");
-            if (arr.length() == 0) return Undefined.VALUE;
-            return arr.elements().remove(arr.length() - 1);
+            if (t instanceof JSArray arr) {
+                if (arr.length() == 0) return Undefined.VALUE;
+                return arr.elements().remove(arr.length() - 1);
+            }
+            int len = lengthOfArrayLike(t);
+            if (len == 0) {
+                AbstractOps.setProperty(t, "length", 0.0);
+                return Undefined.VALUE;
+            }
+            int newLen = len - 1;
+            Object v = getIndexed(t, newLen);
+            if (t instanceof JSObject jo) jo.delete(Integer.toString(newLen));
+            AbstractOps.setProperty(t, "length", (double) newLen);
+            return v;
         }));
         arrayPrototype.set("shift", nativeFn("shift", 0, (t, a, c) -> {
-            JSArray arr = asArray(t, "shift");
-            if (arr.length() == 0) return Undefined.VALUE;
-            return arr.elements().remove(0);
+            if (t instanceof JSArray arr) {
+                if (arr.length() == 0) return Undefined.VALUE;
+                return arr.elements().remove(0);
+            }
+            int len = lengthOfArrayLike(t);
+            if (len == 0) {
+                AbstractOps.setProperty(t, "length", 0.0);
+                return Undefined.VALUE;
+            }
+            Object first = getIndexed(t, 0);
+            for (int i = 1; i < len; i++) {
+                if (hasIndexed(t, i)) setIndexed(t, i - 1, getIndexed(t, i));
+                else if (t instanceof JSObject jo) jo.delete(Integer.toString(i - 1));
+            }
+            if (t instanceof JSObject jo) jo.delete(Integer.toString(len - 1));
+            AbstractOps.setProperty(t, "length", (double) (len - 1));
+            return first;
         }));
         arrayPrototype.set("unshift", nativeFn("unshift", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "unshift");
-            for (int i = 0; i < a.length; i++) arr.elements().add(i, a[i]);
-            return (double) arr.length();
+            if (t instanceof JSArray arr) {
+                for (int i = 0; i < a.length; i++) arr.elements().add(i, a[i]);
+                return (double) arr.length();
+            }
+            int len = lengthOfArrayLike(t);
+            int argc = a.length;
+            // Shift existing elements right by argc.
+            for (int i = len - 1; i >= 0; i--) {
+                if (hasIndexed(t, i)) setIndexed(t, i + argc, getIndexed(t, i));
+                else if (t instanceof JSObject jo) jo.delete(Integer.toString(i + argc));
+            }
+            for (int i = 0; i < argc; i++) setIndexed(t, i, a[i]);
+            int newLen = len + argc;
+            AbstractOps.setProperty(t, "length", (double) newLen);
+            return (double) newLen;
         }));
         arrayPrototype.set("slice", nativeFn("slice", 2, (t, a, c) -> {
-            JSArray arr = asArray(t, "slice");
-            int len = arr.length();
+            int len = lengthOfArrayLike(t);
             int start = sliceIndex(arg(a, 0), len, 0);
-            int end = sliceIndex(arg(a, 1), len, len);
+            int end = arg(a, 1) == Undefined.VALUE ? len : sliceIndex(a[1], len, len);
             if (end < start) end = start;
             JSArray out = new JSArray();
-            for (int i = start; i < end; i++) out.push(arr.get(i));
+            for (int i = start; i < end; i++) {
+                if (hasIndexed(t, i)) out.push(getIndexed(t, i));
+                else out.push(Undefined.VALUE);
+            }
             return out;
         }));
         arrayPrototype.set("concat", nativeFn("concat", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "concat");
             JSArray out = new JSArray();
-            for (Object e : arr.elements()) out.push(e);
+            int len = lengthOfArrayLike(t);
+            for (int i = 0; i < len; i++) out.push(getIndexed(t, i));
             for (Object x : a) {
                 if (x instanceof JSArray other) for (Object e : other.elements()) out.push(e);
+                else if (x instanceof JSObject jo
+                        && AbstractOps.toBoolean(AbstractOps.getProperty(jo,
+                                wellKnownIsConcatSpreadable.asPropertyKey()))) {
+                    int xl = lengthOfArrayLike(jo);
+                    for (int i = 0; i < xl; i++) out.push(getIndexed(jo, i));
+                }
                 else out.push(x);
             }
             return out;
         }));
         arrayPrototype.set("join", nativeFn("join", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "join");
+            int len = lengthOfArrayLike(t);
             String sep = arg(a, 0) == Undefined.VALUE ? "," : AbstractOps.toString(a[0]);
             StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < arr.length(); i++) {
+            for (int i = 0; i < len; i++) {
                 if (i > 0) sb.append(sep);
-                Object e = arr.get(i);
+                Object e = getIndexed(t, i);
                 if (e != null && e != Undefined.VALUE) sb.append(AbstractOps.toString(e));
             }
             return sb.toString();
         }));
         arrayPrototype.set("indexOf", nativeFn("indexOf", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "indexOf");
+            int len = lengthOfArrayLike(t);
             Object target = arg(a, 0);
-            for (int i = 0; i < arr.length(); i++) {
-                if (AbstractOps.strictlyEquals(arr.get(i), target)) return (double) i;
+            int from = arg(a, 1) == Undefined.VALUE ? 0 : AbstractOps.toInt32(a[1]);
+            if (from < 0) from = Math.max(0, len + from);
+            for (int i = from; i < len; i++) {
+                if (hasIndexed(t, i) && AbstractOps.strictlyEquals(getIndexed(t, i), target)) return (double) i;
             }
             return -1.0;
         }));
         arrayPrototype.set("lastIndexOf", nativeFn("lastIndexOf", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "lastIndexOf");
+            int len = lengthOfArrayLike(t);
             Object target = arg(a, 0);
-            for (int i = arr.length() - 1; i >= 0; i--) {
-                if (AbstractOps.strictlyEquals(arr.get(i), target)) return (double) i;
+            int from = arg(a, 1) == Undefined.VALUE ? len - 1 : AbstractOps.toInt32(a[1]);
+            if (from < 0) from = len + from;
+            from = Math.min(from, len - 1);
+            for (int i = from; i >= 0; i--) {
+                if (hasIndexed(t, i) && AbstractOps.strictlyEquals(getIndexed(t, i), target)) return (double) i;
             }
             return -1.0;
         }));
         arrayPrototype.set("includes", nativeFn("includes", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "includes");
+            int len = lengthOfArrayLike(t);
             Object target = arg(a, 0);
-            for (Object e : arr.elements()) if (AbstractOps.strictlyEquals(e, target)) return true;
+            int from = arg(a, 1) == Undefined.VALUE ? 0 : AbstractOps.toInt32(a[1]);
+            if (from < 0) from = Math.max(0, len + from);
+            for (int i = from; i < len; i++) {
+                Object e = getIndexed(t, i);
+                // SameValueZero: NaN === NaN
+                if (target instanceof Number tn && e instanceof Number en) {
+                    double td = tn.doubleValue(), ed = en.doubleValue();
+                    if (Double.isNaN(td) && Double.isNaN(ed)) return true;
+                    if (td == ed) return true;
+                } else if (AbstractOps.strictlyEquals(e, target)) return true;
+            }
             return false;
         }));
         arrayPrototype.set("reverse", nativeFn("reverse", 0, (t, a, c) -> {
-            JSArray arr = asArray(t, "reverse");
-            java.util.Collections.reverse(arr.elements());
-            return arr;
+            if (t instanceof JSArray arr) {
+                java.util.Collections.reverse(arr.elements());
+                return arr;
+            }
+            int len = lengthOfArrayLike(t);
+            for (int i = 0, j = len - 1; i < j; i++, j--) {
+                boolean hi = hasIndexed(t, i), hj = hasIndexed(t, j);
+                Object vi = hi ? getIndexed(t, i) : Undefined.VALUE;
+                Object vj = hj ? getIndexed(t, j) : Undefined.VALUE;
+                if (hj) setIndexed(t, i, vj); else if (t instanceof JSObject jo) jo.delete(Integer.toString(i));
+                if (hi) setIndexed(t, j, vi); else if (t instanceof JSObject jo) jo.delete(Integer.toString(j));
+            }
+            return t;
         }));
         arrayPrototype.set("forEach", nativeFn("forEach", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "forEach");
+            int len = lengthOfArrayLike(t);
             JSFunction fn = asCallback(arg(a, 0), "forEach");
-            for (int i = 0; i < arr.length(); i++) {
-                Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{arr.get(i), (double) i, arr}, c);
+            Object thisArg = arg(a, 1);
+            for (int i = 0; i < len; i++) {
+                if (!hasIndexed(t, i)) continue;
+                Interpreter.invokeFunction(fn, thisArg,
+                    new Object[]{getIndexed(t, i), (double) i, t}, c);
             }
             return Undefined.VALUE;
         }));
         arrayPrototype.set("map", nativeFn("map", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "map");
+            int len = lengthOfArrayLike(t);
             JSFunction fn = asCallback(arg(a, 0), "map");
+            Object thisArg = arg(a, 1);
             JSArray out = new JSArray();
-            for (int i = 0; i < arr.length(); i++) {
-                out.push(Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{arr.get(i), (double) i, arr}, c));
+            for (int i = 0; i < len; i++) {
+                if (hasIndexed(t, i)) {
+                    out.set(i, Interpreter.invokeFunction(fn, thisArg,
+                        new Object[]{getIndexed(t, i), (double) i, t}, c));
+                } else {
+                    out.set(i, Undefined.VALUE);
+                }
             }
             return out;
         }));
         arrayPrototype.set("filter", nativeFn("filter", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "filter");
+            int len = lengthOfArrayLike(t);
             JSFunction fn = asCallback(arg(a, 0), "filter");
+            Object thisArg = arg(a, 1);
             JSArray out = new JSArray();
-            for (int i = 0; i < arr.length(); i++) {
-                Object v = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{arr.get(i), (double) i, arr}, c);
-                if (AbstractOps.toBoolean(v)) out.push(arr.get(i));
+            for (int i = 0; i < len; i++) {
+                if (!hasIndexed(t, i)) continue;
+                Object v = getIndexed(t, i);
+                if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
+                        new Object[]{v, (double) i, t}, c))) {
+                    out.push(v);
+                }
             }
             return out;
         }));
         arrayPrototype.set("reduce", nativeFn("reduce", 2, (t, a, c) -> {
-            JSArray arr = asArray(t, "reduce");
+            int len = lengthOfArrayLike(t);
             JSFunction fn = asCallback(arg(a, 0), "reduce");
             int start;
             Object acc;
@@ -622,57 +770,122 @@ public final class Realm {
                 acc = a[1];
                 start = 0;
             } else {
-                if (arr.length() == 0) {
+                if (len == 0) {
                     throw AbruptCompletion.typeError("Reduce of empty array with no initial value");
                 }
-                acc = arr.get(0);
-                start = 1;
+                start = 0;
+                while (start < len && !hasIndexed(t, start)) start++;
+                if (start >= len) {
+                    throw AbruptCompletion.typeError("Reduce of empty array with no initial value");
+                }
+                acc = getIndexed(t, start);
+                start++;
             }
-            for (int i = start; i < arr.length(); i++) {
+            for (int i = start; i < len; i++) {
+                if (!hasIndexed(t, i)) continue;
                 acc = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{acc, arr.get(i), (double) i, arr}, c);
+                    new Object[]{acc, getIndexed(t, i), (double) i, t}, c);
+            }
+            return acc;
+        }));
+        arrayPrototype.set("reduceRight", nativeFn("reduceRight", 2, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            JSFunction fn = asCallback(arg(a, 0), "reduceRight");
+            int start;
+            Object acc;
+            if (a.length >= 2) {
+                acc = a[1];
+                start = len - 1;
+            } else {
+                start = len - 1;
+                while (start >= 0 && !hasIndexed(t, start)) start--;
+                if (start < 0) {
+                    throw AbruptCompletion.typeError("Reduce of empty array with no initial value");
+                }
+                acc = getIndexed(t, start);
+                start--;
+            }
+            for (int i = start; i >= 0; i--) {
+                if (!hasIndexed(t, i)) continue;
+                acc = Interpreter.invokeFunction(fn, Undefined.VALUE,
+                    new Object[]{acc, getIndexed(t, i), (double) i, t}, c);
             }
             return acc;
         }));
         arrayPrototype.set("find", nativeFn("find", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "find");
+            int len = lengthOfArrayLike(t);
             JSFunction fn = asCallback(arg(a, 0), "find");
-            for (int i = 0; i < arr.length(); i++) {
-                Object v = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{arr.get(i), (double) i, arr}, c);
-                if (AbstractOps.toBoolean(v)) return arr.get(i);
+            Object thisArg = arg(a, 1);
+            for (int i = 0; i < len; i++) {
+                Object v = getIndexed(t, i);
+                if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
+                        new Object[]{v, (double) i, t}, c))) return v;
             }
             return Undefined.VALUE;
         }));
         arrayPrototype.set("findIndex", nativeFn("findIndex", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "findIndex");
+            int len = lengthOfArrayLike(t);
             JSFunction fn = asCallback(arg(a, 0), "findIndex");
-            for (int i = 0; i < arr.length(); i++) {
-                Object v = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{arr.get(i), (double) i, arr}, c);
-                if (AbstractOps.toBoolean(v)) return (double) i;
+            Object thisArg = arg(a, 1);
+            for (int i = 0; i < len; i++) {
+                Object v = getIndexed(t, i);
+                if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
+                        new Object[]{v, (double) i, t}, c))) return (double) i;
+            }
+            return -1.0;
+        }));
+        arrayPrototype.set("findLast", nativeFn("findLast", 1, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            JSFunction fn = asCallback(arg(a, 0), "findLast");
+            Object thisArg = arg(a, 1);
+            for (int i = len - 1; i >= 0; i--) {
+                Object v = getIndexed(t, i);
+                if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
+                        new Object[]{v, (double) i, t}, c))) return v;
+            }
+            return Undefined.VALUE;
+        }));
+        arrayPrototype.set("findLastIndex", nativeFn("findLastIndex", 1, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            JSFunction fn = asCallback(arg(a, 0), "findLastIndex");
+            Object thisArg = arg(a, 1);
+            for (int i = len - 1; i >= 0; i--) {
+                Object v = getIndexed(t, i);
+                if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
+                        new Object[]{v, (double) i, t}, c))) return (double) i;
             }
             return -1.0;
         }));
         arrayPrototype.set("some", nativeFn("some", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "some");
+            int len = lengthOfArrayLike(t);
             JSFunction fn = asCallback(arg(a, 0), "some");
-            for (int i = 0; i < arr.length(); i++) {
-                Object v = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{arr.get(i), (double) i, arr}, c);
-                if (AbstractOps.toBoolean(v)) return true;
+            Object thisArg = arg(a, 1);
+            for (int i = 0; i < len; i++) {
+                if (!hasIndexed(t, i)) continue;
+                Object v = getIndexed(t, i);
+                if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
+                        new Object[]{v, (double) i, t}, c))) return true;
             }
             return false;
         }));
         arrayPrototype.set("every", nativeFn("every", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "every");
+            int len = lengthOfArrayLike(t);
             JSFunction fn = asCallback(arg(a, 0), "every");
-            for (int i = 0; i < arr.length(); i++) {
-                Object v = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{arr.get(i), (double) i, arr}, c);
-                if (!AbstractOps.toBoolean(v)) return false;
+            Object thisArg = arg(a, 1);
+            for (int i = 0; i < len; i++) {
+                if (!hasIndexed(t, i)) continue;
+                Object v = getIndexed(t, i);
+                if (!AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
+                        new Object[]{v, (double) i, t}, c))) return false;
             }
             return true;
+        }));
+        arrayPrototype.set("at", nativeFn("at", 1, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            int k = AbstractOps.toInt32(arg(a, 0));
+            if (k < 0) k += len;
+            if (k < 0 || k >= len) return Undefined.VALUE;
+            return getIndexed(t, k);
         }));
         arrayPrototype.set("sort", nativeFn("sort", 1, (t, a, c) -> {
             JSArray arr = asArray(t, "sort");
@@ -700,36 +913,78 @@ public final class Realm {
             return arr;
         }));
         arrayPrototype.set("flat", nativeFn("flat", 0, (t, a, c) -> {
-            JSArray arr = asArray(t, "flat");
+            int len = lengthOfArrayLike(t);
             int depth = arg(a, 0) == Undefined.VALUE ? 1 : AbstractOps.toInt32(a[0]);
             JSArray out = new JSArray();
-            flattenInto(arr, out, depth);
+            for (int i = 0; i < len; i++) {
+                if (!hasIndexed(t, i)) continue;
+                Object e = getIndexed(t, i);
+                if (e instanceof JSArray inner && depth > 0) flattenInto(inner, out, depth - 1);
+                else out.push(e);
+            }
             return out;
         }));
         arrayPrototype.set("flatMap", nativeFn("flatMap", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "flatMap");
+            int len = lengthOfArrayLike(t);
             JSFunction fn = asCallback(arg(a, 0), "flatMap");
+            Object thisArg = arg(a, 1);
             JSArray out = new JSArray();
-            for (int i = 0; i < arr.length(); i++) {
-                Object v = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{arr.get(i), (double) i, arr}, c);
+            for (int i = 0; i < len; i++) {
+                if (!hasIndexed(t, i)) continue;
+                Object v = Interpreter.invokeFunction(fn, thisArg,
+                    new Object[]{getIndexed(t, i), (double) i, t}, c);
                 if (v instanceof JSArray inner) for (Object e : inner.elements()) out.push(e);
                 else out.push(v);
             }
             return out;
         }));
         arrayPrototype.set("fill", nativeFn("fill", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "fill");
+            int len = lengthOfArrayLike(t);
             Object value = arg(a, 0);
-            int len = arr.length();
             int start = sliceIndex(arg(a, 1), len, 0);
-            int end = sliceIndex(arg(a, 2), len, len);
-            for (int i = start; i < end; i++) arr.set(i, value);
-            return arr;
+            int end = arg(a, 2) == Undefined.VALUE ? len : sliceIndex(a[2], len, len);
+            for (int i = start; i < end; i++) setIndexed(t, i, value);
+            return t;
+        }));
+        arrayPrototype.set("copyWithin", nativeFn("copyWithin", 2, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            int target = sliceIndex(arg(a, 0), len, 0);
+            int start = sliceIndex(arg(a, 1), len, 0);
+            int end = arg(a, 2) == Undefined.VALUE ? len : sliceIndex(a[2], len, len);
+            int count = Math.min(end - start, len - target);
+            if (count <= 0) return t;
+            // Direction: from > to or to > from (avoid clobber).
+            int dir = (start < target && target < start + count) ? -1 : 1;
+            int from = dir < 0 ? start + count - 1 : start;
+            int to = dir < 0 ? target + count - 1 : target;
+            for (int k = 0; k < count; k++) {
+                if (hasIndexed(t, from)) setIndexed(t, to, getIndexed(t, from));
+                else if (t instanceof JSObject jo) jo.delete(Integer.toString(to));
+                from += dir;
+                to += dir;
+            }
+            return t;
         }));
         arrayPrototype.set("toString", nativeFn("toString", 0, (t, a, c) -> {
-            JSArray arr = asArray(t, "toString");
-            return arr.toString();
+            // § 23.1.3.34: ToObject; lookup join; if not callable fall back
+            // to Object.prototype.toString. We've already wired array-likes
+            // through join, so just delegate.
+            Object joinFn = AbstractOps.getProperty(t, "join");
+            if (joinFn instanceof JSFunction f) {
+                return Interpreter.invokeFunction(f, t, new Object[0], c);
+            }
+            return "[object Array]";
+        }));
+        arrayPrototype.set("toLocaleString", nativeFn("toLocaleString", 0, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < len; i++) {
+                if (i > 0) sb.append(',');
+                Object e = getIndexed(t, i);
+                if (e == null || e == Undefined.VALUE) continue;
+                sb.append(AbstractOps.toString(e));
+            }
+            return sb.toString();
         }));
         // ECMA-262 § 23.1.3.31 Array.prototype.values — returns an Array
         // Iterator (§ 23.1.5.1) whose .next yields each element in order.
