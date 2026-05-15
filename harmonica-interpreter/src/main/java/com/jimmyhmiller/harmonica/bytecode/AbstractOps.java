@@ -424,6 +424,29 @@ public final class AbstractOps {
             int idx = (int) d;
             if (idx == d && idx >= 0 && idx < arr.length()) return arr.get(idx);
         }
+        // ECMA-262 § 23.2.5.10 IntegerIndexedElementGet — typed-array
+        // elements live in the buffer, not the property map. Probe for
+        // ##TypedArrayState## and route integer indices through there. Out-
+        // of-range / fractional / -0 indices fall through to ordinary [[Get]]
+        // (returns undefined per the spec algorithm). String keys like "0"
+        // also go through this path (see the String-keyed branch below for
+        // CanonicalNumericIndexString handling).
+        if (base instanceof JSObject jsoEarly) {
+            TypedArrayState taState = TypedArrays.stateOf(jsoEarly);
+            if (taState != null) {
+                if (key instanceof Number nn) {
+                    long idx = TypedArrays.integerIndexFromNumber(nn.doubleValue(), taState.length());
+                    if (idx == TypedArrays.IDX_OUT_OF_RANGE) return Undefined.VALUE;
+                    if (idx >= 0) return TypedArrays.loadElement(taState, idx);
+                    // fall through to normal property access (named props,
+                    // prototype methods like fill/slice/etc.)
+                } else if (key instanceof String sk) {
+                    long idx = TypedArrays.integerIndexFromString(sk, taState.length());
+                    if (idx == TypedArrays.IDX_OUT_OF_RANGE) return Undefined.VALUE;
+                    if (idx >= 0) return TypedArrays.loadElement(taState, idx);
+                }
+            }
+        }
         // Symbol keys: use the symbol's per-instance stable string key so
         // distinct symbols (even with the same description) don't collide.
         // Real engines key property maps by symbol identity directly; we
@@ -548,6 +571,24 @@ public final class AbstractOps {
             if (idx == d && idx >= 0) {
                 arr.set(idx, value);
                 return;
+            }
+        }
+        // ECMA-262 § 23.2.5.11 IntegerIndexedElementSet — typed-array
+        // writes silently no-op on detached / out-of-range / non-integer
+        // indices; only valid in-range integer keys store to the buffer.
+        if (base instanceof JSObject jsoEarly) {
+            TypedArrayState taState = TypedArrays.stateOf(jsoEarly);
+            if (taState != null) {
+                if (key instanceof Number nn) {
+                    long idx = TypedArrays.integerIndexFromNumber(nn.doubleValue(), taState.length());
+                    if (idx == TypedArrays.IDX_OUT_OF_RANGE) return;   // silent
+                    if (idx >= 0) { TypedArrays.storeElement(taState, idx, value); return; }
+                    // not integer-indexed → fall through to normal set
+                } else if (key instanceof String sk) {
+                    long idx = TypedArrays.integerIndexFromString(sk, taState.length());
+                    if (idx == TypedArrays.IDX_OUT_OF_RANGE) return;
+                    if (idx >= 0) { TypedArrays.storeElement(taState, idx, value); return; }
+                }
             }
         }
         String prop = key instanceof String s ? s

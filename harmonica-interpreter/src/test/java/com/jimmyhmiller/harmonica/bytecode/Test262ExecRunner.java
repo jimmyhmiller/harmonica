@@ -227,6 +227,25 @@ public final class Test262ExecRunner {
                 "}\n"
             );
         }
+        // ECMA-262 test262 host primitives: $262 object with the few hooks
+        // test files reach for (detachArrayBuffer, gc, evalScript, global).
+        // Without these, lots of TypedArray/ArrayBuffer tests die with
+        // "$262 is not defined" before they exercise spec behavior.
+        if (!isRaw) {
+            composite.append(
+                "var $262 = $262 || {\n" +
+                "  detachArrayBuffer: function (buf) {\n" +
+                "    // Host-controlled detachment. Implemented via\n" +
+                "    // __detachArrayBuffer — wired in by Realm bootstrap.\n" +
+                "    return __detachArrayBuffer(buf);\n" +
+                "  },\n" +
+                "  gc: function () {},\n" +
+                "  global: globalThis,\n" +
+                "  evalScript: function (src) { return eval(src); },\n" +
+                "  agent: { sleep: function () {}, monotonicNow: function () { return 0; } }\n" +
+                "};\n"
+            );
+        }
         composite.append(source);
 
         // Parse. Tests flagged {@code module} require sourceType=module

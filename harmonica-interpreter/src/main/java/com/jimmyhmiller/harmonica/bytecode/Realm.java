@@ -257,6 +257,14 @@ public final class Realm {
         wellKnownSplit = null;
         wellKnownUnscopables = null;
         throwTypeError = null;
+        // TypedArray family — reset prototype refs and per-kind maps.
+        TypedArrays.arrayBufferPrototype = null;
+        TypedArrays.sharedArrayBufferPrototype = null;
+        TypedArrays.dataViewPrototype = null;
+        TypedArrays.typedArrayPrototype = null;
+        TypedArrays.typedArrayConstructor = null;
+        TypedArrays.kindPrototypes.clear();
+        TypedArrays.kindConstructors.clear();
     }
 
     public static synchronized void ensurePrototypes() {
@@ -2576,6 +2584,23 @@ public final class Realm {
                 JSObject p = jo.proto();
                 return p == null ? null : p;
             }
+            if (v instanceof JSFunction fn) {
+                // ECMA-262 § 10.2 ECMAScript Function Object [[Prototype]].
+                // For a derived class function, [[Prototype]] is the super
+                // constructor (set via setSuperConstructor at class creation).
+                // For ordinary functions, it's %Function.prototype%.
+                JSFunction sc = fn.superConstructor();
+                if (sc != null) return sc;
+                return functionPrototype;
+            }
+            if (v instanceof JSArray)        return arrayPrototype;
+            if (v instanceof Boolean)        return booleanPrototype;
+            if (v instanceof Number)         return numberPrototype;
+            if (v instanceof CharSequence)   return stringPrototype;
+            if (v instanceof JSSymbol)       return symbolPrototype;
+            if (v == null || v == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("Object.getPrototypeOf called on null/undefined");
+            }
             return null;
         }));
         // ECMA-262 § 20.1.2.6 .freeze, § 20.1.2.13 .isExtensible,
@@ -3093,8 +3118,12 @@ public final class Realm {
         }));
         reflect.set("getPrototypeOf", nativeFn("getPrototypeOf", 1, (t, a, c) -> {
             Object target = arg(a, 0);
-            if (target instanceof JSObject jo) return jo.proto() != null ? jo.proto() : Undefined.VALUE;
-            return Undefined.VALUE;
+            if (target instanceof JSObject jo) return jo.proto() != null ? jo.proto() : null;
+            if (target instanceof JSFunction fn) {
+                JSFunction sc = fn.superConstructor();
+                return sc != null ? sc : functionPrototype;
+            }
+            throw AbruptCompletion.typeError("Reflect.getPrototypeOf requires an object");
         }));
         reflect.set("setPrototypeOf", nativeFn("setPrototypeOf", 2, (t, a, c) -> {
             Object target = arg(a, 0);
@@ -3136,6 +3165,13 @@ public final class Realm {
                 ? result : receiver;
         }));
         globals.putIfAbsent("Reflect", reflect);
+
+        // ECMA-262 § 23.2 / § 25.1 / § 25.3 — install the TypedArray family,
+        // ArrayBuffer, SharedArrayBuffer, DataView, and the %TypedArray%
+        // intrinsic. Done last so it can reference any prototype that the
+        // earlier installers built. The integer-indexed access hooks live in
+        // AbstractOps.getProperty/setProperty.
+        TypedArrays.install(globals);
 
         // Mirror everything currently installed onto globalThis, so e.g.
         // `globalThis.Math.PI`, `globalThis.NaN`, `globalThis.parseInt(...)` work.

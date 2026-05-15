@@ -39,8 +39,10 @@ import java.util.stream.Stream;
 @EnabledIfSystemProperty(named = "runTest262", matches = "true")
 class Test262ExecTest {
 
-    private static final Path TEST262_LANGUAGE = Paths.get("test-oracles/test262/test/language");
-    private static final Path FALLBACK_LANGUAGE = Paths.get("../test-oracles/test262/test/language");
+    // Walks the entire test262 tree (test/language, test/built-ins, test/annexB,
+    // test/intl402, test/staging). Set -Dtest262.filter=<substring> to restrict.
+    private static final Path TEST262_ROOT = Paths.get("test-oracles/test262/test");
+    private static final Path FALLBACK_ROOT = Paths.get("../test-oracles/test262/test");
     private static final Path HARNESS_DIR = Paths.get("test-oracles/test262/harness");
     private static final Path FALLBACK_HARNESS = Paths.get("../test-oracles/test262/harness");
 
@@ -52,7 +54,7 @@ class Test262ExecTest {
         int limit = Integer.getInteger("test262.limit", Integer.MAX_VALUE);
         String filter = System.getProperty("test262.filter");
 
-        Path languageRoot = resolveLanguageRoot();
+        Path testRoot = resolveTestRoot();
         Path harnessRoot = resolveHarnessRoot();
         String harnessAssert = Files.readString(harnessRoot.resolve("assert.js"));
         String harnessSta = Files.readString(harnessRoot.resolve("sta.js"));
@@ -69,7 +71,7 @@ class Test262ExecTest {
         java.util.List<String> resultLines = new java.util.ArrayList<>();
 
         long t0 = System.nanoTime();
-        try (Stream<Path> stream = Files.walk(languageRoot)) {
+        try (Stream<Path> stream = Files.walk(testRoot)) {
             java.util.Iterator<Path> it = stream
                 .filter(p -> p.toString().endsWith(".js") && !p.toString().contains("FIXTURE"))
                 .sorted()
@@ -87,7 +89,7 @@ class Test262ExecTest {
                 } catch (Exception io) {
                     skip.incrementAndGet();
                     bump(skipReasons, "io-error");
-                    resultLines.add(rel(file, languageRoot) + " SKIP io-error");
+                    resultLines.add(rel(file, testRoot) + " SKIP io-error");
                     continue;
                 }
 
@@ -95,7 +97,7 @@ class Test262ExecTest {
                 if (skipReason != null) {
                     skip.incrementAndGet();
                     bump(skipReasons, skipReason);
-                    resultLines.add(rel(file, languageRoot) + " SKIP " + skipReason);
+                    resultLines.add(rel(file, testRoot) + " SKIP " + skipReason);
                     continue;
                 }
 
@@ -104,10 +106,10 @@ class Test262ExecTest {
                 outcomeCounts.get(result.outcome()).incrementAndGet();
                 if (result.outcome() == Test262ExecRunner.Outcome.PASS) {
                     pass.incrementAndGet();
-                    resultLines.add(rel(file, languageRoot) + " PASS");
+                    resultLines.add(rel(file, testRoot) + " PASS");
                 } else {
                     bump(failHist, result.detail());
-                    resultLines.add(rel(file, languageRoot) + " FAIL " + result.outcome()
+                    resultLines.add(rel(file, testRoot) + " FAIL " + result.outcome()
                         + " | " + truncate(result.detail(), 160));
                 }
             }
@@ -124,7 +126,7 @@ class Test262ExecTest {
         // Build the summary.
         StringBuilder summary = new StringBuilder();
         summary.append("=== test262 execution results ===\n");
-        summary.append(String.format("Root:      %s%n", languageRoot));
+        summary.append(String.format("Root:      %s%n", testRoot));
         summary.append(String.format("Harness:   %s%n", harnessRoot));
         if (filter != null) summary.append("Filter:    ").append(filter).append('\n');
         if (limit != Integer.MAX_VALUE) summary.append("Limit:     ").append(limit).append('\n');
@@ -209,10 +211,10 @@ class Test262ExecTest {
         catch (IllegalArgumentException e) { return file.toString(); }
     }
 
-    private static Path resolveLanguageRoot() {
-        if (Files.isDirectory(TEST262_LANGUAGE)) return TEST262_LANGUAGE;
-        if (Files.isDirectory(FALLBACK_LANGUAGE)) return FALLBACK_LANGUAGE;
-        throw new IllegalStateException("test262/test/language not found");
+    private static Path resolveTestRoot() {
+        if (Files.isDirectory(TEST262_ROOT)) return TEST262_ROOT;
+        if (Files.isDirectory(FALLBACK_ROOT)) return FALLBACK_ROOT;
+        throw new IllegalStateException("test-oracles/test262/test not found");
     }
 
     private static Path resolveHarnessRoot() {
