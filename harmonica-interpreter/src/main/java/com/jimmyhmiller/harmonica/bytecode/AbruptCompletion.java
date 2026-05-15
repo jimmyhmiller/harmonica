@@ -36,14 +36,32 @@ public final class AbruptCompletion extends RuntimeException {
      */
     @Override
     public String getMessage() {
+        // Safe stringification — this method may be invoked by the JVM
+        // (Throwable.toString → ExecutionException constructor) on a thread
+        // without an active InterpContext. AbstractOps.toString routes
+        // through toPrimitive, which allocates an InterpContext from
+        // {@code current()} and crashes with NPE when none is live.
+        // Read name/message directly without going through host coercion.
         if (value instanceof JSObject jo) {
-            Object name = jo.get("name");
-            Object msg = jo.get("message");
-            String n = name == Undefined.VALUE || name == null ? "Error" : AbstractOps.toString(name);
-            String m = msg == Undefined.VALUE || msg == null ? "" : AbstractOps.toString(msg);
+            String n = safeString(jo.get("name"));
+            if (n.isEmpty()) n = "Error";
+            String m = safeString(jo.get("message"));
             return m.isEmpty() ? n : n + ": " + m;
         }
-        return value == null ? "null" : AbstractOps.toString(value);
+        return safeString(value);
+    }
+
+    private static String safeString(Object v) {
+        if (v == null || v == Undefined.VALUE) return "";
+        if (v instanceof String s) return s;
+        if (v instanceof CharSequence cs) return cs.toString();
+        if (v instanceof Number n) {
+            double d = n.doubleValue();
+            if (d == (long) d && !Double.isInfinite(d)) return Long.toString((long) d);
+            return Double.toString(d);
+        }
+        if (v instanceof Boolean b) return b ? "true" : "false";
+        return v.getClass().getSimpleName();
     }
 
     /** Build a JS Error-shaped JSObject for an internal runtime error. */

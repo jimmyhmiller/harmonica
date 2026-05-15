@@ -669,6 +669,17 @@ public final class AbstractOps {
             if (("name".equals(prop) || "length".equals(prop)) && !fn.hasOwnStatic(prop)) {
                 return;
             }
+            // Respect non-writable static properties (e.g. {@code
+            // BYTES_PER_ELEMENT} on TypedArray constructors). Sloppy mode
+            // silently drops the write; strict mode throws — § 10.1.9.2
+            // step 3.b.
+            if (fn.hasOwnStatic(prop) && !fn.isWritable(prop)) {
+                InterpContext ctx = InterpContext.current();
+                if (ctx != null && ctx.executable() != null && ctx.executable().strictMode()) {
+                    throw AbruptCompletion.typeError("Cannot assign to read only property '" + prop + "'");
+                }
+                return;
+            }
             fn.properties().put(prop, value);
             return;
         }

@@ -826,16 +826,25 @@ public final class TypedArrays {
         typedArrayPrototype.set("constructor", typedArrayConstructor);
         typedArrayPrototype.setAttributes("constructor", (byte) (JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
 
-        // Statics on the %TypedArray% intrinsic itself.
+        // Statics on the %TypedArray% intrinsic itself. § 23.2.2.1 / § 23.2.2.2 —
+        // these check IsConstructor(this) first, so direct invocation (where
+        // this is undefined) throws TypeError before any other work.
         typedArrayConstructor.properties().put("from", nativeFn("from", 1, (t, a, c) -> {
-            // Without a concrete target kind we can't allocate. The static
-            // %TypedArray%.from is meant to be called via a subclass:
-            // Uint8Array.from(...). Detect through t === typedArrayConstructor
-            // — error in that case.
-            if (t == typedArrayConstructor) {
-                throw AbruptCompletion.typeError("TypedArray.from must be called on a subclass");
-            }
-            return Undefined.VALUE; // Subclass override fills in.
+            TypedArrayKind k = kindOfConstructor(t);
+            if (k == null) throw AbruptCompletion.typeError("TypedArray.from: receiver is not a TypedArray constructor");
+            Object src = arg(a, 0);
+            Object mapFn = arg(a, 1);
+            JSFunction mf = mapFn == Undefined.VALUE ? null : asFn(mapFn, "from");
+            Object thisArg = arg(a, 2);
+            return fromIterableOrArrayLike(k, src, mf, thisArg, c);
+        }));
+        typedArrayConstructor.properties().put("of", nativeFn("of", 0, (t, a, c) -> {
+            TypedArrayKind k = kindOfConstructor(t);
+            if (k == null) throw AbruptCompletion.typeError("TypedArray.of: receiver is not a TypedArray constructor");
+            JSObject out = createTypedArrayFromKind(k, a.length);
+            TypedArrayState os = stateOf(out);
+            for (int i = 0; i < a.length; i++) storeElement(os, i, a[i]);
+            return out;
         }));
         installSpecies(typedArrayConstructor);
         setToStringTag(typedArrayPrototype, null);  // No tag on %TypedArray%.prototype directly per spec.
@@ -1573,6 +1582,17 @@ public final class TypedArrays {
     private static JSFunction asFn(Object v, String method) {
         if (v instanceof JSFunction fn) return fn;
         throw AbruptCompletion.typeError(method + " callback must be a function");
+    }
+
+    /** Map a constructor-like receiver back to its TypedArrayKind. Returns
+     *  {@code null} for non-constructor / non-TypedArray receivers (causes
+     *  the caller to throw TypeError). */
+    private static TypedArrayKind kindOfConstructor(Object t) {
+        if (!(t instanceof JSFunction fn)) return null;
+        for (var e : kindConstructors.entrySet()) {
+            if (e.getValue() == fn) return e.getKey();
+        }
+        return null;
     }
 
     private static void installSpecies(JSFunction ctor) {
