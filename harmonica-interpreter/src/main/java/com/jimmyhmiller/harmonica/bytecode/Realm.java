@@ -4588,6 +4588,35 @@ public final class Realm {
                 String flags = asRegExpFlags(t);
                 return "/" + src + "/" + flags;
             }));
+            // ECMA-262 § 22.2.6 flag accessors — global / ignoreCase /
+            // multiline / sticky / unicode / unicodeSets / dotAll / hasIndices.
+            for (var entry : new String[][]{
+                {"global", "g"}, {"ignoreCase", "i"}, {"multiline", "m"},
+                {"sticky", "y"}, {"unicode", "u"}, {"unicodeSets", "v"},
+                {"dotAll", "s"}, {"hasIndices", "d"}
+            }) {
+                String name = entry[0];
+                String flagChar = entry[1];
+                regExpPrototype.set(name, new Accessor(
+                    nativeFn("get " + name, 0, (t, a, c) -> {
+                        String flags = asRegExpFlags(t);
+                        return flags != null && flags.contains(flagChar);
+                    }), null));
+                regExpPrototype.setAttributes(name, JSObject.ATTR_CONFIGURABLE);
+            }
+            // source / flags as accessors
+            regExpPrototype.set("source", new Accessor(
+                nativeFn("get source", 0, (t, a, c) -> {
+                    String src = asRegExpSource(t);
+                    return src == null ? "(?:)" : src;
+                }), null));
+            regExpPrototype.setAttributes("source", JSObject.ATTR_CONFIGURABLE);
+            regExpPrototype.set("flags", new Accessor(
+                nativeFn("get flags", 0, (t, a, c) -> {
+                    String flags = asRegExpFlags(t);
+                    return flags == null ? "" : flags;
+                }), null));
+            regExpPrototype.setAttributes("flags", JSObject.ATTR_CONFIGURABLE);
         }
         final JSObject regExpProto = regExpPrototype;
         // Idempotent — cache the ctor on the proto so nested-eval re-bootstrap
