@@ -9984,6 +9984,16 @@ public final class Generator {
     }
 
     private Object literalValue(Literal lit) {
+        // ESTree BigInt literals: value is null and bigint field carries the
+        // decimal string. Convert to JSBigInt at lower time so the constants
+        // pool holds the value directly.
+        if (lit.bigint() != null) {
+            try {
+                return new JSBigInt(new java.math.BigInteger(lit.bigint()));
+            } catch (NumberFormatException e) {
+                return new JSBigInt(java.math.BigInteger.ZERO);
+            }
+        }
         Object v = lit.value();
         // ESTree: a Literal with value=null and raw="null" is the JS `null` literal.
         // (JS `undefined` is an Identifier expression, not a Literal — handled in lowerExpression.)

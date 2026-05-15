@@ -51,35 +51,96 @@ public final class AbstractOps {
         if (lhs instanceof CharSequence l && rhs instanceof CharSequence r) {
             return ConsString.cons(l, r);
         }
+        // BigInt: ECMA-262 § 13.15.3 — BigInt + BigInt allowed, mixing with
+        // Number throws TypeError. String coercion takes precedence (BigInt
+        // ToString gives the decimal form).
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) {
+            return new JSBigInt(lb.value.add(rb.value));
+        }
         Object lPrim = toPrimitive(lhs, "default");
         Object rPrim = toPrimitive(rhs, "default");
         if (lPrim instanceof CharSequence || rPrim instanceof CharSequence) {
             return ConsString.cons(toString(lPrim), toString(rPrim));
+        }
+        if (lPrim instanceof JSBigInt lb && rPrim instanceof JSBigInt rb) {
+            return new JSBigInt(lb.value.add(rb.value));
+        }
+        if (lPrim instanceof JSBigInt || rPrim instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
         }
         return boxDouble(toNumber(lPrim) + toNumber(rPrim));
     }
 
     public static Object sub(Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl - dr);
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) return new JSBigInt(lb.value.subtract(rb.value));
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
+        }
         return boxDouble(toNumber(lhs) - toNumber(rhs));
     }
     public static Object mul(Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl * dr);
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) return new JSBigInt(lb.value.multiply(rb.value));
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
+        }
         return boxDouble(toNumber(lhs) * toNumber(rhs));
     }
     public static Object div(Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl / dr);
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) {
+            if (rb.value.signum() == 0) throw AbruptCompletion.rangeError("Division by zero");
+            return new JSBigInt(lb.value.divide(rb.value));
+        }
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
+        }
         return boxDouble(toNumber(lhs) / toNumber(rhs));
     }
     public static Object mod(Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl % dr);
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) {
+            if (rb.value.signum() == 0) throw AbruptCompletion.rangeError("Division by zero");
+            return new JSBigInt(lb.value.remainder(rb.value));
+        }
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
+        }
         return boxDouble(toNumber(lhs) % toNumber(rhs));
     }
-    public static Object exp(Object lhs, Object rhs) { return boxDouble(Math.pow(toNumber(lhs), toNumber(rhs))); }
+    public static Object exp(Object lhs, Object rhs) {
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) {
+            if (rb.value.signum() < 0) throw AbruptCompletion.rangeError("Exponent must be non-negative");
+            return new JSBigInt(lb.value.pow(rb.value.intValueExact()));
+        }
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
+        }
+        return boxDouble(Math.pow(toNumber(lhs), toNumber(rhs)));
+    }
 
-    public static Object bitwiseAnd(Object lhs, Object rhs) { return boxDouble(toInt32(lhs) & toInt32(rhs)); }
-    public static Object bitwiseOr (Object lhs, Object rhs) { return boxDouble(toInt32(lhs) | toInt32(rhs)); }
-    public static Object bitwiseXor(Object lhs, Object rhs) { return boxDouble(toInt32(lhs) ^ toInt32(rhs)); }
+    public static Object bitwiseAnd(Object lhs, Object rhs) {
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) return new JSBigInt(lb.value.and(rb.value));
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
+        }
+        return boxDouble(toInt32(lhs) & toInt32(rhs));
+    }
+    public static Object bitwiseOr (Object lhs, Object rhs) {
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) return new JSBigInt(lb.value.or(rb.value));
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
+        }
+        return boxDouble(toInt32(lhs) | toInt32(rhs));
+    }
+    public static Object bitwiseXor(Object lhs, Object rhs) {
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) return new JSBigInt(lb.value.xor(rb.value));
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
+        }
+        return boxDouble(toInt32(lhs) ^ toInt32(rhs));
+    }
 
     /** ECMAScript {@code <<} — shift count masked to 5 bits. */
     public static Object leftShift(Object lhs, Object rhs) {
@@ -99,9 +160,20 @@ public final class AbstractOps {
     //  Unary
     // -------------------------------------------------------------
 
-    public static Object unaryMinus(Object v) { return -toNumber(v); }
-    public static Object unaryPlus (Object v) { return  toNumber(v); }
-    public static Object bitwiseNot(Object v) { return boxDouble(~toInt32(v)); }
+    public static Object unaryMinus(Object v) {
+        if (v instanceof JSBigInt bi) return new JSBigInt(bi.value.negate());
+        return -toNumber(v);
+    }
+    public static Object unaryPlus (Object v) {
+        if (v instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot convert a BigInt to a number");
+        }
+        return  toNumber(v);
+    }
+    public static Object bitwiseNot(Object v) {
+        if (v instanceof JSBigInt bi) return new JSBigInt(bi.value.not());
+        return boxDouble(~toInt32(v));
+    }
     public static Object not       (Object v) { return !toBoolean(v); }
 
     /** ECMA-262 § 13.5.3 typeof operator — Table 38 (typeof Operator Results). */
@@ -109,6 +181,7 @@ public final class AbstractOps {
         if (v == Undefined.VALUE)    return "undefined";
         if (v == null)               return "object";
         if (v instanceof Boolean)       return "boolean";
+        if (v instanceof JSBigInt)      return "bigint";
         if (v instanceof Number)        return "number";
         if (v instanceof CharSequence)  return "string";
         if (v instanceof JSSymbol)      return "symbol";
@@ -221,6 +294,11 @@ public final class AbstractOps {
         if (lhs instanceof Number nl && rhs instanceof Number nr) {
             return nl.doubleValue() == nr.doubleValue();
         }
+        // BigInt — structural equality by value. BigInt !== Number per spec.
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) {
+            return lb.value.equals(rb.value);
+        }
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) return false;
         // ConsString equality is asymmetric under String.equals (a String
         // never reports itself equal to a ConsString), so do the
         // length-then-flat-compare ourselves whenever either side is a
@@ -245,6 +323,7 @@ public final class AbstractOps {
         if (v == null)            return false;
         if (v == Undefined.VALUE) return false;
         if (v instanceof Boolean b) return b;
+        if (v instanceof JSBigInt bi) return bi.value.signum() != 0;
         if (v instanceof Number n) {
             double d = n.doubleValue();
             return d != 0.0 && !Double.isNaN(d);
@@ -571,6 +650,10 @@ public final class AbstractOps {
             }
             return Undefined.VALUE;
         }
+        if (base instanceof JSBigInt) {
+            if (Realm.bigIntPrototype != null) return Realm.bigIntPrototype.get(prop);
+            return Undefined.VALUE;
+        }
         if (base instanceof Number) {
             if (Realm.numberPrototype != null) return Realm.numberPrototype.get(prop);
             return Undefined.VALUE;
@@ -871,6 +954,7 @@ public final class AbstractOps {
         // (The {@code String()} constructor has its own path that returns
         // the symbol's descriptive string instead — see Realm.java.)
         if (v instanceof JSSymbol) throw AbruptCompletion.typeError("Cannot convert a Symbol value to a string");
+        if (v instanceof JSBigInt bi) return bi.value.toString();
         if (v instanceof Number n) {
             double d = n.doubleValue();
             if (Double.isNaN(d))           return "NaN";

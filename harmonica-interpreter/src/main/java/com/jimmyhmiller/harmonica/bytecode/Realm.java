@@ -30,6 +30,7 @@ public final class Realm {
     public static volatile JSObject weakSetPrototype;
     public static volatile JSObject errorPrototype;
     public static volatile JSObject regExpPrototype;
+    public static volatile JSObject bigIntPrototype;
     /**
      * Original {@code Array.prototype[@@iterator]} (the {@code values} fn) and
      * {@code String.prototype[@@iterator]}, captured at bootstrap so the
@@ -123,6 +124,17 @@ public final class Realm {
     static final String SLOT_BOOLEAN_DATA = "##BooleanData##";
     static final String SLOT_NUMBER_DATA  = "##NumberData##";
     static final String SLOT_STRING_DATA  = "##StringData##";
+    static final String SLOT_BIGINT_DATA  = "##BigIntData##";
+
+    /** Extract the underlying JSBigInt from a BigInt value or wrapper. */
+    static JSBigInt bigIntDataOf(Object v) {
+        if (v instanceof JSBigInt bi) return bi;
+        if (v instanceof JSObject jo) {
+            Object slot = jo.getOwn(SLOT_BIGINT_DATA);
+            if (slot instanceof JSBigInt bi) return bi;
+        }
+        return null;
+    }
     /** ECMA-262 § 28.2 Proxy [[ProxyTarget]] / [[ProxyHandler]] internal slots. */
     public static final String SLOT_PROXY_TARGET  = "##ProxyTarget##";
     public static final String SLOT_PROXY_HANDLER = "##ProxyHandler##";
@@ -272,6 +284,7 @@ public final class Realm {
         errorPrototype = null;
         errorPrototypes.clear();
         regExpPrototype = null;
+        bigIntPrototype = null;
         defaultArrayIterator = null;
         defaultStringIterator = null;
         wellKnownIterator = null;
@@ -3120,15 +3133,111 @@ public final class Realm {
         // exists so `typeof BigInt === "function"` returns true and tests
         // doing capability checks ahead of use don't ReferenceError. The
         // BigInt literal syntax (`1n`) is a separate parser concern.
+        // BigInt — § 21.2. Primitive type wrapping java.math.BigInteger via
+        // JSBigInt. Constructor coerces argument; calling `new BigInt(...)` is
+        // a TypeError per spec.
+        bigIntPrototype = new JSObject(objectPrototype);
         JSFunction bigIntCtor = nativeFn("BigInt", 1, (t, a, c) -> {
-            throw AbruptCompletion.typeError("BigInt is not implemented in v1");
+            if (Interpreter.isNewCall()) {
+                throw AbruptCompletion.typeError("BigInt is not a constructor");
+            }
+            Object v = arg(a, 0);
+            // § 21.2.1.1.1 ToBigInt — handles primitives, errors on others.
+            if (v instanceof JSBigInt bi) return bi;
+            if (v instanceof Boolean b) return b ? JSBigInt.ONE : JSBigInt.ZERO;
+            if (v instanceof Number n) {
+                double d = n.doubleValue();
+                if (Double.isNaN(d) || Double.isInfinite(d) || d != Math.floor(d)) {
+                    throw AbruptCompletion.rangeError("The number " + d + " cannot be converted to a BigInt because it is not an integer");
+                }
+                return new JSBigInt(new java.math.BigDecimal(d).toBigInteger());
+            }
+            if (v instanceof CharSequence cs) {
+                String s = cs.toString().trim();
+                if (s.isEmpty()) return JSBigInt.ZERO;
+                try {
+                    if (s.startsWith("0x") || s.startsWith("0X")) {
+                        return new JSBigInt(new java.math.BigInteger(s.substring(2), 16));
+                    } else if (s.startsWith("0o") || s.startsWith("0O")) {
+                        return new JSBigInt(new java.math.BigInteger(s.substring(2), 8));
+                    } else if (s.startsWith("0b") || s.startsWith("0B")) {
+                        return new JSBigInt(new java.math.BigInteger(s.substring(2), 2));
+                    }
+                    return new JSBigInt(new java.math.BigInteger(s));
+                } catch (NumberFormatException e) {
+                    throw AbruptCompletion.syntaxError("Cannot convert " + s + " to a BigInt");
+                }
+            }
+            if (v == null || v == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("Cannot convert " + (v == null ? "null" : "undefined") + " to a BigInt");
+            }
+            if (v instanceof JSSymbol) {
+                throw AbruptCompletion.typeError("Cannot convert a Symbol value to a BigInt");
+            }
+            // Object → ToPrimitive(default) → recurse.
+            Object prim = AbstractOps.toPrimitive(v, "number");
+            if (prim == v) throw AbruptCompletion.typeError("Cannot convert object to BigInt");
+            // Recurse via direct invocation.
+            return Interpreter.invokeFunction((JSFunction) globals.get("BigInt"), Undefined.VALUE, new Object[]{prim}, c);
         });
+        bigIntCtor.setPrototypeObject(bigIntPrototype);
+        bigIntPrototype.set("constructor", bigIntCtor);
+        bigIntPrototype.set("toString", nativeFn("toString", 0, (t, a, c) -> {
+            JSBigInt bi = bigIntDataOf(t);
+            if (bi == null) throw AbruptCompletion.typeError("BigInt.prototype.toString called on non-BigInt");
+            int radix = arg(a, 0) == Undefined.VALUE ? 10 : AbstractOps.toInt32(a[0]);
+            if (radix < 2 || radix > 36) throw AbruptCompletion.rangeError("Invalid radix");
+            return bi.value.toString(radix);
+        }));
+        bigIntPrototype.set("valueOf", nativeFn("valueOf", 0, (t, a, c) -> {
+            JSBigInt bi = bigIntDataOf(t);
+            if (bi == null) throw AbruptCompletion.typeError("BigInt.prototype.valueOf called on non-BigInt");
+            return bi;
+        }));
+        bigIntPrototype.set("toLocaleString", nativeFn("toLocaleString", 0, (t, a, c) -> {
+            JSBigInt bi = bigIntDataOf(t);
+            if (bi == null) throw AbruptCompletion.typeError("BigInt.prototype.toLocaleString called on non-BigInt");
+            return bi.value.toString();
+        }));
+        bigIntPrototype.set(wellKnownToStringTag.asPropertyKey(), "BigInt");
+        bigIntPrototype.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
         bigIntCtor.properties().put("asIntN", nativeFn("asIntN", 2, (t, a, c) -> {
-            throw AbruptCompletion.typeError("BigInt is not implemented in v1");
+            int bits = AbstractOps.toInt32(arg(a, 0));
+            if (bits < 0) throw AbruptCompletion.rangeError("bits must be non-negative");
+            Object v = arg(a, 1);
+            JSBigInt bi;
+            if (v instanceof JSBigInt bg) {
+                bi = bg;
+            } else {
+                Object coerced = Interpreter.invokeFunction(bigIntCtor, Undefined.VALUE, new Object[]{v}, c);
+                if (!(coerced instanceof JSBigInt b2)) throw AbruptCompletion.typeError("asIntN: not a BigInt");
+                bi = b2;
+            }
+            if (bits == 0) return JSBigInt.ZERO;
+            java.math.BigInteger mod = java.math.BigInteger.ONE.shiftLeft(bits);
+            java.math.BigInteger result = bi.value.mod(mod);
+            // If result >= 2^(bits-1), subtract 2^bits to make negative.
+            java.math.BigInteger half = java.math.BigInteger.ONE.shiftLeft(bits - 1);
+            if (result.compareTo(half) >= 0) result = result.subtract(mod);
+            return new JSBigInt(result);
         }));
         bigIntCtor.properties().put("asUintN", nativeFn("asUintN", 2, (t, a, c) -> {
-            throw AbruptCompletion.typeError("BigInt is not implemented in v1");
+            int bits = AbstractOps.toInt32(arg(a, 0));
+            if (bits < 0) throw AbruptCompletion.rangeError("bits must be non-negative");
+            Object v = arg(a, 1);
+            JSBigInt bi;
+            if (v instanceof JSBigInt bg) {
+                bi = bg;
+            } else {
+                Object coerced = Interpreter.invokeFunction(bigIntCtor, Undefined.VALUE, new Object[]{v}, c);
+                if (!(coerced instanceof JSBigInt b2)) throw AbruptCompletion.typeError("asUintN: not a BigInt");
+                bi = b2;
+            }
+            if (bits == 0) return JSBigInt.ZERO;
+            java.math.BigInteger mod = java.math.BigInteger.ONE.shiftLeft(bits);
+            return new JSBigInt(bi.value.mod(mod));
         }));
+        markMethodsNonEnumerable(bigIntPrototype);
         globals.putIfAbsent("BigInt", bigIntCtor);
 
         // ECMA-262 § 25.4 Atomics — namespace object. Operations require

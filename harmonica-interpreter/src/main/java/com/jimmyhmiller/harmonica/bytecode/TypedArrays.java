@@ -239,14 +239,18 @@ public final class TypedArrays {
                 for (int j = 0; j < 8; j++) bits |= (data[off + j] & 0xFFL) << (8 * j);
                 return Double.longBitsToDouble(bits);
             }
-            case BIGINT64:
+            case BIGINT64: {
+                long bits = 0;
+                for (int j = 0; j < 8; j++) bits |= (data[off + j] & 0xFFL) << (8 * j);
+                return new JSBigInt(bits);
+            }
             case BIGUINT64: {
                 long bits = 0;
                 for (int j = 0; j < 8; j++) bits |= (data[off + j] & 0xFFL) << (8 * j);
-                // BigInt isn't fully supported in harmonica v1; return the
-                // numeric long value so callers can at least round-trip via
-                // bit comparisons. Real BigInt requires a JSBigInt type.
-                return (double) bits;
+                // Treat as unsigned: if negative, add 2^64.
+                java.math.BigInteger bi = java.math.BigInteger.valueOf(bits);
+                if (bi.signum() < 0) bi = bi.add(java.math.BigInteger.ONE.shiftLeft(64));
+                return new JSBigInt(bi);
             }
         }
         return Undefined.VALUE;
@@ -310,8 +314,17 @@ public final class TypedArrays {
             }
             case BIGINT64:
             case BIGUINT64: {
-                // Without a real BigInt type we use the host's numeric truncation.
-                long bits = (long) AbstractOps.toNumber(value);
+                // Per spec, the value must be a BigInt (or coerce via ToBigInt).
+                long bits;
+                if (value instanceof JSBigInt bi) {
+                    bits = bi.value.longValue();
+                } else {
+                    // ToBigInt fallback: throw for Number, otherwise convert via Realm helper.
+                    if (value instanceof Number) {
+                        throw AbruptCompletion.typeError("Cannot convert a Number to BigInt");
+                    }
+                    bits = (long) AbstractOps.toNumber(value);
+                }
                 for (int j = 0; j < 8; j++) data[off + j] = (byte) (bits >> (8 * j));
                 return;
             }
