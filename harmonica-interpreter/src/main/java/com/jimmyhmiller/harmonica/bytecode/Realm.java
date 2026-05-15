@@ -975,6 +975,125 @@ public final class Realm {
             }
             return "[object Array]";
         }));
+        // ECMA-262 § 23.1.3.29 Array.prototype.splice — remove deleteCount
+        // elements starting at start, insert the trailing args, return the
+        // deleted slice. Mutates `this` in place.
+        arrayPrototype.set("splice", nativeFn("splice", 2, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            int start = sliceIndex(arg(a, 0), len, 0);
+            int actualDelete;
+            int insertCount = Math.max(0, a.length - 2);
+            if (a.length == 0) actualDelete = 0;
+            else if (a.length == 1) actualDelete = len - start;
+            else {
+                double d = AbstractOps.toNumber(a[1]);
+                if (Double.isNaN(d) || d <= 0) actualDelete = 0;
+                else actualDelete = (int) Math.min(d, len - start);
+            }
+            JSArray removed = new JSArray();
+            for (int i = 0; i < actualDelete; i++) {
+                if (hasIndexed(t, start + i)) removed.push(getIndexed(t, start + i));
+                else removed.push(Undefined.VALUE);
+            }
+            int newLen = len - actualDelete + insertCount;
+            if (insertCount < actualDelete) {
+                // Shift left to close gap.
+                for (int i = start; i < len - actualDelete; i++) {
+                    int src = i + actualDelete;
+                    int dst = i + insertCount;
+                    if (hasIndexed(t, src)) setIndexed(t, dst, getIndexed(t, src));
+                    else if (t instanceof JSObject jo) jo.delete(Integer.toString(dst));
+                }
+                // Trim tail.
+                for (int i = newLen; i < len; i++) {
+                    if (t instanceof JSObject jo) jo.delete(Integer.toString(i));
+                }
+            } else if (insertCount > actualDelete) {
+                // Shift right to make room.
+                for (int i = len - actualDelete - 1; i >= start; i--) {
+                    int src = i + actualDelete;
+                    int dst = i + insertCount;
+                    if (hasIndexed(t, src)) setIndexed(t, dst, getIndexed(t, src));
+                    else if (t instanceof JSObject jo) jo.delete(Integer.toString(dst));
+                }
+            }
+            // Insert new elements.
+            for (int i = 0; i < insertCount; i++) {
+                setIndexed(t, start + i, a[i + 2]);
+            }
+            AbstractOps.setProperty(t, "length", (double) newLen);
+            return removed;
+        }));
+        // § 23.1.3.35 Array.prototype.toSpliced — non-mutating splice.
+        arrayPrototype.set("toSpliced", nativeFn("toSpliced", 2, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            int start = sliceIndex(arg(a, 0), len, 0);
+            int actualDelete;
+            int insertCount = Math.max(0, a.length - 2);
+            if (a.length == 0) actualDelete = 0;
+            else if (a.length == 1) actualDelete = len - start;
+            else {
+                double d = AbstractOps.toNumber(a[1]);
+                if (Double.isNaN(d) || d <= 0) actualDelete = 0;
+                else actualDelete = (int) Math.min(d, len - start);
+            }
+            JSArray out = new JSArray();
+            for (int i = 0; i < start; i++) {
+                out.push(hasIndexed(t, i) ? getIndexed(t, i) : Undefined.VALUE);
+            }
+            for (int i = 2; i < a.length; i++) out.push(a[i]);
+            for (int i = start + actualDelete; i < len; i++) {
+                out.push(hasIndexed(t, i) ? getIndexed(t, i) : Undefined.VALUE);
+            }
+            return out;
+        }));
+        // § 23.1.3.38 Array.prototype.toReversed — non-mutating reverse.
+        arrayPrototype.set("toReversed", nativeFn("toReversed", 0, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            JSArray out = new JSArray();
+            for (int i = len - 1; i >= 0; i--) {
+                out.push(hasIndexed(t, i) ? getIndexed(t, i) : Undefined.VALUE);
+            }
+            return out;
+        }));
+        // § 23.1.3.39 Array.prototype.toSorted — non-mutating sort.
+        arrayPrototype.set("toSorted", nativeFn("toSorted", 1, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            Object[] vals = new Object[len];
+            for (int i = 0; i < len; i++) {
+                vals[i] = hasIndexed(t, i) ? getIndexed(t, i) : Undefined.VALUE;
+            }
+            Object cmpArg = arg(a, 0);
+            JSFunction cmp = (cmpArg instanceof JSFunction f) ? f : null;
+            java.util.Arrays.sort(vals, (x, y) -> {
+                if (x == Undefined.VALUE && y == Undefined.VALUE) return 0;
+                if (x == Undefined.VALUE) return 1;
+                if (y == Undefined.VALUE) return -1;
+                if (cmp != null) {
+                    Object r = Interpreter.invokeFunction(cmp, Undefined.VALUE, new Object[]{x, y}, c);
+                    double d = AbstractOps.toNumber(r);
+                    if (Double.isNaN(d)) return 0;
+                    return d < 0 ? -1 : (d > 0 ? 1 : 0);
+                }
+                return AbstractOps.toString(x).compareTo(AbstractOps.toString(y));
+            });
+            JSArray out = new JSArray();
+            for (Object v : vals) out.push(v);
+            return out;
+        }));
+        // § 23.1.3.40 Array.prototype.with — non-mutating element replace.
+        arrayPrototype.set("with", nativeFn("with", 2, (t, a, c) -> {
+            int len = lengthOfArrayLike(t);
+            int idx = AbstractOps.toInt32(arg(a, 0));
+            if (idx < 0) idx += len;
+            if (idx < 0 || idx >= len) throw AbruptCompletion.rangeError("with: index out of range");
+            Object value = arg(a, 1);
+            JSArray out = new JSArray();
+            for (int i = 0; i < len; i++) {
+                out.push(i == idx ? value : (hasIndexed(t, i) ? getIndexed(t, i) : Undefined.VALUE));
+            }
+            return out;
+        }));
         arrayPrototype.set("toLocaleString", nativeFn("toLocaleString", 0, (t, a, c) -> {
             int len = lengthOfArrayLike(t);
             StringBuilder sb = new StringBuilder();
@@ -1209,6 +1328,176 @@ public final class Realm {
             AbstractOps.toString(t).startsWith(AbstractOps.toString(arg(a, 0)))));
         stringPrototype.set("endsWith", nativeFn("endsWith", 1, (t, a, c) ->
             AbstractOps.toString(t).endsWith(AbstractOps.toString(arg(a, 0)))));
+        // ECMA-262 § 22.1.3.1 String.prototype.at — index with negative-offset support.
+        stringPrototype.set("at", nativeFn("at", 1, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            int idx = AbstractOps.toInt32(arg(a, 0));
+            if (idx < 0) idx += s.length();
+            if (idx < 0 || idx >= s.length()) return Undefined.VALUE;
+            return String.valueOf(s.charAt(idx));
+        }));
+        // ECMA-262 § 22.1.3.5 codePointAt.
+        stringPrototype.set("codePointAt", nativeFn("codePointAt", 1, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            int idx = AbstractOps.toInt32(arg(a, 0));
+            if (idx < 0 || idx >= s.length()) return Undefined.VALUE;
+            return (double) s.codePointAt(idx);
+        }));
+        // § 22.1.3.18 normalize — Unicode normalization. java.text.Normalizer handles all four forms.
+        stringPrototype.set("normalize", nativeFn("normalize", 0, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            String form = arg(a, 0) == Undefined.VALUE ? "NFC" : AbstractOps.toString(a[0]);
+            java.text.Normalizer.Form nf;
+            switch (form) {
+                case "NFC":  nf = java.text.Normalizer.Form.NFC;  break;
+                case "NFD":  nf = java.text.Normalizer.Form.NFD;  break;
+                case "NFKC": nf = java.text.Normalizer.Form.NFKC; break;
+                case "NFKD": nf = java.text.Normalizer.Form.NFKD; break;
+                default: throw AbruptCompletion.rangeError("Invalid normalization form: " + form);
+            }
+            return java.text.Normalizer.normalize(s, nf);
+        }));
+        // § 22.1.3.19 padEnd / padStart already defined later — skip here.
+        // ECMA-262 § 22.1.3.22 replaceAll — regex or string search; global only.
+        stringPrototype.set("replaceAll", nativeFn("replaceAll", 2, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            Object search0 = arg(a, 0);
+            Object repl0 = arg(a, 1);
+            if (asRegExpSource(search0) != null) {
+                String flags = asRegExpFlags(search0);
+                if (!flags.contains("g")) {
+                    throw AbruptCompletion.typeError("replaceAll must be called with a global RegExp");
+                }
+                // Delegate to replace which already handles the global path.
+                Object replaceFn = stringPrototype.get("replace");
+                if (replaceFn instanceof JSFunction f) {
+                    return Interpreter.invokeFunction(f, t, new Object[]{search0, repl0}, c);
+                }
+                return s;
+            }
+            String search = AbstractOps.toString(search0);
+            if (search.isEmpty()) {
+                // Insert repl between every code unit.
+                StringBuilder sb = new StringBuilder();
+                if (repl0 instanceof JSFunction repFn) {
+                    sb.append(AbstractOps.toString(
+                        Interpreter.invokeFunction(repFn, Undefined.VALUE,
+                            new Object[]{search, 0.0, s}, c)));
+                    for (int i = 0; i < s.length(); i++) {
+                        sb.append(s.charAt(i));
+                        sb.append(AbstractOps.toString(
+                            Interpreter.invokeFunction(repFn, Undefined.VALUE,
+                                new Object[]{search, (double) (i + 1), s}, c)));
+                    }
+                } else {
+                    String rep = AbstractOps.toString(repl0);
+                    sb.append(rep);
+                    for (int i = 0; i < s.length(); i++) {
+                        sb.append(s.charAt(i)).append(rep);
+                    }
+                }
+                return sb.toString();
+            }
+            StringBuilder sb = new StringBuilder();
+            int last = 0;
+            int idx;
+            while ((idx = s.indexOf(search, last)) >= 0) {
+                sb.append(s, last, idx);
+                if (repl0 instanceof JSFunction repFn) {
+                    sb.append(AbstractOps.toString(
+                        Interpreter.invokeFunction(repFn, Undefined.VALUE,
+                            new Object[]{search, (double) idx, s}, c)));
+                } else {
+                    sb.append(AbstractOps.toString(repl0));
+                }
+                last = idx + search.length();
+            }
+            sb.append(s, last, s.length());
+            return sb.toString();
+        }));
+        // § 22.1.3.13 matchAll — produces an iterator of regex matches.
+        stringPrototype.set("matchAll", nativeFn("matchAll", 1, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            Object pat = arg(a, 0);
+            String src = asRegExpSource(pat);
+            String flags = src == null ? "g" : asRegExpFlags(pat);
+            if (src == null) src = AbstractOps.toString(pat);
+            if (!flags.contains("g")) {
+                throw AbruptCompletion.typeError("matchAll requires a global RegExp");
+            }
+            java.util.regex.Pattern p = compileJsRegex(src, flags);
+            java.util.regex.Matcher m = p.matcher(s);
+            JSObject iter = new JSObject();
+            String finalSrc = src;
+            iter.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
+                JSObject step = new JSObject();
+                if (m.find()) {
+                    JSArray match = new JSArray();
+                    match.push(m.group());
+                    for (int gi = 1; gi <= m.groupCount(); gi++) {
+                        match.push(m.group(gi) == null ? Undefined.VALUE : m.group(gi));
+                    }
+                    match.setExtraProperty("index", (double) m.start());
+                    match.setExtraProperty("input", s);
+                    attachNamedGroups(match, p, m, finalSrc);
+                    step.set("value", match);
+                    step.set("done", false);
+                } else {
+                    step.set("value", Undefined.VALUE);
+                    step.set("done", true);
+                }
+                return step;
+            }));
+            iter.set(wellKnownIterator.asPropertyKey(),
+                nativeFn("[Symbol.iterator]", 0, (tt, aa, cc) -> tt));
+            return iter;
+        }));
+        // § 22.1.3.10 String.prototype.localeCompare — ECMA-402 if Intl is
+        // installed; otherwise default to lexicographic.
+        stringPrototype.set("localeCompare", nativeFn("localeCompare", 1, (t, a, c) -> {
+            String x = AbstractOps.toString(t);
+            String y = AbstractOps.toString(arg(a, 0));
+            return (double) Integer.signum(x.compareTo(y));
+        }));
+        // Locale-aware case conversions — fall back to root locale.
+        stringPrototype.set("toLocaleLowerCase", nativeFn("toLocaleLowerCase", 0, (t, a, c) ->
+            AbstractOps.toString(t).toLowerCase(java.util.Locale.ROOT)));
+        stringPrototype.set("toLocaleUpperCase", nativeFn("toLocaleUpperCase", 0, (t, a, c) ->
+            AbstractOps.toString(t).toUpperCase(java.util.Locale.ROOT)));
+        // § 22.1.3.9 String.prototype.isWellFormed / § 22.1.3.33 toWellFormed.
+        stringPrototype.set("isWellFormed", nativeFn("isWellFormed", 0, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            for (int i = 0; i < s.length(); i++) {
+                char ch = s.charAt(i);
+                if (Character.isHighSurrogate(ch)) {
+                    if (i + 1 >= s.length() || !Character.isLowSurrogate(s.charAt(i + 1))) return false;
+                    i++;
+                } else if (Character.isLowSurrogate(ch)) {
+                    return false;
+                }
+            }
+            return true;
+        }));
+        stringPrototype.set("toWellFormed", nativeFn("toWellFormed", 0, (t, a, c) -> {
+            String s = AbstractOps.toString(t);
+            StringBuilder sb = new StringBuilder(s.length());
+            for (int i = 0; i < s.length(); i++) {
+                char ch = s.charAt(i);
+                if (Character.isHighSurrogate(ch)) {
+                    if (i + 1 < s.length() && Character.isLowSurrogate(s.charAt(i + 1))) {
+                        sb.append(ch).append(s.charAt(i + 1));
+                        i++;
+                    } else {
+                        sb.append('�');
+                    }
+                } else if (Character.isLowSurrogate(ch)) {
+                    sb.append('�');
+                } else {
+                    sb.append(ch);
+                }
+            }
+            return sb.toString();
+        }));
         stringPrototype.set("repeat", nativeFn("repeat", 1, (t, a, c) -> {
             String s = AbstractOps.toString(t);
             // § 22.1.3.16: convert count via ToIntegerOrInfinity; reject
@@ -1693,6 +1982,110 @@ public final class Realm {
             return iter;
         }));
         setPrototype.set(wellKnownIterator.asPropertyKey(), setValues);
+        // ECMA-262 § 24.2.3 Set composition methods (ES2024) — operate on
+        // any value with a Set-like interface ({size, has, keys}).
+        setPrototype.set("union", nativeFn("union", 1, (t, a, c) -> {
+            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>(setData(t));
+            Object other = arg(a, 0);
+            iterateSetLike(other, c, v -> out.add(v));
+            JSObject result = new JSObject(setPrototype);
+            result.properties().put(SLOT_SET_DATA, out);
+            return result;
+        }));
+        setPrototype.set("intersection", nativeFn("intersection", 1, (t, a, c) -> {
+            Object other = arg(a, 0);
+            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>();
+            int thisSize = setData(t).size();
+            int otherSize = otherSize(other);
+            // Iterate the smaller for spec-friendliness.
+            if (thisSize <= otherSize) {
+                for (Object v : setData(t)) {
+                    if (setLikeHas(other, v, c)) out.add(v);
+                }
+            } else {
+                iterateSetLike(other, c, v -> { if (setData(t).contains(v)) out.add(v); });
+            }
+            JSObject result = new JSObject(setPrototype);
+            result.properties().put(SLOT_SET_DATA, out);
+            return result;
+        }));
+        setPrototype.set("difference", nativeFn("difference", 1, (t, a, c) -> {
+            Object other = arg(a, 0);
+            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>(setData(t));
+            iterateSetLike(other, c, out::remove);
+            JSObject result = new JSObject(setPrototype);
+            result.properties().put(SLOT_SET_DATA, out);
+            return result;
+        }));
+        setPrototype.set("symmetricDifference", nativeFn("symmetricDifference", 1, (t, a, c) -> {
+            Object other = arg(a, 0);
+            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>(setData(t));
+            iterateSetLike(other, c, v -> {
+                if (!out.remove(v)) out.add(v);
+            });
+            JSObject result = new JSObject(setPrototype);
+            result.properties().put(SLOT_SET_DATA, out);
+            return result;
+        }));
+        setPrototype.set("isSubsetOf", nativeFn("isSubsetOf", 1, (t, a, c) -> {
+            Object other = arg(a, 0);
+            for (Object v : setData(t)) if (!setLikeHas(other, v, c)) return false;
+            return true;
+        }));
+        setPrototype.set("isSupersetOf", nativeFn("isSupersetOf", 1, (t, a, c) -> {
+            Object other = arg(a, 0);
+            boolean[] all = {true};
+            iterateSetLike(other, c, v -> { if (!setData(t).contains(v)) all[0] = false; });
+            return all[0];
+        }));
+        setPrototype.set("isDisjointFrom", nativeFn("isDisjointFrom", 1, (t, a, c) -> {
+            Object other = arg(a, 0);
+            boolean[] any = {false};
+            iterateSetLike(other, c, v -> { if (setData(t).contains(v)) any[0] = true; });
+            return !any[0];
+        }));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static int otherSize(Object o) {
+        Object sz = AbstractOps.getProperty(o, "size");
+        return (int) AbstractOps.toNumber(sz);
+    }
+
+    /** Whether {@code o} (a Set-like) reports `has(v)` truthy. */
+    private static boolean setLikeHas(Object o, Object v, InterpContext c) {
+        Object has = AbstractOps.getProperty(o, "has");
+        if (!(has instanceof JSFunction f)) return false;
+        return AbstractOps.toBoolean(Interpreter.invokeFunction(f, o, new Object[]{v}, c));
+    }
+
+    /** Iterate a Set-like (size + keys()) and apply {@code consumer} per value. */
+    @SuppressWarnings("unchecked")
+    private static void iterateSetLike(Object o, InterpContext c, java.util.function.Consumer<Object> consumer) {
+        if (o instanceof JSObject jo && jo.properties().get(SLOT_SET_DATA) instanceof java.util.LinkedHashSet<?> ls) {
+            for (Object v : ls) consumer.accept(v);
+            return;
+        }
+        Object keys = AbstractOps.getProperty(o, "keys");
+        if (!(keys instanceof JSFunction kf)) {
+            throw AbruptCompletion.typeError("Set-like operand has no keys() method");
+        }
+        Object iter = Interpreter.invokeFunction(kf, o, new Object[0], c);
+        if (!(iter instanceof JSObject iterObj)) {
+            throw AbruptCompletion.typeError("Set-like .keys() must return an iterator");
+        }
+        Object nextFn = AbstractOps.getProperty(iterObj, "next");
+        if (!(nextFn instanceof JSFunction nf)) {
+            throw AbruptCompletion.typeError("Set-like iterator has no .next()");
+        }
+        for (int i = 0; i < 0x7FFFFFFF; i++) {
+            if ((i & 0x3FF) == 0 && Thread.interrupted()) {
+                throw new Interpreter.InterpInterruptedError();
+            }
+            Object step = Interpreter.invokeFunction(nf, iterObj, new Object[0], c);
+            if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) break;
+            consumer.accept(AbstractOps.getProperty(step, "value"));
+        }
     }
 
     private static void installWeakMapPrototype() {
@@ -2643,6 +3036,40 @@ public final class Realm {
         stringCtor.properties().put("fromCharCode", nativeFn("fromCharCode", 1, (t, a, c) -> {
             StringBuilder sb = new StringBuilder();
             for (Object x : a) sb.append((char) AbstractOps.toInt32(x));
+            return sb.toString();
+        }));
+        // ECMA-262 § 22.1.2.2 String.fromCodePoint — accept any number of
+        // valid Unicode code points (0..0x10FFFF), encode as UTF-16 surrogate
+        // pairs for code points above the BMP.
+        stringCtor.properties().put("fromCodePoint", nativeFn("fromCodePoint", 1, (t, a, c) -> {
+            StringBuilder sb = new StringBuilder();
+            for (Object x : a) {
+                double d = AbstractOps.toNumber(x);
+                if (Double.isNaN(d) || d != Math.floor(d) || d < 0 || d > 0x10FFFF) {
+                    throw AbruptCompletion.rangeError("Invalid code point " + d);
+                }
+                int cp = (int) d;
+                sb.appendCodePoint(cp);
+            }
+            return sb.toString();
+        }));
+        // ECMA-262 § 22.1.2.4 String.raw — used by tagged templates that
+        // return the raw template strings.
+        stringCtor.properties().put("raw", nativeFn("raw", 1, (t, a, c) -> {
+            if (a.length == 0) throw AbruptCompletion.typeError("String.raw requires at least one argument");
+            Object template = a[0];
+            Object rawObj = AbstractOps.getProperty(template, "raw");
+            if (rawObj == null || rawObj == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("String.raw: template.raw is undefined");
+            }
+            int len = lengthOfArrayLike(rawObj);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < len; i++) {
+                sb.append(AbstractOps.toString(getIndexed(rawObj, i)));
+                if (i + 1 < len && i + 1 < a.length) {
+                    sb.append(AbstractOps.toString(a[i + 1]));
+                }
+            }
             return sb.toString();
         }));
         globals.putIfAbsent("String", stringCtor);
