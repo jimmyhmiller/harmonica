@@ -495,7 +495,18 @@ public final class AbstractOps {
         }
         if (base instanceof JSFunction fn) {
             // Static-style properties live on the function itself.
-            if (fn.hasOwnStatic(prop)) return fn.getOwnStatic(prop);
+            if (fn.hasOwnStatic(prop)) {
+                Object v = fn.getOwnStatic(prop);
+                // Accessor-defined static (e.g. Constructor[Symbol.species])
+                // — invoke its getter with the function as receiver, per
+                // § 10.1.8.1 OrdinaryGet step 7.
+                if (v instanceof Accessor acc && acc.getter() != null) {
+                    InterpContext ctx = InterpContext.current();
+                    if (ctx == null) return v;
+                    return Interpreter.invokeFunction(acc.getter(), base, new Object[0], ctx);
+                }
+                return v;
+            }
             // Spec virtual properties: name, length. The deleted-flag
             // routes them through the proto-chain like any missing prop
             // so {@code delete fn.name; fn.name} yields {@code undefined}.
