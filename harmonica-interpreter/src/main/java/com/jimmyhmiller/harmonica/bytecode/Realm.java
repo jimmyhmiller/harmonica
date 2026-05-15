@@ -3586,21 +3586,66 @@ public final class Realm {
             "Instant", "Duration", "PlainDate", "PlainTime", "PlainDateTime",
             "PlainYearMonth", "PlainMonthDay", "ZonedDateTime"
         };
+        // Map class name → its constructor parameter names (the spec
+        // signature for each Temporal class). Stash constructor args on the
+        // instance keyed by name so getters can return them.
+        java.util.Map<String, String[]> temporalCtorParams = new java.util.HashMap<>();
+        temporalCtorParams.put("Instant",        new String[]{"epochNanoseconds"});
+        temporalCtorParams.put("Duration",       new String[]{"years","months","weeks","days","hours","minutes","seconds","milliseconds","microseconds","nanoseconds"});
+        temporalCtorParams.put("PlainDate",      new String[]{"year","month","day","calendar"});
+        temporalCtorParams.put("PlainTime",      new String[]{"hour","minute","second","millisecond","microsecond","nanosecond"});
+        temporalCtorParams.put("PlainDateTime",  new String[]{"year","month","day","hour","minute","second","millisecond","microsecond","nanosecond","calendar"});
+        temporalCtorParams.put("PlainYearMonth", new String[]{"year","month","calendar","referenceDay"});
+        temporalCtorParams.put("PlainMonthDay",  new String[]{"month","day","calendar","referenceYear"});
+        temporalCtorParams.put("ZonedDateTime",  new String[]{"epochNanoseconds","timeZone","calendar"});
+
         for (String cls : temporalClasses) {
             JSObject classProto = new JSObject(objectPrototype);
             String finalCls = cls;
-            JSFunction classCtor = nativeFn(cls, 0, (t, a, c) -> {
+            String[] params = temporalCtorParams.get(cls);
+            JSFunction classCtor = nativeFn(cls, params == null ? 0 : params.length, (t, a, c) -> {
                 if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
                     throw AbruptCompletion.typeError(finalCls + " constructor requires 'new'");
                 }
-                // Permissive stub: construction succeeds and returns an
-                // object on the correct prototype chain. Tests that only
-                // check `instanceof Temporal.X` or otherwise probe shape
-                // (not behavior) will pass; tests that exercise methods
-                // hit the per-method stubs.
+                // Permissive stub: construction succeeds and stashes args in
+                // ##temporal/<param>## slots. Per-param getters (installed
+                // below) read those slots so basic property-access tests pass.
                 JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(classProto);
+                if (params != null) {
+                    for (int i = 0; i < params.length; i++) {
+                        Object v = i < a.length ? a[i] : Undefined.VALUE;
+                        // Default numeric components to 0 for missing args
+                        // (date/time spec: missing components default sensibly).
+                        if (v == Undefined.VALUE && !params[i].equals("calendar")
+                            && !params[i].equals("timeZone")
+                            && !params[i].equals("referenceDay")
+                            && !params[i].equals("referenceYear")) {
+                            v = 0.0;
+                        }
+                        self.set("##temporal/" + params[i] + "##", v);
+                        self.setAttributes("##temporal/" + params[i] + "##", (byte) 0);
+                    }
+                }
+                self.set("##temporal/kind##", finalCls);
+                self.setAttributes("##temporal/kind##", (byte) 0);
                 return self;
             });
+            // Install per-param getters on the prototype.
+            if (params != null) {
+                for (String param : params) {
+                    final String paramFinal = param;
+                    String slotKey = "##temporal/" + param + "##";
+                    classProto.set(param, new Accessor(
+                        nativeFn("get " + param, 0, (t, a, c) -> {
+                            if (t instanceof JSObject jo) {
+                                Object v = jo.getOwn(slotKey);
+                                if (v != JSObject.ABSENT) return v;
+                            }
+                            return Undefined.VALUE;
+                        }), null));
+                    classProto.setAttributes(param, JSObject.ATTR_CONFIGURABLE);
+                }
+            }
             classCtor.setPrototypeObject(classProto);
             classProto.set("constructor", classCtor);
             // Static methods (not constructors).
