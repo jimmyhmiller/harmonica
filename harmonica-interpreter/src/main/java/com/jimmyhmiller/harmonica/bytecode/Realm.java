@@ -3976,26 +3976,85 @@ public final class Realm {
             Object src = arg(a, 0);
             JSArray out = new JSArray();
             JSFunction mapper = arg(a, 1) instanceof JSFunction f ? f : null;
+            Object thisArg = arg(a, 2);
+            if (src == null || src == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("Array.from called on null/undefined");
+            }
             if (src instanceof JSArray arr) {
                 for (int i = 0; i < arr.length(); i++) {
                     Object v = arr.get(i);
                     if (mapper != null) {
-                        v = Interpreter.invokeFunction(mapper, Undefined.VALUE,
+                        v = Interpreter.invokeFunction(mapper, thisArg,
                             new Object[]{v, (double) i}, c);
                     }
                     out.push(v);
                 }
-            } else if (src instanceof String s) {
-                for (int i = 0; i < s.length(); i++) {
-                    Object v = String.valueOf(s.charAt(i));
+                return out;
+            }
+            if (src instanceof String s) {
+                int i = 0;
+                int cp = 0;
+                for (int idx = 0; idx < s.length(); idx += Character.charCount(cp), i++) {
+                    cp = s.codePointAt(idx);
+                    Object v = new StringBuilder().appendCodePoint(cp).toString();
                     if (mapper != null) {
-                        v = Interpreter.invokeFunction(mapper, Undefined.VALUE,
+                        v = Interpreter.invokeFunction(mapper, thisArg,
                             new Object[]{v, (double) i}, c);
                     }
                     out.push(v);
+                }
+                return out;
+            }
+            // Try @@iterator protocol.
+            Object iterFn = AbstractOps.getProperty(src, wellKnownIterator.asPropertyKey());
+            if (iterFn instanceof JSFunction iter) {
+                Object iterator = Interpreter.invokeFunction(iter, src, new Object[0], c);
+                if (iterator instanceof JSObject itObj) {
+                    Object nextFn = AbstractOps.getProperty(itObj, "next");
+                    if (nextFn instanceof JSFunction nf) {
+                        int i = 0;
+                        while (true) {
+                            if ((i & 0x3FF) == 0 && Thread.interrupted()) {
+                                throw new Interpreter.InterpInterruptedError();
+                            }
+                            Object step = Interpreter.invokeFunction(nf, itObj, new Object[0], c);
+                            if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) break;
+                            Object v = AbstractOps.getProperty(step, "value");
+                            if (mapper != null) {
+                                v = Interpreter.invokeFunction(mapper, thisArg,
+                                    new Object[]{v, (double) i}, c);
+                            }
+                            out.push(v);
+                            i++;
+                        }
+                        return out;
+                    }
                 }
             }
+            // Array-like fallback: length + indexed reads.
+            int len = lengthOfArrayLike(src);
+            for (int i = 0; i < len; i++) {
+                Object v = getIndexed(src, i);
+                if (mapper != null) {
+                    v = Interpreter.invokeFunction(mapper, thisArg,
+                        new Object[]{v, (double) i}, c);
+                }
+                out.push(v);
+            }
             return out;
+        }));
+        // Array.fromAsync — stub that returns a settled Promise of Array.from(...)
+        arrayCtor.properties().put("fromAsync", nativeFn("fromAsync", 1, (t, a, c) -> {
+            JSObject p = createPromise();
+            try {
+                Object inner = Interpreter.invokeFunction(
+                    (JSFunction) arrayCtor.properties().get("from"),
+                    t, a, c);
+                resolvePromise(p, inner, c);
+            } catch (AbruptCompletion ac) {
+                rejectPromise(p, ac.value());
+            }
+            return p;
         }));
         // § 23.1.2.4 Array.prototype reachable from constructor.
         arrayCtor.setPrototypeObject(arrayPrototype);
