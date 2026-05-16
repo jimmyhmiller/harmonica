@@ -100,6 +100,13 @@ public final class Realm {
      *  overridden {@code RegExp.prototype.exec} with a non-callable value. */
     public static volatile JSFunction originalRegExpExec;
 
+    /** § 20.4.2.2 Global Symbol Registry — populated by {@code Symbol.for}.
+     *  Registered symbols are <em>not</em> allowed as WeakMap/WeakSet keys
+     *  (§ 6.1.7 CanBeHeldWeakly), so the weak-collection builtins use this
+     *  to filter them out. */
+    public static final java.util.Map<String, JSSymbol> globalSymbolRegistry =
+        new java.util.HashMap<>();
+
     /**
      * ECMA-262 § 10.2.4 %ThrowTypeError% — a function that always throws a
      * TypeError. Used as the [[Get]]/[[Set]] of the strict-mode arguments
@@ -2924,82 +2931,15 @@ public final class Realm {
     }
 
     private static void installWeakMapPrototype() {
-        // v1: backed by an IdentityHashMap so keys compare by reference
-        // (matches WeakMap key semantics) but without GC tracking. Strong
-        // refs leak — flagged in the deviation list.
-        weakMapPrototype.set("get", nativeFn("get", 1, (t, a, c) -> {
-            @SuppressWarnings("unchecked")
-            java.util.IdentityHashMap<Object, Object> m =
-                (java.util.IdentityHashMap<Object, Object>) ((JSObject) t).properties().get(SLOT_WEAK_MAP_DATA);
-            Object v = m.get(arg(a, 0));
-            return v == null ? Undefined.VALUE : v;
-        }));
-        weakMapPrototype.set("set", nativeFn("set", 2, (t, a, c) -> {
-            @SuppressWarnings("unchecked")
-            java.util.IdentityHashMap<Object, Object> m =
-                (java.util.IdentityHashMap<Object, Object>) ((JSObject) t).properties().get(SLOT_WEAK_MAP_DATA);
-            m.put(arg(a, 0), arg(a, 1));
-            return t;
-        }));
-        weakMapPrototype.set("has", nativeFn("has", 1, (t, a, c) -> {
-            @SuppressWarnings("unchecked")
-            java.util.IdentityHashMap<Object, Object> m =
-                (java.util.IdentityHashMap<Object, Object>) ((JSObject) t).properties().get(SLOT_WEAK_MAP_DATA);
-            return m.containsKey(arg(a, 0));
-        }));
-        weakMapPrototype.set("delete", nativeFn("delete", 1, (t, a, c) -> {
-            @SuppressWarnings("unchecked")
-            java.util.IdentityHashMap<Object, Object> m =
-                (java.util.IdentityHashMap<Object, Object>) ((JSObject) t).properties().get(SLOT_WEAK_MAP_DATA);
-            return m.remove(arg(a, 0)) != null;
-        }));
-        // proposal-upsert (ES2025): WeakMap.prototype.getOrInsert / getOrInsertComputed.
-        weakMapPrototype.set("getOrInsert", nativeFn("getOrInsert", 2, (t, a, c) -> {
-            @SuppressWarnings("unchecked")
-            java.util.IdentityHashMap<Object, Object> m =
-                (java.util.IdentityHashMap<Object, Object>) ((JSObject) t).properties().get(SLOT_WEAK_MAP_DATA);
-            Object k = arg(a, 0);
-            Object v = arg(a, 1);
-            if (m.containsKey(k)) return m.get(k);
-            m.put(k, v);
-            return v;
-        }));
-        weakMapPrototype.set("getOrInsertComputed", nativeFn("getOrInsertComputed", 2, (t, a, c) -> {
-            @SuppressWarnings("unchecked")
-            java.util.IdentityHashMap<Object, Object> m =
-                (java.util.IdentityHashMap<Object, Object>) ((JSObject) t).properties().get(SLOT_WEAK_MAP_DATA);
-            Object k = arg(a, 0);
-            Object cb = arg(a, 1);
-            if (!(cb instanceof JSFunction cbf)) {
-                throw AbruptCompletion.typeError("WeakMap.prototype.getOrInsertComputed: callback is not callable");
-            }
-            if (m.containsKey(k)) return m.get(k);
-            Object v = Interpreter.invokeFunction(cbf, Undefined.VALUE, new Object[]{k}, c);
-            m.put(k, v);
-            return v;
-        }));
+        // Spec-aligned brand check + key-type validation lives in
+        // builtins/WeakMapPrototypeBuiltin.
+        com.jimmyhmiller.harmonica.bytecode.builtins
+            .WeakMapPrototypeBuiltin.install();
     }
 
     private static void installWeakSetPrototype() {
-        weakSetPrototype.set("add", nativeFn("add", 1, (t, a, c) -> {
-            @SuppressWarnings("unchecked")
-            java.util.Set<Object> s =
-                (java.util.Set<Object>) ((JSObject) t).properties().get(SLOT_WEAK_SET_DATA);
-            s.add(arg(a, 0));
-            return t;
-        }));
-        weakSetPrototype.set("has", nativeFn("has", 1, (t, a, c) -> {
-            @SuppressWarnings("unchecked")
-            java.util.Set<Object> s =
-                (java.util.Set<Object>) ((JSObject) t).properties().get(SLOT_WEAK_SET_DATA);
-            return s.contains(arg(a, 0));
-        }));
-        weakSetPrototype.set("delete", nativeFn("delete", 1, (t, a, c) -> {
-            @SuppressWarnings("unchecked")
-            java.util.Set<Object> s =
-                (java.util.Set<Object>) ((JSObject) t).properties().get(SLOT_WEAK_SET_DATA);
-            return s.remove(arg(a, 0));
-        }));
+        com.jimmyhmiller.harmonica.bytecode.builtins
+            .WeakSetPrototypeBuiltin.install();
     }
 
     // ============================================================
@@ -3218,6 +3158,9 @@ public final class Realm {
             generatorFunctionPrototype.setAttributes("prototype",
                 (byte)(JSObject.ATTR_CONFIGURABLE));
             generatorFunctionPrototype.set(wellKnownToStringTag.asPropertyKey(), "GeneratorFunction");
+            // § 27.3.3.4 [@@toStringTag] descriptor is configurable-only.
+            generatorFunctionPrototype.setAttributes(wellKnownToStringTag.asPropertyKey(),
+                JSObject.ATTR_CONFIGURABLE);
         }
     }
 
@@ -3314,28 +3257,50 @@ public final class Realm {
         }));
     }
 
+    /** Unwrap a Symbol receiver per § 20.4.3.4.1 thisSymbolValue: the
+     *  primitive itself or the [[SymbolData]] slot of a wrapper. Throws
+     *  TypeError otherwise. */
+    static JSSymbol thisSymbolValue(Object t, String where) {
+        if (t instanceof JSSymbol s) return s;
+        if (t instanceof JSObject jo) {
+            Object data = jo.properties().get("##SymbolData##");
+            if (data instanceof JSSymbol s) return s;
+        }
+        throw AbruptCompletion.typeError("Symbol.prototype." + where + " called on non-Symbol");
+    }
+
     private static void installSymbolPrototype() {
-        // § 20.4.3.4 Symbol.prototype.toString.
+        // § 20.4.3.4 Symbol.prototype.toString — unwraps a wrapper.
         symbolPrototype.set("toString", nativeFn("toString", 0, (t, a, c) -> {
-            if (t instanceof JSSymbol s) return s.toString();
-            throw AbruptCompletion.typeError("Symbol.prototype.toString called on non-Symbol");
+            JSSymbol s = thisSymbolValue(t, "toString");
+            return s.toString();
         }));
         // § 20.4.3.5 Symbol.prototype.valueOf — returns the symbol itself.
-        symbolPrototype.set("valueOf", nativeFn("valueOf", 0, (t, a, c) -> {
-            if (t instanceof JSSymbol s) return s;
-            throw AbruptCompletion.typeError("Symbol.prototype.valueOf called on non-Symbol");
-        }));
-        // § 20.4.3.2 get Symbol.prototype.description (accessor).
-        // v1: a plain data property since we don't have accessor wiring on
-        // primitives. Tests reading sym.description hit AbstractOps.getProperty
-        // which walks the symbolPrototype — close enough.
-        symbolPrototype.set("description", Undefined.VALUE);
-        // § 20.4.3.6 Symbol.prototype [ %Symbol.toPrimitive% ].
+        symbolPrototype.set("valueOf", nativeFn("valueOf", 0, (t, a, c) ->
+            thisSymbolValue(t, "valueOf")));
+        // § 20.4.3.2 get Symbol.prototype.description (accessor): returns the
+        // [[Description]] of the (possibly wrapped) Symbol, or undefined.
+        JSFunction descGetter = nativeFn("get description", 0, (t, a, c) -> {
+            JSSymbol s = thisSymbolValue(t, "description");
+            return s.description() == null ? Undefined.VALUE : s.description();
+        });
+        symbolPrototype.set("description", new Accessor(descGetter, null));
+        symbolPrototype.setAttributes("description", JSObject.ATTR_CONFIGURABLE);
+        // § 20.4.3.6 Symbol.prototype [ %Symbol.toPrimitive% ] — also unwraps.
         symbolPrototype.set(wellKnownToPrimitive.asPropertyKey(),
-            nativeFn("[Symbol.toPrimitive]", 1, (t, a, c) -> {
-                if (t instanceof JSSymbol s) return s;
-                throw AbruptCompletion.typeError("Symbol.prototype[@@toPrimitive] called on non-Symbol");
-            }));
+            nativeFn("[Symbol.toPrimitive]", 1, (t, a, c) ->
+                thisSymbolValue(t, "[@@toPrimitive]")));
+        // Per § 20.4.3.6 the @@toPrimitive function descriptor is
+        // {writable: false, enumerable: false, configurable: true}.
+        symbolPrototype.setAttributes(wellKnownToPrimitive.asPropertyKey(),
+            JSObject.ATTR_CONFIGURABLE);
+        // § 20.4.3.7 Symbol.prototype [ %Symbol.toStringTag% ] = "Symbol",
+        // configurable only.
+        if (wellKnownToStringTag != null) {
+            String key = wellKnownToStringTag.asPropertyKey();
+            symbolPrototype.set(key, "Symbol");
+            symbolPrototype.setAttributes(key, JSObject.ATTR_CONFIGURABLE);
+        }
     }
 
     // ============================================================
@@ -3828,6 +3793,8 @@ public final class Realm {
         });
         symbolCtor.setPrototypeObject(symbolPrototype);
         symbolPrototype.set("constructor", symbolCtor);
+        symbolPrototype.setAttributes("constructor",
+            (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
         // Well-known symbols as properties on the constructor.
         symbolCtor.properties().put("iterator", wellKnownIterator);
         symbolCtor.properties().put("asyncIterator", wellKnownAsyncIterator);
@@ -3841,12 +3808,21 @@ public final class Realm {
         symbolCtor.properties().put("species", wellKnownSpecies);
         symbolCtor.properties().put("split", wellKnownSplit);
         symbolCtor.properties().put("matchAll", wellKnownMatchAll);
+        // ECMA-262 § 20.4.2.* — well-known symbol properties on the Symbol
+        // constructor are { writable: false, enumerable: false,
+        // configurable: false }. Freeze each one.
+        for (String k : new String[]{"iterator", "asyncIterator", "toPrimitive",
+                                     "hasInstance", "toStringTag", "isConcatSpreadable",
+                                     "match", "replace", "search", "species", "split",
+                                     "unscopables", "dispose", "asyncDispose", "matchAll"}) {
+            symbolCtor.setAttributes(k, (byte) 0);
+        }
         symbolCtor.properties().put("unscopables", wellKnownUnscopables);
         symbolCtor.properties().put("dispose", wellKnownDispose);
         symbolCtor.properties().put("asyncDispose", wellKnownAsyncDispose);
         // § 20.4.2.2 Symbol.for / § 20.4.2.6 Symbol.keyFor — Global Symbol Registry.
         // v1: process-global, single Realm.
-        java.util.Map<String, JSSymbol> registry = new java.util.HashMap<>();
+        java.util.Map<String, JSSymbol> registry = globalSymbolRegistry;
         symbolCtor.properties().put("for", nativeFn("for", 1, (t, a, c) -> {
             String key = AbstractOps.toString(arg(a, 0));
             return registry.computeIfAbsent(key, JSSymbol::new);
@@ -4788,68 +4764,13 @@ public final class Realm {
         markMethodsNonEnumerable(iteratorPrototype);
         globals.putIfAbsent("Iterator", iteratorCtor);
 
-        // ECMA-262 § 27.3 DisposableStack / AsyncDisposableStack — added
-        // by the Explicit Resource Management proposal (Stage 4, ES2026).
-        // Stub the constructor so capability tests pass.
-        for (String n : new String[]{"DisposableStack", "AsyncDisposableStack"}) {
-            String finalN = n;
-            JSObject disposableProto = new JSObject(objectPrototype);
-            JSFunction disposableCtor = nativeFn(n, 0, (t, a, c) -> {
-                if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
-                    throw AbruptCompletion.typeError(finalN + " constructor requires 'new'");
-                }
-                JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(disposableProto);
-                self.set("##DisposableStackResources##", new java.util.ArrayList<>());
-                self.setAttributes("##DisposableStackResources##", (byte) 0);
-                return self;
-            });
-            disposableCtor.setPrototypeObject(disposableProto);
-            disposableProto.set("constructor", disposableCtor);
-            // Stub methods that still validate the receiver per spec:
-            // ECMA-262 § 27.3.3.* uses RequireInternalSlot([[DisposableState]])
-            // before doing any work. Our marker is ##DisposableStackResources##.
-            //  - use(value) / adopt(value, onDispose): if value is null/undefined,
-            //    return value; else require onDispose to be callable (adopt).
-            //  - defer(onDispose): onDispose must be callable.
-            for (String m : new String[]{"use", "adopt", "defer", "move", "dispose", "asyncDispose"}) {
-                String finalM = m;
-                disposableProto.set(m, nativeFn(m, finalM.equals("adopt") ? 2 : 1, (t, a, c) -> {
-                    if (Interpreter.isNewCall()) throw AbruptCompletion.typeError(finalM + " is not a constructor");
-                    if (!(t instanceof JSObject jo) || jo.getOwn("##DisposableStackResources##") == JSObject.ABSENT) {
-                        throw AbruptCompletion.typeError(finalN + ".prototype." + finalM
-                            + " called on non-" + finalN);
-                    }
-                    if ("adopt".equals(finalM)) {
-                        Object onDispose = arg(a, 1);
-                        if (!(onDispose instanceof JSFunction)) {
-                            throw AbruptCompletion.typeError("adopt: onDispose must be callable");
-                        }
-                        return arg(a, 0);
-                    }
-                    if ("defer".equals(finalM)) {
-                        Object onDispose = arg(a, 0);
-                        if (!(onDispose instanceof JSFunction)) {
-                            throw AbruptCompletion.typeError("defer: onDispose must be callable");
-                        }
-                        return Undefined.VALUE;
-                    }
-                    if ("use".equals(finalM)) {
-                        return arg(a, 0);
-                    }
-                    if ("move".equals(finalM)) {
-                        JSObject result = new JSObject(disposableProto);
-                        result.set("##DisposableStackResources##", new java.util.ArrayList<>());
-                        result.setAttributes("##DisposableStackResources##", (byte) 0);
-                        return result;
-                    }
-                    return Undefined.VALUE;
-                }));
-            }
-            disposableProto.set("disposed", new Accessor(
-                nativeFn("get disposed", 0, (t, a, c) -> false), null));
-            markMethodsNonEnumerable(disposableProto);
-            globals.putIfAbsent(n, disposableCtor);
-        }
+        // ECMA-262 § 12.4 DisposableStack / AsyncDisposableStack — Explicit
+        // Resource Management proposal (ES2026). Full ports live in
+        // builtins/{Async,}DisposableStackBuiltin.
+        com.jimmyhmiller.harmonica.bytecode.builtins
+            .DisposableStackBuiltin.install(globals);
+        com.jimmyhmiller.harmonica.bytecode.builtins
+            .AsyncDisposableStackBuiltin.install(globals);
 
         // ECMA-262 § 36.1 FinalizationRegistry. Real finalization requires
         // GC integration we don't have — but the constructor must validate
@@ -4868,32 +4789,70 @@ public final class Realm {
             JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(finRegProto);
             self.set("##FinRegCleanup##", cb);
             self.setAttributes("##FinRegCleanup##", (byte) 0);
+            // Per-instance entry table: target -> [{heldValue, unregisterToken}].
+            // No real GC, so cleanup() never fires; register/unregister just
+            // track membership for unregister to work.
+            self.set("##FinRegEntries##", new java.util.IdentityHashMap<Object, java.util.List<Object[]>>());
+            self.setAttributes("##FinRegEntries##", (byte) 0);
             return self;
         });
         finRegCtor.setPrototypeObject(finRegProto);
         finRegProto.set("constructor", finRegCtor);
-        finRegProto.set("register", nativeFn("register", 2, (t, a, c) -> {
+        finRegProto.setAttributes("constructor",
+            (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+        JSFunction finRegRegister = nativeFn("register", 2, (t, a, c) -> {
             if (!(t instanceof JSObject jo) || jo.getOwn("##FinRegCleanup##") == JSObject.ABSENT) {
                 throw AbruptCompletion.typeError("FinalizationRegistry.prototype.register called on non-FinalizationRegistry");
             }
             Object target = arg(a, 0);
-            if (target == null || target == Undefined.VALUE
-                || (!(target instanceof JSObject) && !(target instanceof JSSymbol))) {
-                throw AbruptCompletion.typeError("FinalizationRegistry.register: target must be an object or symbol");
+            if (!canBeHeldWeakly(target)) {
+                throw AbruptCompletion.typeError(
+                    "FinalizationRegistry.register: target must be an object or non-registered symbol");
             }
+            Object heldValue = arg(a, 1);
+            if (target == heldValue) {
+                throw AbruptCompletion.typeError(
+                    "FinalizationRegistry.register: heldValue must not be the target");
+            }
+            Object token = a.length >= 3 ? a[2] : Undefined.VALUE;
+            if (token != Undefined.VALUE && !canBeHeldWeakly(token)) {
+                throw AbruptCompletion.typeError(
+                    "FinalizationRegistry.register: unregisterToken must be an object, non-registered symbol, or undefined");
+            }
+            @SuppressWarnings("unchecked")
+            var entries = (java.util.IdentityHashMap<Object, java.util.List<Object[]>>)
+                jo.properties().get("##FinRegEntries##");
+            entries.computeIfAbsent(target, k -> new java.util.ArrayList<>())
+                   .add(new Object[]{heldValue, token});
             return Undefined.VALUE;
-        }));
-        finRegProto.set("unregister", nativeFn("unregister", 1, (t, a, c) -> {
+        });
+        finRegRegister.setNonConstructor(true);
+        finRegProto.set("register", finRegRegister);
+        JSFunction finRegUnregister = nativeFn("unregister", 1, (t, a, c) -> {
             if (!(t instanceof JSObject jo) || jo.getOwn("##FinRegCleanup##") == JSObject.ABSENT) {
                 throw AbruptCompletion.typeError("FinalizationRegistry.prototype.unregister called on non-FinalizationRegistry");
             }
             Object token = arg(a, 0);
-            if (token == null || token == Undefined.VALUE
-                || (!(token instanceof JSObject) && !(token instanceof JSSymbol))) {
-                throw AbruptCompletion.typeError("FinalizationRegistry.unregister: token must be an object or symbol");
+            if (!canBeHeldWeakly(token)) {
+                throw AbruptCompletion.typeError(
+                    "FinalizationRegistry.unregister: token must be an object or non-registered symbol");
             }
-            return false;
-        }));
+            @SuppressWarnings("unchecked")
+            var entries = (java.util.IdentityHashMap<Object, java.util.List<Object[]>>)
+                jo.properties().get("##FinRegEntries##");
+            boolean removed = false;
+            for (var it = entries.entrySet().iterator(); it.hasNext(); ) {
+                var e = it.next();
+                java.util.List<Object[]> recs = e.getValue();
+                int before = recs.size();
+                recs.removeIf(rec -> rec[1] == token);
+                if (recs.size() < before) removed = true;
+                if (recs.isEmpty()) it.remove();
+            }
+            return removed;
+        });
+        finRegUnregister.setNonConstructor(true);
+        finRegProto.set("unregister", finRegUnregister);
         finRegProto.set(wellKnownToStringTag.asPropertyKey(), "FinalizationRegistry");
         finRegProto.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
         markMethodsNonEnumerable(finRegProto);
@@ -4907,9 +4866,9 @@ public final class Realm {
                 throw AbruptCompletion.typeError("WeakRef constructor requires 'new'");
             }
             Object target = arg(a, 0);
-            if (target == null || target == Undefined.VALUE
-                || (!(target instanceof JSObject) && !(target instanceof JSSymbol))) {
-                throw AbruptCompletion.typeError("WeakRef: target must be an object or symbol");
+            if (!canBeHeldWeakly(target)) {
+                throw AbruptCompletion.typeError(
+                    "WeakRef: target must be an object or non-registered symbol");
             }
             JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(weakRefProto);
             self.set("##WeakRefTarget##", target);
@@ -4918,7 +4877,9 @@ public final class Realm {
         });
         weakRefCtor.setPrototypeObject(weakRefProto);
         weakRefProto.set("constructor", weakRefCtor);
-        weakRefProto.set("deref", nativeFn("deref", 0, (t, a, c) -> {
+        weakRefProto.setAttributes("constructor",
+            (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+        JSFunction derefFn = nativeFn("deref", 0, (t, a, c) -> {
             if (!(t instanceof JSObject jo)) {
                 throw AbruptCompletion.typeError("WeakRef.prototype.deref called on non-WeakRef");
             }
@@ -4927,7 +4888,9 @@ public final class Realm {
                 throw AbruptCompletion.typeError("WeakRef.prototype.deref called on non-WeakRef");
             }
             return target;
-        }));
+        });
+        derefFn.setNonConstructor(true);
+        weakRefProto.set("deref", derefFn);
         weakRefProto.set(wellKnownToStringTag.asPropertyKey(), "WeakRef");
         weakRefProto.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
         markMethodsNonEnumerable(weakRefProto);
@@ -4951,15 +4914,55 @@ public final class Realm {
         });
         shadowRealmCtor.setPrototypeObject(shadowRealmProto);
         shadowRealmProto.set("constructor", shadowRealmCtor);
-        shadowRealmProto.set("evaluate", nativeFn("evaluate", 1, (t, a, c) -> {
+        // § 36.3.3.2 ShadowRealm.prototype.evaluate(sourceText).
+        // True spec semantics need an isolated realm with its own intrinsics
+        // — we don't have one, so we evaluate against the host realm and
+        // enforce the spec's value-passing rules: primitives flow through
+        // unchanged; non-primitive results throw TypeError unless callable
+        // (in which case we wrap them with a primitive-coercing guard).
+        // Errors from the inner evaluation are rewrapped as the spec
+        // requires (SyntaxError preserved; everything else → TypeError).
+        JSObject finalShadowRealmProto = shadowRealmProto;
+        JSFunction evaluateFn = nativeFn("evaluate", 1, (t, a, c) -> {
             if (!(t instanceof JSObject jo) || jo.getOwn("##ShadowRealm##") == JSObject.ABSENT) {
                 throw AbruptCompletion.typeError("ShadowRealm.prototype.evaluate called on non-ShadowRealm");
             }
-            if (!(arg(a, 0) instanceof CharSequence)) {
+            if (!(arg(a, 0) instanceof CharSequence src)) {
                 throw AbruptCompletion.typeError("ShadowRealm.prototype.evaluate: source must be a string");
             }
-            throw AbruptCompletion.typeError("ShadowRealm.prototype.evaluate is not fully implemented");
-        }));
+            Object result;
+            try {
+                com.jimmyhmiller.harmonica.ast.Program ast =
+                    com.jimmyhmiller.harmonica.Parser.parse(src.toString());
+                Executable exe = Generator.generate(ast);
+                result = Interpreter.interpret(exe, new Object[0], 64);
+            } catch (AbruptCompletion ac) {
+                // Per § 36.3.3.2 step 6 — SyntaxError is forwarded; every
+                // other completion gets converted to a TypeError in the
+                // caller's realm.
+                Object errValue = ac.value();
+                if (errValue instanceof JSObject errObj) {
+                    Object nm = errObj.get("name");
+                    if ("SyntaxError".equals(nm)) throw ac;
+                }
+                Object msg = errValue instanceof JSObject eo ? eo.get("message") : errValue;
+                throw AbruptCompletion.typeError(
+                    "ShadowRealm.evaluate threw: "
+                    + (msg instanceof String s ? s : "non-primitive value"));
+            } catch (RuntimeException re) {
+                String msg = re.getMessage();
+                if (re.getClass().getSimpleName().contains("Syntax")
+                        || (msg != null && msg.toLowerCase().contains("syntax"))) {
+                    throw AbruptCompletion.syntaxError(msg == null ? "parse error" : msg);
+                }
+                throw AbruptCompletion.typeError("ShadowRealm.evaluate failed: " + msg);
+            }
+            // § 36.3.3.2 step 9 — GetWrappedValue(callerRealm, result).
+            return getWrappedValue(result, finalShadowRealmProto);
+        });
+        shadowRealmProto.set("evaluate", evaluateFn);
+        shadowRealmProto.setAttributes("evaluate",
+            (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
         shadowRealmProto.set("importValue", nativeFn("importValue", 2, (t, a, c) -> {
             if (!(t instanceof JSObject jo) || jo.getOwn("##ShadowRealm##") == JSObject.ABSENT) {
                 throw AbruptCompletion.typeError("ShadowRealm.prototype.importValue called on non-ShadowRealm");
@@ -6617,6 +6620,10 @@ public final class Realm {
         installError(globals, "URIError", "URIError");
         installError(globals, "EvalError", "EvalError");
         installError(globals, "AggregateError", "AggregateError");
+        // Override the 1-arg installError version with the spec-aligned
+        // 2-arg AggregateError(errors, message) — uses IterableToList +
+        // InstallErrorCause.
+        com.jimmyhmiller.harmonica.bytecode.builtins.AggregateErrorBuiltin.install(globals);
         com.jimmyhmiller.harmonica.bytecode.builtins.SuppressedErrorBuiltin.install(globals);
 
         // ECMA-262 § 20.5.2.1 Error.isError(arg) — Stage 4 (ES2025) static
@@ -7140,134 +7147,10 @@ public final class Realm {
         TypedArrays.installSpeciesPublic(regExpCtor);
         globals.putIfAbsent("RegExp", regExpCtor);
 
-        // ECMA-262 § 28 Reflect — namespace of meta-operations. v1 covers
-        // the static-method shape; full semantics (especially Receiver-aware
-        // get/set with Proxy) are deferred.
-        JSObject reflect = new JSObject(objectPrototype);
-        reflect.set("has", nativeFn("has", 2, (t, a, c) -> {
-            Object target = arg(a, 0);
-            Object key = arg(a, 1);
-            String k = key instanceof String s ? s
-                : key instanceof JSSymbol sy ? sy.asPropertyKey()
-                : AbstractOps.toString(key);
-            // ECMA-262 § 9.1.7 [[HasProperty]] walks the proto chain
-            // but private names are stored in [[PrivateFieldDescriptors]]
-            // and don't participate in HasProperty / [[Get]] / the `in`
-            // operator. Treat private names as absent here so
-            // Reflect.has, like Object.prototype.hasOwnProperty, returns
-            // false. Code that legitimately uses `#x in obj` is lowered
-            // through a dedicated private-name op, not through Reflect.
-            if (isPrivateName(k)) return false;
-            if (target instanceof JSObject jo) return jo.has(k);
-            return false;
-        }));
-        reflect.set("get", nativeFn("get", 3, (t, a, c) -> AbstractOps.getProperty(arg(a, 0), arg(a, 1))));
-        reflect.set("set", nativeFn("set", 4, (t, a, c) -> {
-            AbstractOps.setProperty(arg(a, 0), arg(a, 1), arg(a, 2));
-            return true;
-        }));
-        reflect.set("deleteProperty", nativeFn("deleteProperty", 2, (t, a, c) -> {
-            Object target = arg(a, 0);
-            Object key = arg(a, 1);
-            String k = key instanceof String s ? s
-                : key instanceof JSSymbol sy ? sy.asPropertyKey()
-                : AbstractOps.toString(key);
-            if (target instanceof JSObject jo) {
-                // Spec § 28.1.16 Reflect.deleteProperty calls [[Delete]]
-                // which returns false for non-configurable own props.
-                Object r = jo.delete(k);
-                return r == Boolean.TRUE;
-            }
-            return false;
-        }));
-        reflect.set("ownKeys", nativeFn("ownKeys", 1, (t, a, c) -> {
-            Object target = arg(a, 0);
-            JSArray result = new JSArray();
-            if (target instanceof JSObject jo) {
-                for (String k : jo.properties().keySet()) {
-                    if (k.startsWith("#")) continue;
-                    result.push(k);
-                }
-            }
-            return result;
-        }));
-        reflect.set("getPrototypeOf", nativeFn("getPrototypeOf", 1, (t, a, c) -> {
-            Object target = arg(a, 0);
-            if (target instanceof JSObject jo) return jo.proto() != null ? jo.proto() : null;
-            if (target instanceof JSFunction fn) {
-                JSFunction sc = fn.superConstructor();
-                return sc != null ? sc : functionPrototype;
-            }
-            throw AbruptCompletion.typeError("Reflect.getPrototypeOf requires an object");
-        }));
-        reflect.set("setPrototypeOf", nativeFn("setPrototypeOf", 2, (t, a, c) -> {
-            Object target = arg(a, 0);
-            Object newProto = arg(a, 1);
-            if (target instanceof JSObject jo) {
-                jo.setProto(newProto instanceof JSObject p ? p : null);
-                return true;
-            }
-            return false;
-        }));
-        reflect.set("isExtensible", nativeFn("isExtensible", 1, (t, a, c) -> {
-            Object v = arg(a, 0);
-            if (v instanceof JSObject jo) return jo.isExtensible();
-            return true;
-        }));
-        reflect.set("preventExtensions", nativeFn("preventExtensions", 1, (t, a, c) -> {
-            Object v = arg(a, 0);
-            if (v instanceof JSObject jo) jo.preventExtensions();
-            return true;
-        }));
-        reflect.set("apply", nativeFn("apply", 3, (t, a, c) -> {
-            if (!(arg(a, 0) instanceof JSFunction fn)) {
-                throw AbruptCompletion.typeError("Reflect.apply called on non-function");
-            }
-            Object thisArg = arg(a, 1);
-            Object argList = arg(a, 2);
-            Object[] callArgs = (argList instanceof JSArray arr) ? arr.elements().toArray() : new Object[0];
-            return Interpreter.invokeFunction(fn, thisArg, callArgs, c);
-        }));
-        reflect.set("construct", nativeFn("construct", 2, (t, a, c) -> {
-            if (!(arg(a, 0) instanceof JSFunction fn) || !fn.isConstructor()) {
-                throw AbruptCompletion.typeError("Reflect.construct called on non-constructor");
-            }
-            Object argList = arg(a, 1);
-            Object[] callArgs = (argList instanceof JSArray arr) ? arr.elements().toArray() : new Object[0];
-            JSObject receiver = new JSObject(fn.prototypeObject());
-            Object result = Interpreter.invokeFunctionAsConstructor(fn, receiver, callArgs, c);
-            return (result instanceof JSObject || result instanceof JSArray || result instanceof JSFunction)
-                ? result : receiver;
-        }));
-        // ECMA-262 § 28.1.3 Reflect.defineProperty / § 28.1.6 .getOwnPropertyDescriptor —
-        // identical to Object.* except defineProperty returns a Boolean
-        // instead of throwing on rejection. v1: we throw from
-        // Object.defineProperty, so wrap in try/catch to honor the spec
-        // return-boolean signature.
-        reflect.set("defineProperty", nativeFn("defineProperty", 3, (t, a, c) -> {
-            Object target = arg(a, 0);
-            if (!(target instanceof JSObject) && !(target instanceof JSFunction) && !(target instanceof JSArray)) {
-                throw AbruptCompletion.typeError("Reflect.defineProperty called on non-object");
-            }
-            Object defineFn = objectCtor.properties().get("defineProperty");
-            if (!(defineFn instanceof JSFunction df)) return false;
-            try {
-                Interpreter.invokeFunction(df, objectCtor, a, c);
-                return true;
-            } catch (AbruptCompletion ac) {
-                return false;
-            }
-        }));
-        reflect.set("getOwnPropertyDescriptor", nativeFn("getOwnPropertyDescriptor", 2, (t, a, c) -> {
-            Object target = arg(a, 0);
-            if (!(target instanceof JSObject) && !(target instanceof JSFunction) && !(target instanceof JSArray)) {
-                throw AbruptCompletion.typeError("Reflect.getOwnPropertyDescriptor called on non-object");
-            }
-            Object descFn = objectCtor.properties().get("getOwnPropertyDescriptor");
-            if (!(descFn instanceof JSFunction df)) return Undefined.VALUE;
-            return Interpreter.invokeFunction(df, objectCtor, a, c);
-        }));
-        globals.putIfAbsent("Reflect", reflect);
+        // ECMA-262 § 28.1 Reflect — namespace of meta-operations. Ported to
+        // builtins/ReflectBuiltin to keep all the {@code target.is_object()}
+        // type checks and spec-aligned signatures in one place.
+        com.jimmyhmiller.harmonica.bytecode.builtins.ReflectBuiltin.install(globals);
 
         // ECMA-262 § 28.2 Proxy — store target+handler in internal slots and
         // dispatch property operations through handler traps. AbstractOps.{get,set}Property
@@ -7432,6 +7315,49 @@ public final class Realm {
 
     /** ECMA-262 § 20.5.7.4 AggregateError instances also have an own
      *  {@code errors} property — an array snapshot of the rejection reasons. */
+    /** § 36.3.3.2 GetWrappedValue — pass-through for primitives, throws
+     *  TypeError for non-callable objects, wraps callables. */
+    static Object getWrappedValue(Object v, JSObject shadowRealmProto) {
+        if (v == null || v == Undefined.VALUE) return v;
+        if (v instanceof Number || v instanceof Boolean || v instanceof CharSequence
+                || v instanceof JSSymbol || v instanceof JSBigInt) return v;
+        if (v instanceof JSFunction inner) {
+            // Wrap so calls go through with primitive-only arg/return checks.
+            return nativeFn(inner.name() != null ? inner.name() : "wrapped", inner.paramCount(),
+                (t2, args2, c2) -> {
+                    Object[] mapped = new Object[args2.length];
+                    for (int i = 0; i < args2.length; i++) {
+                        Object av = args2[i];
+                        if (av instanceof JSFunction
+                                || av instanceof JSObject
+                                || av instanceof JSArray) {
+                            throw AbruptCompletion.typeError(
+                                "ShadowRealm wrapped function: arguments must be primitives");
+                        }
+                        mapped[i] = av;
+                    }
+                    Object r = Interpreter.invokeFunction(inner, Undefined.VALUE, mapped, c2);
+                    return getWrappedValue(r, shadowRealmProto);
+                });
+        }
+        throw AbruptCompletion.typeError(
+            "ShadowRealm evaluation returned a non-callable object");
+    }
+
+    /** § 6.1.7 CanBeHeldWeakly — any Object or any non-registered Symbol.
+     *  Used by WeakRef / FinalizationRegistry / WeakMap / WeakSet to gate
+     *  what can act as a weak target/key. */
+    public static boolean canBeHeldWeakly(Object v) {
+        if (v instanceof JSObject || v instanceof JSArray || v instanceof JSFunction) return true;
+        if (v instanceof JSSymbol s) {
+            for (JSSymbol registered : globalSymbolRegistry.values()) {
+                if (registered == s) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
     public static JSObject createAggregateError(JSArray errors, String message) {
         JSObject err = makeError("AggregateError", message);
         err.set("errors", errors);
