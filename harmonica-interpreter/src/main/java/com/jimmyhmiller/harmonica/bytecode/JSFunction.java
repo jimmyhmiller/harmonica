@@ -76,6 +76,30 @@ public final class JSFunction {
     public void setArrow(boolean a) { this.isArrow = a; }
 
     /**
+     * True for built-in non-constructor functions per ECMA-262 § 17 —
+     * most prototype methods (Math.abs, Array.prototype.push, …), eval,
+     * accessor get/set. {@code new Math.abs()} / {@code Reflect.construct(eval, ...)}
+     * must throw TypeError; {@code Promise.all.call(eval, ...)} sees
+     * IsConstructor(this) = false in NewPromiseCapability.
+     */
+    private boolean nonConstructor;
+    public boolean isNonConstructor() { return nonConstructor; }
+    public void setNonConstructor(boolean v) { this.nonConstructor = v; }
+
+    /** ECMA-262 § 10.2 / § 10.1.4 [[Extensible]] flag. Function objects
+     *  start extensible; Object.preventExtensions / Object.freeze /
+     *  Object.seal flip this to false. setProperty must short-circuit
+     *  (or throw in strict mode) when extensible is false. */
+    private boolean extensible = true;
+    public boolean isExtensible() { return extensible; }
+    public void preventExtensions() { this.extensible = false; }
+    /** True iff this function can be invoked with {@code new}. */
+    public boolean isConstructor() {
+        if (isArrow || isAsync || isGenerator || nonConstructor) return false;
+        return true;
+    }
+
+    /**
      * Prototype object used when this function is invoked as a constructor.
      * Set by class lowering for class constructors. Mutable because the
      * generator sets it after the function value is materialized.
@@ -197,6 +221,7 @@ public final class JSFunction {
         f.isGenerator = this.isGenerator;
         f.isAsync = this.isAsync;
         f.isArrow = this.isArrow;
+        f.nonConstructor = this.nonConstructor;
         f.homeGlobals = this.homeGlobals;
         return f;
     }

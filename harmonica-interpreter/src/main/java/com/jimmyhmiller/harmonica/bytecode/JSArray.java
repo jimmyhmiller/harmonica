@@ -134,6 +134,14 @@ public final class JSArray {
         return Undefined.VALUE;
     }
 
+    /** True iff the element at {@code index} is a hole — used by
+     *  Array.prototype.X HasProperty checks so sparse positions don't
+     *  trigger the callback. */
+    public boolean isHole(int index) {
+        if (index < 0 || index >= elements.size()) return true;
+        return elements.get(index) == Op.HOLE;
+    }
+
     public void set(int index, Object value) {
         if (index < 0) return;
         if (index < elements.size()) {

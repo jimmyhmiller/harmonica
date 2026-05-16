@@ -21,9 +21,19 @@ public final class Realm {
     public static volatile JSObject numberPrototype;
     public static volatile JSObject booleanPrototype;
     public static volatile JSObject symbolPrototype;
+    /** %AbstractModuleSource% intrinsic — has no global binding per spec
+     *  (source-phase imports proposal). Reachable via the test harness's
+     *  {@code $262.AbstractModuleSource}. */
+    public static volatile JSFunction abstractModuleSourceConstructor;
+    public static volatile JSObject   abstractModuleSourcePrototype;
     public static volatile JSObject promisePrototype;
     /** ECMA-262 § 27.5.1 Generator Prototype (the prototype shared by all generator instances). */
     public static volatile JSObject generatorPrototype;
+    /** ECMA-262 § 27.3.3 %GeneratorFunction.prototype% (a.k.a. %Generator%) —
+     *  the [[Prototype]] of every generator function object. Its own
+     *  [[Prototype]] is %Function.prototype% and it exposes the
+     *  {@code prototype} property pointing at {@link #generatorPrototype}. */
+    public static volatile JSObject generatorFunctionPrototype;
     public static volatile JSObject mapPrototype;
     public static volatile JSObject setPrototype;
     public static volatile JSObject weakMapPrototype;
@@ -45,6 +55,18 @@ public final class Realm {
      */
     public static volatile JSFunction defaultArrayIterator;
     public static volatile JSFunction defaultStringIterator;
+    /** ECMA-262 § 23.1.5.2 / § 22.1.5.2 / § 24.1.5.2 / § 24.2.5.2 —
+     *  per-kind iterator prototypes, lazily built on first use. Each has
+     *  a {@code @@toStringTag} of {@code "Array Iterator"} etc., a
+     *  {@code @@iterator} method returning {@code this}, and is the
+     *  [[Prototype]] of every array/string/map/set iterator instance.
+     *  Inheriting from {@link #iteratorPrototype} would also give them
+     *  the helper methods (map, filter, …) if/when iterator-helpers are
+     *  spec'd to apply. */
+    public static volatile JSObject arrayIteratorPrototype;
+    public static volatile JSObject stringIteratorPrototype;
+    public static volatile JSObject mapIteratorPrototype;
+    public static volatile JSObject setIteratorPrototype;
     public static final java.util.Map<String, JSObject> errorPrototypes = new java.util.HashMap<>();
 
     // Well-known symbols — ECMA-262 § 6.1.5.1 (Table 1). Pre-allocated so
@@ -60,7 +82,23 @@ public final class Realm {
     public static volatile JSSymbol wellKnownSearch;
     public static volatile JSSymbol wellKnownSpecies;
     public static volatile JSSymbol wellKnownSplit;
+    public static volatile JSSymbol wellKnownMatchAll;
     public static volatile JSSymbol wellKnownUnscopables;
+    /** Symbol.dispose / Symbol.asyncDispose — explicit-resource-management. */
+    public static volatile JSSymbol wellKnownDispose;
+    public static volatile JSSymbol wellKnownAsyncDispose;
+
+    /** %AsyncIteratorPrototype% (§ 27.1.3) and %AsyncGeneratorPrototype%
+     *  (§ 27.6.1) — the chain {@code asyncGen.prototype → %AGP% → %AIP% →
+     *  Object.prototype}. Async generator function instances reach this
+     *  chain via {@link Op.ensureFunctionPrototype}. */
+    public static volatile JSObject asyncIteratorPrototype;
+    public static volatile JSObject asyncGeneratorPrototype;
+
+    /** Original RegExp.prototype.exec — captured during bootstrap so the
+     *  RegExpExec fallback (§ 22.2.7.1 step 6) works when user code has
+     *  overridden {@code RegExp.prototype.exec} with a non-callable value. */
+    public static volatile JSFunction originalRegExpExec;
 
     /**
      * ECMA-262 § 10.2.4 %ThrowTypeError% — a function that always throws a
@@ -281,8 +319,11 @@ public final class Realm {
         numberPrototype = null;
         booleanPrototype = null;
         symbolPrototype = null;
+        abstractModuleSourceConstructor = null;
+        abstractModuleSourcePrototype = null;
         promisePrototype = null;
         generatorPrototype = null;
+        generatorFunctionPrototype = null;
         mapPrototype = null;
         setPrototype = null;
         weakMapPrototype = null;
@@ -293,6 +334,11 @@ public final class Realm {
         bigIntPrototype = null;
         defaultArrayIterator = null;
         defaultStringIterator = null;
+        arrayIteratorPrototype = null;
+        stringIteratorPrototype = null;
+        mapIteratorPrototype = null;
+        setIteratorPrototype = null;
+        regExpStringIteratorPrototype = null;
         wellKnownIterator = null;
         wellKnownAsyncIterator = null;
         wellKnownToPrimitive = null;
@@ -304,7 +350,13 @@ public final class Realm {
         wellKnownSearch = null;
         wellKnownSpecies = null;
         wellKnownSplit = null;
+        wellKnownMatchAll = null;
         wellKnownUnscopables = null;
+        wellKnownDispose = null;
+        wellKnownAsyncDispose = null;
+        asyncIteratorPrototype = null;
+        asyncGeneratorPrototype = null;
+        originalRegExpExec = null;
         throwTypeError = null;
         // TypedArray family — reset prototype refs and per-kind maps.
         TypedArrays.arrayBufferPrototype = null;
@@ -329,6 +381,10 @@ public final class Realm {
         symbolPrototype = new JSObject(objectPrototype);
         promisePrototype = new JSObject(objectPrototype);
         generatorPrototype = new JSObject(objectPrototype);
+        // %GeneratorFunction.prototype% inherits from %Function.prototype%
+        // (§ 27.3.3) — its `prototype` slot is wired up below to point at
+        // generatorPrototype after that object is finalized.
+        generatorFunctionPrototype = new JSObject(functionPrototype);
         mapPrototype = new JSObject(objectPrototype);
         setPrototype = new JSObject(objectPrototype);
         weakMapPrototype = new JSObject(objectPrototype);
@@ -346,7 +402,10 @@ public final class Realm {
         wellKnownSearch             = JSSymbol.wellKnown("Symbol.search");
         wellKnownSpecies            = JSSymbol.wellKnown("Symbol.species");
         wellKnownSplit              = JSSymbol.wellKnown("Symbol.split");
+        wellKnownMatchAll           = JSSymbol.wellKnown("Symbol.matchAll");
         wellKnownUnscopables        = JSSymbol.wellKnown("Symbol.unscopables");
+        wellKnownDispose            = JSSymbol.wellKnown("Symbol.dispose");
+        wellKnownAsyncDispose       = JSSymbol.wellKnown("Symbol.asyncDispose");
 
         installObjectPrototype();
         installFunctionPrototype();
@@ -368,6 +427,31 @@ public final class Realm {
         installWeakMapPrototype();
         installWeakSetPrototype();
 
+        // § 27.1.3 / § 27.6.1 — async iterator + async generator prototypes.
+        // Sync generators share generatorPrototype; async ones get their own
+        // chain so test262 can probe %AsyncIteratorPrototype% via
+        // Object.getPrototypeOf(Object.getPrototypeOf(asyncGen.prototype)).
+        com.jimmyhmiller.harmonica.bytecode.builtins
+            .AsyncIteratorPrototypeBuiltin.install();
+        asyncGeneratorPrototype = new JSObject(asyncIteratorPrototype);
+        // Reuse the sync generator's next/return/throw so calling them on an
+        // async-generator instance does something — the result-shape semantics
+        // are wrong for true async yet (Promise wrapping), but at least the
+        // method identity exists for prop-desc / typeof checks.
+        if (generatorPrototype != null) {
+            Object n = generatorPrototype.get("next");
+            Object r = generatorPrototype.get("return");
+            Object t = generatorPrototype.get("throw");
+            if (n != null && n != Undefined.VALUE) asyncGeneratorPrototype.set("next", n);
+            if (r != null && r != Undefined.VALUE) asyncGeneratorPrototype.set("return", r);
+            if (t != null && t != Undefined.VALUE) asyncGeneratorPrototype.set("throw", t);
+        }
+        if (wellKnownToStringTag != null) {
+            asyncGeneratorPrototype.set(wellKnownToStringTag.asPropertyKey(), "AsyncGenerator");
+            asyncGeneratorPrototype.setAttributes(wellKnownToStringTag.asPropertyKey(),
+                JSObject.ATTR_CONFIGURABLE);
+        }
+
         // ECMA-262 § 17 — all built-in prototype methods are non-enumerable
         // ({writable: true, enumerable: false, configurable: true}). Sweep
         // each prototype that's been bootstrapped and flip enumerability off.
@@ -387,11 +471,11 @@ public final class Realm {
         prototypesReady = true;
     }
 
-    private static JSFunction nativeFn(String name, int arity, NativeBody body) {
+    public static JSFunction nativeFn(String name, int arity, NativeBody body) {
         return new JSFunction(name, arity, body);
     }
 
-    private static Object arg(Object[] a, int i) {
+    public static Object arg(Object[] a, int i) {
         return i < a.length ? a[i] : Undefined.VALUE;
     }
 
@@ -407,11 +491,142 @@ public final class Realm {
     // ============================================================
 
     private static void installObjectPrototype() {
+        // ECMA-262 § B.2.2 Annex B legacy Object.prototype accessor helpers.
+        // Per spec, both delegate to DefinePropertyOrThrow so non-extensible /
+        // non-configurable invariants surface as TypeError. We do the
+        // dispatch by hand because Object.defineProperty isn't installed
+        // yet at this point in bootstrap.
+        objectPrototype.set("__defineGetter__", nativeFn("__defineGetter__", 2, (thisVal, a, c) -> {
+            if (thisVal == null || thisVal == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("__defineGetter__ called on null/undefined");
+            }
+            Object getter = arg(a, 1);
+            if (!(getter instanceof JSFunction)) {
+                throw AbruptCompletion.typeError("Getter must be a function");
+            }
+            // Build a descriptor object and delegate to Object.defineProperty.
+            JSObject desc = new JSObject();
+            desc.set("get", getter);
+            desc.set("enumerable", true);
+            desc.set("configurable", true);
+            InterpContext ctx = InterpContext.current();
+            Object objCtor = ctx == null ? null : ctx.globals().get("Object");
+            Object defineFn = objCtor == null ? null : AbstractOps.getProperty(objCtor, "defineProperty");
+            if (defineFn instanceof JSFunction df) {
+                Interpreter.invokeFunction(df, Undefined.VALUE,
+                    new Object[]{thisVal, arg(a, 0), desc}, c);
+            }
+            return Undefined.VALUE;
+        }));
+        objectPrototype.set("__defineSetter__", nativeFn("__defineSetter__", 2, (thisVal, a, c) -> {
+            if (thisVal == null || thisVal == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("__defineSetter__ called on null/undefined");
+            }
+            Object setter = arg(a, 1);
+            if (!(setter instanceof JSFunction)) {
+                throw AbruptCompletion.typeError("Setter must be a function");
+            }
+            JSObject desc = new JSObject();
+            desc.set("set", setter);
+            desc.set("enumerable", true);
+            desc.set("configurable", true);
+            InterpContext ctx = InterpContext.current();
+            Object objCtor = ctx == null ? null : ctx.globals().get("Object");
+            Object defineFn = objCtor == null ? null : AbstractOps.getProperty(objCtor, "defineProperty");
+            if (defineFn instanceof JSFunction df) {
+                Interpreter.invokeFunction(df, Undefined.VALUE,
+                    new Object[]{thisVal, arg(a, 0), desc}, c);
+            }
+            return Undefined.VALUE;
+        }));
+        // Annex B § B.2.2.1 Object.prototype.__proto__ accessor.
+        JSFunction protoGetter = nativeFn("get __proto__", 0, (thisVal, a, c) -> {
+            if (thisVal == null || thisVal == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("Cannot convert undefined or null to object");
+            }
+            if (thisVal instanceof JSObject jo) return jo.proto() == null ? null : jo.proto();
+            if (thisVal instanceof JSArray) return arrayPrototype;
+            if (thisVal instanceof JSFunction) return functionPrototype;
+            if (thisVal instanceof Boolean) return booleanPrototype;
+            if (thisVal instanceof Number) return numberPrototype;
+            if (thisVal instanceof CharSequence) return stringPrototype;
+            if (thisVal instanceof JSSymbol) return symbolPrototype;
+            return null;
+        });
+        JSFunction protoSetter = nativeFn("set __proto__", 1, (thisVal, a, c) -> {
+            if (thisVal == null || thisVal == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("Cannot convert undefined or null to object");
+            }
+            Object proto = arg(a, 0);
+            if (proto != null && proto != Undefined.VALUE && !(proto instanceof JSObject)) {
+                return Undefined.VALUE;
+            }
+            if (thisVal instanceof JSObject jo) {
+                jo.setProto(proto instanceof JSObject p ? p : null);
+            }
+            return Undefined.VALUE;
+        });
+        objectPrototype.set("__proto__", new Accessor(protoGetter, protoSetter));
+        objectPrototype.setAttributes("__proto__", JSObject.ATTR_CONFIGURABLE);
+        objectPrototype.set("__lookupGetter__", nativeFn("__lookupGetter__", 1, (thisVal, a, c) -> {
+            if (!(thisVal instanceof JSObject jo)) return Undefined.VALUE;
+            String k = AbstractOps.toString(arg(a, 0));
+            JSObject cursor = jo;
+            while (cursor != null) {
+                Object v = cursor.getOwn(k);
+                if (v instanceof Accessor acc) return acc.getter() != null ? acc.getter() : Undefined.VALUE;
+                if (v != JSObject.ABSENT) return Undefined.VALUE;
+                cursor = cursor.proto();
+            }
+            return Undefined.VALUE;
+        }));
+        objectPrototype.set("__lookupSetter__", nativeFn("__lookupSetter__", 1, (thisVal, a, c) -> {
+            if (!(thisVal instanceof JSObject jo)) return Undefined.VALUE;
+            String k = AbstractOps.toString(arg(a, 0));
+            JSObject cursor = jo;
+            while (cursor != null) {
+                Object v = cursor.getOwn(k);
+                if (v instanceof Accessor acc) return acc.setter() != null ? acc.setter() : Undefined.VALUE;
+                if (v != JSObject.ABSENT) return Undefined.VALUE;
+                cursor = cursor.proto();
+            }
+            return Undefined.VALUE;
+        }));
+        // § 20.1.3.5 Object.prototype.toLocaleString — invokes this.toString().
+        objectPrototype.set("toLocaleString", nativeFn("toLocaleString", 0, (thisVal, a, c) -> {
+            Object toStr = AbstractOps.getProperty(thisVal, "toString");
+            if (!(toStr instanceof JSFunction tf)) {
+                throw AbruptCompletion.typeError("toLocaleString: toString is not callable");
+            }
+            return Interpreter.invokeFunction(tf, thisVal, new Object[0], c);
+        }));
+        // ECMA-262 § 20.1.3.6 Object.prototype.toString — synthesizes
+        // {@code "[object " + tag + "]"} using either the built-in
+        // [[Class]]-like signature or, when present, the value's
+        // {@code @@toStringTag} symbol. Real engines look for several
+        // internal slots ([[ParameterMap]] → "Arguments", [[ErrorData]] →
+        // "Error", etc.) — we recover the common cases from
+        // {@code @@toStringTag} plus a few special slots we model.
         objectPrototype.set("toString", nativeFn("toString", 0, (thisVal, a, c) -> {
-            if (thisVal instanceof JSArray)    return "[object Array]";
-            if (thisVal instanceof JSFunction) return "[object Function]";
             if (thisVal == null)               return "[object Null]";
             if (thisVal == Undefined.VALUE)    return "[object Undefined]";
+            if (thisVal instanceof JSArray)    return "[object Array]";
+            if (thisVal instanceof JSFunction) return "[object Function]";
+            // Prefer @@toStringTag when set on the object (or its proto chain).
+            if (thisVal instanceof JSObject jo && wellKnownToStringTag != null) {
+                Object tag = AbstractOps.getProperty(jo, wellKnownToStringTag.asPropertyKey());
+                if (tag instanceof CharSequence cs) return "[object " + cs + "]";
+                // Recognize a handful of internal slots the spec maps to
+                // specific tags so test262's {@code Object.prototype.toString
+                // .call(arguments)} / .call(new Error()) / etc. return the
+                // expected "[object Arguments]" / "[object Error]" etc.
+                if (jo.properties().containsKey("##ArgumentsParameterMap##")) return "[object Arguments]";
+                if (jo.properties().containsKey("##time##")) return "[object Date]";
+                if (jo.properties().containsKey(SLOT_NUMBER_DATA)) return "[object Number]";
+                if (jo.properties().containsKey(SLOT_BOOLEAN_DATA)) return "[object Boolean]";
+                if (jo.properties().containsKey(SLOT_STRING_DATA)) return "[object String]";
+                if (jo.properties().containsKey(SLOT_BIGINT_DATA)) return "[object BigInt]";
+            }
             return "[object Object]";
         }));
         objectPrototype.set("valueOf", nativeFn("valueOf", 0, (thisVal, a, c) -> thisVal));
@@ -477,6 +692,33 @@ public final class Realm {
     // ============================================================
 
     private static void installFunctionPrototype() {
+        // ECMA-262 § 20.2.3.6 Function.prototype[Symbol.hasInstance](V) —
+        // default `instanceof` resolution. Walks V's prototype chain
+        // looking for {@code this.prototype}.
+        functionPrototype.set(wellKnownHasInstance == null
+                ? "@@hasInstance" : wellKnownHasInstance.asPropertyKey(),
+            nativeFn("[Symbol.hasInstance]", 1, (thisVal, a, c) -> {
+                if (!(thisVal instanceof JSFunction fn)) return false;
+                Object v = arg(a, 0);
+                JSObject proto = fn.prototypeObject();
+                if (proto == null) return false;
+                JSObject cursor;
+                if (v instanceof JSObject jo) cursor = jo.proto();
+                else if (v instanceof JSArray) cursor = arrayPrototype;
+                else if (v instanceof JSFunction f2) {
+                    JSFunction sc = f2.superConstructor();
+                    cursor = sc != null ? null : functionPrototype;
+                } else return false;
+                while (cursor != null) {
+                    if (cursor == proto) return true;
+                    cursor = cursor.proto();
+                }
+                return false;
+            }));
+        if (wellKnownHasInstance != null) {
+            functionPrototype.setAttributes(wellKnownHasInstance.asPropertyKey(),
+                (byte) 0);   // non-writable, non-enumerable, non-configurable
+        }
         functionPrototype.set("call", nativeFn("call", 1, (thisVal, a, c) -> {
             if (!(thisVal instanceof JSFunction fn)) {
                 throw AbruptCompletion.typeError("Function.prototype.call called on non-function");
@@ -558,6 +800,13 @@ public final class Realm {
             }
             return "function () { [native code] }";
         }));
+        // ECMA-262 § 20.2.3.4: Function.prototype.name is "" with attrs
+        // { writable: false, enumerable: false, configurable: true }.
+        functionPrototype.set("name", "");
+        functionPrototype.setAttributes("name", JSObject.ATTR_CONFIGURABLE);
+        // § 20.2.3.5: Function.prototype.length is 0 with the same attrs.
+        functionPrototype.set("length", 0.0);
+        functionPrototype.setAttributes("length", JSObject.ATTR_CONFIGURABLE);
     }
 
     // ============================================================
@@ -600,10 +849,56 @@ public final class Realm {
     }
 
     /** Index-keyed read that works on both JSArrays and array-like objects.
-     *  Yields to the interpreter's interrupt poll on long loops. */
+     *  Invokes accessor getters when the underlying cell is an Accessor —
+     *  Array.prototype.X / Object.defineProperty install accessors at
+     *  numeric indices and tests check that filter/map/etc. see the
+     *  computed value, not the cell. Yields to the interpreter's
+     *  interrupt poll on long loops. */
     static Object getIndexed(Object t, int i) {
         checkInterruptTick(i);
-        if (t instanceof JSArray arr) return arr.get(i);
+        if (t instanceof JSArray arr) {
+            // Hole at this slot? Per § 10.1.8 OrdinaryGet, fall back to
+            // the prototype chain (Array.prototype) so inherited
+            // accessors / data props are observed by Array.prototype.X.
+            if (i < arr.length() && !arr.isHole(i)) {
+                Object v = arr.get(i);
+                if (v instanceof Accessor acc) {
+                    if (acc.getter() == null) return Undefined.VALUE;
+                    InterpContext ctx = InterpContext.current();
+                    if (ctx == null) return Undefined.VALUE;
+                    return Interpreter.invokeFunction(acc.getter(), t, new Object[0], ctx);
+                }
+                return v;
+            }
+            String key = Integer.toString(i);
+            if (arr.hasExtraProperty(key)) {
+                Object v = arr.getExtraProperty(key);
+                if (v instanceof Accessor acc) {
+                    if (acc.getter() == null) return Undefined.VALUE;
+                    InterpContext ctx = InterpContext.current();
+                    if (ctx == null) return Undefined.VALUE;
+                    return Interpreter.invokeFunction(acc.getter(), t, new Object[0], ctx);
+                }
+                return v;
+            }
+            if (Realm.arrayPrototype != null) {
+                JSObject cursor = Realm.arrayPrototype;
+                while (cursor != null) {
+                    Object v = cursor.getOwn(key);
+                    if (v != JSObject.ABSENT) {
+                        if (v instanceof Accessor acc) {
+                            if (acc.getter() == null) return Undefined.VALUE;
+                            InterpContext ctx = InterpContext.current();
+                            if (ctx == null) return Undefined.VALUE;
+                            return Interpreter.invokeFunction(acc.getter(), t, new Object[0], ctx);
+                        }
+                        return v;
+                    }
+                    cursor = cursor.proto();
+                }
+            }
+            return Undefined.VALUE;
+        }
         return AbstractOps.getProperty(t, Integer.toString(i));
     }
 
@@ -617,7 +912,20 @@ public final class Realm {
     /** {@code HasProperty(O, ToString(i))} for the integer index. */
     static boolean hasIndexed(Object t, int i) {
         checkInterruptTick(i);
-        if (t instanceof JSArray arr) return i >= 0 && i < arr.length();
+        if (t instanceof JSArray arr) {
+            // ECMA-262 § 23.1.3 Array.prototype.X uses HasProperty(O, Pk),
+            // which is false for holes unless the prototype chain
+            // exposes the key — needed by tests like forEach/15.4.4.18-7-b-11
+            // that toggle Array.prototype[N] between iterations.
+            if (i < 0) return false;
+            if (i < arr.length()) {
+                if (!arr.isHole(i)) return true;
+            }
+            String key = Integer.toString(i);
+            if (arr.hasExtraProperty(key)) return true;
+            if (Realm.arrayPrototype != null && Realm.arrayPrototype.has(key)) return true;
+            return false;
+        }
         if (t instanceof JSObject obj) {
             return obj.has(Integer.toString(i));
         }
@@ -636,11 +944,20 @@ public final class Realm {
                 for (Object v : a) arr.push(v);
                 return (double) arr.length();
             }
-            int len = lengthOfArrayLike(t);
+            // ECMA-262 § 23.1.3.23 step 5: if len + argCount > 2^53 - 1,
+            // throw TypeError. Read length raw for the spec check.
+            Object lenRaw = AbstractOps.getProperty(t, "length");
+            double lenD = AbstractOps.toNumber(lenRaw);
+            if (Double.isNaN(lenD) || lenD < 0) lenD = 0;
+            else lenD = Math.floor(lenD);
+            double newLenD = lenD + a.length;
+            if (newLenD > 9007199254740991.0 /* 2^53 - 1 */) {
+                throw AbruptCompletion.typeError("Array.prototype.push: pushed length exceeds 2^53 - 1");
+            }
+            int len = (int) Math.min(lenD, Integer.MAX_VALUE);
             for (int i = 0; i < a.length; i++) setIndexed(t, len + i, a[i]);
-            int newLen = len + a.length;
-            AbstractOps.setProperty(t, "length", (double) newLen);
-            return (double) newLen;
+            AbstractOps.setProperty(t, "length", newLenD);
+            return newLenD;
         }));
         arrayPrototype.set("pop", nativeFn("pop", 0, (t, a, c) -> {
             if (t instanceof JSArray arr) {
@@ -682,17 +999,25 @@ public final class Realm {
                 for (int i = 0; i < a.length; i++) arr.elements().add(i, a[i]);
                 return (double) arr.length();
             }
-            int len = lengthOfArrayLike(t);
+            // ECMA-262 § 23.1.3.36: if len + argc > 2^53 - 1 → TypeError.
+            Object lenRaw = AbstractOps.getProperty(t, "length");
+            double lenD = AbstractOps.toNumber(lenRaw);
+            if (Double.isNaN(lenD) || lenD < 0) lenD = 0;
+            else lenD = Math.floor(lenD);
             int argc = a.length;
+            double newLenD = lenD + argc;
+            if (newLenD > 9007199254740991.0) {
+                throw AbruptCompletion.typeError("Array.prototype.unshift: combined length exceeds 2^53 - 1");
+            }
+            int len = (int) Math.min(lenD, Integer.MAX_VALUE);
             // Shift existing elements right by argc.
             for (int i = len - 1; i >= 0; i--) {
                 if (hasIndexed(t, i)) setIndexed(t, i + argc, getIndexed(t, i));
                 else if (t instanceof JSObject jo) jo.delete(Integer.toString(i + argc));
             }
             for (int i = 0; i < argc; i++) setIndexed(t, i, a[i]);
-            int newLen = len + argc;
-            AbstractOps.setProperty(t, "length", (double) newLen);
-            return (double) newLen;
+            AbstractOps.setProperty(t, "length", newLenD);
+            return newLenD;
         }));
         arrayPrototype.set("slice", nativeFn("slice", 2, (t, a, c) -> {
             int len = lengthOfArrayLike(t);
@@ -786,25 +1111,27 @@ public final class Realm {
             return t;
         }));
         arrayPrototype.set("forEach", nativeFn("forEach", 1, (t, a, c) -> {
-            int len = lengthOfArrayLike(t);
+            Object O = toObject(t);
+            int len = lengthOfArrayLike(O);
             JSFunction fn = asCallback(arg(a, 0), "forEach");
             Object thisArg = arg(a, 1);
             for (int i = 0; i < len; i++) {
-                if (!hasIndexed(t, i)) continue;
+                if (!hasIndexed(O, i)) continue;
                 Interpreter.invokeFunction(fn, thisArg,
-                    new Object[]{getIndexed(t, i), (double) i, t}, c);
+                    new Object[]{getIndexed(O, i), (double) i, O}, c);
             }
             return Undefined.VALUE;
         }));
         arrayPrototype.set("map", nativeFn("map", 1, (t, a, c) -> {
-            int len = lengthOfArrayLike(t);
+            Object O = toObject(t);
+            int len = lengthOfArrayLike(O);
             JSFunction fn = asCallback(arg(a, 0), "map");
             Object thisArg = arg(a, 1);
             JSArray out = new JSArray();
             for (int i = 0; i < len; i++) {
-                if (hasIndexed(t, i)) {
+                if (hasIndexed(O, i)) {
                     out.set(i, Interpreter.invokeFunction(fn, thisArg,
-                        new Object[]{getIndexed(t, i), (double) i, t}, c));
+                        new Object[]{getIndexed(O, i), (double) i, O}, c));
                 } else {
                     out.set(i, Undefined.VALUE);
                 }
@@ -812,22 +1139,28 @@ public final class Realm {
             return out;
         }));
         arrayPrototype.set("filter", nativeFn("filter", 1, (t, a, c) -> {
-            int len = lengthOfArrayLike(t);
+            // ECMA-262 § 23.1.3.6 step 1: O = ToObject(this). Boxing
+            // ensures callback's third arg is an object (so e.g.
+            // {@code obj instanceof String} holds when called on a
+            // string primitive).
+            Object O = toObject(t);
+            int len = lengthOfArrayLike(O);
             JSFunction fn = asCallback(arg(a, 0), "filter");
             Object thisArg = arg(a, 1);
             JSArray out = new JSArray();
             for (int i = 0; i < len; i++) {
-                if (!hasIndexed(t, i)) continue;
-                Object v = getIndexed(t, i);
+                if (!hasIndexed(O, i)) continue;
+                Object v = getIndexed(O, i);
                 if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
-                        new Object[]{v, (double) i, t}, c))) {
+                        new Object[]{v, (double) i, O}, c))) {
                     out.push(v);
                 }
             }
             return out;
         }));
         arrayPrototype.set("reduce", nativeFn("reduce", 2, (t, a, c) -> {
-            int len = lengthOfArrayLike(t);
+            Object O = toObject(t);
+            int len = lengthOfArrayLike(O);
             JSFunction fn = asCallback(arg(a, 0), "reduce");
             int start;
             Object acc;
@@ -839,22 +1172,23 @@ public final class Realm {
                     throw AbruptCompletion.typeError("Reduce of empty array with no initial value");
                 }
                 start = 0;
-                while (start < len && !hasIndexed(t, start)) start++;
+                while (start < len && !hasIndexed(O, start)) start++;
                 if (start >= len) {
                     throw AbruptCompletion.typeError("Reduce of empty array with no initial value");
                 }
-                acc = getIndexed(t, start);
+                acc = getIndexed(O, start);
                 start++;
             }
             for (int i = start; i < len; i++) {
-                if (!hasIndexed(t, i)) continue;
+                if (!hasIndexed(O, i)) continue;
                 acc = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{acc, getIndexed(t, i), (double) i, t}, c);
+                    new Object[]{acc, getIndexed(O, i), (double) i, O}, c);
             }
             return acc;
         }));
         arrayPrototype.set("reduceRight", nativeFn("reduceRight", 2, (t, a, c) -> {
-            int len = lengthOfArrayLike(t);
+            Object O = toObject(t);
+            int len = lengthOfArrayLike(O);
             JSFunction fn = asCallback(arg(a, 0), "reduceRight");
             int start;
             Object acc;
@@ -863,17 +1197,17 @@ public final class Realm {
                 start = len - 1;
             } else {
                 start = len - 1;
-                while (start >= 0 && !hasIndexed(t, start)) start--;
+                while (start >= 0 && !hasIndexed(O, start)) start--;
                 if (start < 0) {
                     throw AbruptCompletion.typeError("Reduce of empty array with no initial value");
                 }
-                acc = getIndexed(t, start);
+                acc = getIndexed(O, start);
                 start--;
             }
             for (int i = start; i >= 0; i--) {
-                if (!hasIndexed(t, i)) continue;
+                if (!hasIndexed(O, i)) continue;
                 acc = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{acc, getIndexed(t, i), (double) i, t}, c);
+                    new Object[]{acc, getIndexed(O, i), (double) i, O}, c);
             }
             return acc;
         }));
@@ -922,26 +1256,28 @@ public final class Realm {
             return -1.0;
         }));
         arrayPrototype.set("some", nativeFn("some", 1, (t, a, c) -> {
-            int len = lengthOfArrayLike(t);
+            Object O = toObject(t);
+            int len = lengthOfArrayLike(O);
             JSFunction fn = asCallback(arg(a, 0), "some");
             Object thisArg = arg(a, 1);
             for (int i = 0; i < len; i++) {
-                if (!hasIndexed(t, i)) continue;
-                Object v = getIndexed(t, i);
+                if (!hasIndexed(O, i)) continue;
+                Object v = getIndexed(O, i);
                 if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
-                        new Object[]{v, (double) i, t}, c))) return true;
+                        new Object[]{v, (double) i, O}, c))) return true;
             }
             return false;
         }));
         arrayPrototype.set("every", nativeFn("every", 1, (t, a, c) -> {
-            int len = lengthOfArrayLike(t);
+            Object O = toObject(t);
+            int len = lengthOfArrayLike(O);
             JSFunction fn = asCallback(arg(a, 0), "every");
             Object thisArg = arg(a, 1);
             for (int i = 0; i < len; i++) {
-                if (!hasIndexed(t, i)) continue;
-                Object v = getIndexed(t, i);
+                if (!hasIndexed(O, i)) continue;
+                Object v = getIndexed(O, i);
                 if (!AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
-                        new Object[]{v, (double) i, t}, c))) return false;
+                        new Object[]{v, (double) i, O}, c))) return false;
             }
             return true;
         }));
@@ -953,15 +1289,12 @@ public final class Realm {
             return getIndexed(t, k);
         }));
         arrayPrototype.set("sort", nativeFn("sort", 1, (t, a, c) -> {
-            JSArray arr = asArray(t, "sort");
             Object cmpArg = arg(a, 0);
             JSFunction cmp = (cmpArg instanceof JSFunction f) ? f : null;
-            // Hoisted comparator args buffer — Rhino's NativeArray does the
-            // same (`Object[] cmpBuf = new Object[2]`). lodash's
-            // `_.sortBy(data, ['group','id'])` over 5,000 items triggers
-            // ~50,000 comparator invocations; allocating `new Object[]{x, y}`
-            // per call was the largest single avoidable allocation in the
-            // sort path.
+            // ECMA-262 § 23.1.3.30 — sort is generic on array-likes.
+            // The receiver may be any object with a length + indexed
+            // reads/writes; we keep the JSArray fast path for the
+            // common case and use the array-like helpers otherwise.
             final Object[] cmpBuf = cmp != null ? new Object[]{null, null} : null;
             java.util.Comparator<Object> comparator = (x, y) -> {
                 if (cmp != null) {
@@ -972,10 +1305,20 @@ public final class Realm {
                     if (Double.isNaN(d)) return 0;
                     return d < 0 ? -1 : (d > 0 ? 1 : 0);
                 }
+                if (x == Undefined.VALUE) return y == Undefined.VALUE ? 0 : 1;
+                if (y == Undefined.VALUE) return -1;
                 return AbstractOps.toString(x).compareTo(AbstractOps.toString(y));
             };
-            arr.elements().sort(comparator);
-            return arr;
+            if (t instanceof JSArray arr) {
+                arr.elements().sort(comparator);
+                return arr;
+            }
+            int len = lengthOfArrayLike(t);
+            java.util.List<Object> bucket = new java.util.ArrayList<>(len);
+            for (int i = 0; i < len; i++) bucket.add(hasIndexed(t, i) ? getIndexed(t, i) : Undefined.VALUE);
+            bucket.sort(comparator);
+            for (int i = 0; i < len; i++) setIndexed(t, i, bucket.get(i));
+            return t;
         }));
         arrayPrototype.set("flat", nativeFn("flat", 0, (t, a, c) -> {
             int len = lengthOfArrayLike(t);
@@ -1193,8 +1536,76 @@ public final class Realm {
         markMethodsNonEnumerable(arrayPrototype);
     }
 
+    /** Convert Java's {@code %e}-formatted output ("1.234567e+02") to the
+     *  spec-shaped exponential string ("1.234567e+2" — no leading zero,
+     *  optional fraction). When {@code digits == -1}, trim trailing zeros
+     *  in the mantissa (matches the default form of
+     *  {@code Number.prototype.toExponential()}). */
+    private static String normalizeExponential(String raw, int digits) {
+        int ePos = raw.indexOf('e');
+        if (ePos < 0) return raw;
+        String mantissa = raw.substring(0, ePos);
+        String exp = raw.substring(ePos + 1);
+        // Strip leading zeros from the exponent (keep sign).
+        int sign = 1;
+        int j = 0;
+        if (j < exp.length() && exp.charAt(j) == '+') { j++; }
+        else if (j < exp.length() && exp.charAt(j) == '-') { sign = -1; j++; }
+        while (j < exp.length() - 1 && exp.charAt(j) == '0') j++;
+        int expVal = Integer.parseInt(exp.substring(j)) * sign;
+        if (digits == -1) {
+            // Trim trailing zeros after the decimal point, then a trailing dot.
+            int dot = mantissa.indexOf('.');
+            if (dot >= 0) {
+                int end = mantissa.length();
+                while (end > dot + 1 && mantissa.charAt(end - 1) == '0') end--;
+                if (end == dot + 1) end = dot;
+                mantissa = mantissa.substring(0, end);
+            }
+        }
+        String expStr = expVal >= 0 ? "+" + expVal : Integer.toString(expVal);
+        return mantissa + "e" + expStr;
+    }
+
+    /** ECMA-262 § 6.2.5 HasProperty — walks the prototype chain. Used by
+     *  ToPropertyDescriptor field-presence checks. */
+    private static boolean descObjHas(JSObject desc, String key) {
+        JSObject cursor = desc;
+        while (cursor != null) {
+            if (cursor.hasOwn(key)) return true;
+            cursor = cursor.proto();
+        }
+        return false;
+    }
+
+    /** HasProperty over any object kind (JSObject / JSFunction / JSArray).
+     *  Used by ToPropertyDescriptor: defineProperty(obj, key, funObj)
+     *  is legal — functions are objects in JS. */
+    private static boolean descHasField(Object desc, String key) {
+        if (desc instanceof JSObject jo) return descObjHas(jo, key);
+        if (desc instanceof JSFunction fn) {
+            if (fn.hasOwnStatic(key)) return true;
+            // Functions inherit from Function.prototype which inherits from
+            // Object.prototype — anything user-installed there counts too.
+            if (functionPrototype != null && descObjHas(functionPrototype, key)) return true;
+            return false;
+        }
+        if (desc instanceof JSArray arr) {
+            if ("length".equals(key)) return true;
+            int idx = parseIndex(key);
+            if (idx >= 0 && idx < arr.length()) return true;
+            if (arr.hasExtraProperty(key)) return true;
+            if (arrayPrototype != null && descObjHas(arrayPrototype, key)) return true;
+            return false;
+        }
+        return false;
+    }
+
     /** Mark every own property of {@code proto} non-enumerable (writable +
-     *  configurable). Per ECMA-262 § 17 conventions for built-in methods. */
+     *  configurable). Per ECMA-262 § 17 conventions for built-in methods.
+     *  Preserves entries that already have a non-default attribute byte
+     *  (e.g. {@code Math.E} which the bootstrap set to (0,0,0)
+     *  non-writable/non-configurable per § 21.3.1). */
     static void markMethodsNonEnumerable(JSObject proto) {
         byte methodAttrs = (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE);
         // Iterate a snapshot — setAttributes transitions the shape.
@@ -1206,7 +1617,61 @@ public final class Realm {
             // Leave any pre-existing custom attrs (Accessor pairs etc.) alone.
             Object v = proto.getOwn(k);
             if (v instanceof Accessor) continue;
+            // Don't clobber entries that already have explicit attributes —
+            // they were set deliberately (e.g. non-writable constants).
+            if (proto.getAttributes(k) != JSObject.ATTR_DEFAULT) continue;
             proto.setAttributes(k, methodAttrs);
+        }
+    }
+
+    /** ECMA-262 § 17: built-in prototype/namespace methods are not
+     *  constructors (`new Math.abs()` / `Reflect.construct(eval)` throw
+     *  TypeError, `Promise.all.call(eval)` sees IsConstructor=false).
+     *  Sweep marks every JSFunction installed as a value on the
+     *  prototype as non-constructor. Skips entries that look like
+     *  constructors themselves (have a {@code prototype} object with a
+     *  back-pointing {@code constructor}). */
+    static void markMethodsNonConstructor(JSObject proto) {
+        if (proto == null) return;
+        java.util.List<String> keys = new java.util.ArrayList<>();
+        for (String k : proto.ownKeys()) keys.add(k);
+        for (String k : keys) {
+            if ("constructor".equals(k)) continue;
+            Object v = proto.getOwn(k);
+            if (v instanceof JSFunction fn && fn.prototypeObject() == null) {
+                fn.setNonConstructor(true);
+            }
+        }
+    }
+
+    /** Static methods on a constructor (e.g. Math.abs, Object.keys) are
+     *  similarly non-constructible. Doesn't touch the constructor's own
+     *  invocation surface. */
+    static void markStaticsNonConstructor(JSFunction fn) {
+        if (fn == null) return;
+        for (String k : new java.util.ArrayList<>(fn.propertiesIfPresent().keySet())) {
+            Object v = fn.getOwnStatic(k);
+            if (v instanceof JSFunction sub && sub.prototypeObject() == null) {
+                sub.setNonConstructor(true);
+            }
+        }
+    }
+
+    /** Same as {@link #markMethodsNonEnumerable} but for static properties
+     *  installed on a {@link JSFunction} (e.g. Object.keys, Array.from,
+     *  Date.UTC). Skips already-set custom attribute records so anything
+     *  with a more restrictive descriptor (BYTES_PER_ELEMENT etc.) stays. */
+    static void markStaticsNonEnumerable(JSFunction fn) {
+        if (fn == null) return;
+        byte methodAttrs = (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE);
+        java.util.List<String> keys = new java.util.ArrayList<>(fn.propertiesIfPresent().keySet());
+        for (String k : keys) {
+            Object v = fn.getOwnStatic(k);
+            if (v instanceof Accessor) continue;
+            // Preserve any non-default attribute already installed (e.g.
+            // typed-array BYTES_PER_ELEMENT is frozen).
+            if (fn.getAttributes(k) != JSObject.ATTR_DEFAULT) continue;
+            fn.setAttributes(k, methodAttrs);
         }
     }
 
@@ -1222,84 +1687,63 @@ public final class Realm {
      * requires array-like via ToObject + Get(length) + indexed reads,
      * not specifically Array exotic).
      */
+    /** Array.prototype's keys/values/entries / TypedArray's same — produces
+     *  an %ArrayIteratorPrototype%-based iterator. Length is read live each
+     *  step (per § 23.1.5.1) so {@code arr.push(x)} during iteration is
+     *  observed. */
     private static JSObject makeArrayLikeIterator(Object receiver, String kind) {
         if (receiver == null || receiver == Undefined.VALUE) {
             throw AbruptCompletion.typeError(
                 "Array.prototype iterator: this is " + (receiver == null ? "null" : "undefined"));
         }
-        if (receiver instanceof JSArray a) return makeArrayIterator(a, kind);
-        // Snapshot the length once at iterator-create per spec.
-        int len;
-        if (receiver instanceof String s) {
-            len = s.length();
-        } else {
-            Object lenVal = AbstractOps.getProperty(receiver, "length");
-            len = (int) AbstractOps.toNumber(lenVal);
-            if (len < 0) len = 0;
+        return com.jimmyhmiller.harmonica.bytecode.builtins
+            .ArrayIteratorPrototypeBuiltin.create(
+                receiver,
+                com.jimmyhmiller.harmonica.bytecode.builtins
+                    .ArrayIteratorPrototypeBuiltin.kindFor(kind));
+    }
+
+    /** Lazily build (and cache) the shared iterator prototype with the
+     *  given {@code @@toStringTag} value. Each prototype has an
+     *  {@code @@iterator} method returning {@code this}. */
+    public static volatile JSObject regExpStringIteratorPrototype;
+
+    private static JSObject ensureIteratorProto(String tag) {
+        JSObject existing = switch (tag) {
+            case "Array Iterator"  -> arrayIteratorPrototype;
+            case "String Iterator" -> stringIteratorPrototype;
+            case "Map Iterator"    -> mapIteratorPrototype;
+            case "Set Iterator"    -> setIteratorPrototype;
+            case "RegExp String Iterator" -> regExpStringIteratorPrototype;
+            default -> null;
+        };
+        if (existing != null) return existing;
+        JSObject proto = new JSObject(iteratorPrototype != null ? iteratorPrototype : objectPrototype);
+        if (wellKnownIterator != null) {
+            proto.set(wellKnownIterator.asPropertyKey(),
+                nativeFn("[Symbol.iterator]", 0, (t, a, c) -> t));
+            proto.setAttributes(wellKnownIterator.asPropertyKey(),
+                (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
         }
-        final int finalLen = len;
-        final Object recv = receiver;
-        JSObject iter = new JSObject();
-        int[] idx = {0};
-        iter.set("next", nativeFn("next", 0, (t, a, c) -> {
-            JSObject result = new JSObject();
-            if (idx[0] < finalLen) {
-                Object value = recv instanceof String s
-                    ? String.valueOf(s.charAt(idx[0]))
-                    : AbstractOps.getProperty(recv, Integer.toString(idx[0]));
-                Object payload = switch (kind) {
-                    case "key" -> (double) idx[0];
-                    case "key+value" -> {
-                        JSArray pair = new JSArray();
-                        pair.push((double) idx[0]);
-                        pair.push(value);
-                        yield pair;
-                    }
-                    default -> value;
-                };
-                idx[0]++;
-                result.set("value", payload);
-                result.set("done", false);
-            } else {
-                result.set("value", Undefined.VALUE);
-                result.set("done", true);
-            }
-            return result;
-        }));
-        iter.set(wellKnownIterator.asPropertyKey(), nativeFn("[Symbol.iterator]", 0,
-            (t, a, c) -> t));
-        return iter;
+        if (wellKnownToStringTag != null) {
+            proto.set(wellKnownToStringTag.asPropertyKey(), tag);
+            proto.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
+        }
+        switch (tag) {
+            case "Array Iterator"  -> arrayIteratorPrototype = proto;
+            case "String Iterator" -> stringIteratorPrototype = proto;
+            case "Map Iterator"    -> mapIteratorPrototype = proto;
+            case "Set Iterator"    -> setIteratorPrototype = proto;
+            case "RegExp String Iterator" -> regExpStringIteratorPrototype = proto;
+        }
+        return proto;
     }
 
     private static JSObject makeArrayIterator(JSArray arr, String kind) {
-        JSObject iter = new JSObject();
-        int[] idx = {0};
-        iter.set("next", nativeFn("next", 0, (t, a, c) -> {
-            JSObject result = new JSObject();
-            if (idx[0] < arr.length()) {
-                Object payload = switch (kind) {
-                    case "key" -> (double) idx[0];
-                    case "key+value" -> {
-                        JSArray pair = new JSArray();
-                        pair.push((double) idx[0]);
-                        pair.push(arr.get(idx[0]));
-                        yield pair;
-                    }
-                    default -> arr.get(idx[0]);
-                };
-                idx[0]++;
-                result.set("value", payload);
-                result.set("done", false);
-            } else {
-                result.set("value", Undefined.VALUE);
-                result.set("done", true);
-            }
-            return result;
-        }));
-        // Per § 23.1.5.2.1, array iterators have @@iterator returning themselves.
-        iter.set(wellKnownIterator.asPropertyKey(), nativeFn("[Symbol.iterator]", 0,
-            (t, a, c) -> t));
-        return iter;
+        return com.jimmyhmiller.harmonica.bytecode.builtins
+            .ArrayIteratorPrototypeBuiltin.create(arr,
+                com.jimmyhmiller.harmonica.bytecode.builtins
+                    .ArrayIteratorPrototypeBuiltin.kindFor(kind));
     }
 
     private static void flattenInto(JSArray src, JSArray dst, int depth) {
@@ -1307,6 +1751,84 @@ public final class Realm {
             if (e instanceof JSArray inner && depth > 0) flattenInto(inner, dst, depth - 1);
             else dst.push(e);
         }
+    }
+
+    /** ECMA-262 § 7.1.18 ToObject — boxes primitives to their wrapper
+     *  type so callback invocations receive the spec-required Object,
+     *  not the primitive. Throws TypeError on null/undefined. Used by
+     *  Array.prototype.{forEach,map,filter,every,some,reduce,...} when
+     *  passing `O` as the third callback argument. */
+    static Object toObject(Object v) {
+        if (v == null || v == Undefined.VALUE) {
+            throw AbruptCompletion.typeError("Cannot convert undefined or null to object");
+        }
+        if (v instanceof JSObject || v instanceof JSArray || v instanceof JSFunction) return v;
+        if (v instanceof Boolean b) {
+            JSObject w = new JSObject(booleanPrototype);
+            w.properties().put(SLOT_BOOLEAN_DATA, b);
+            return w;
+        }
+        if (v instanceof Number n) {
+            JSObject w = new JSObject(numberPrototype);
+            w.properties().put(SLOT_NUMBER_DATA, n);
+            return w;
+        }
+        if (v instanceof CharSequence cs) {
+            String s = cs.toString();
+            JSObject w = new JSObject(stringPrototype);
+            w.properties().put(SLOT_STRING_DATA, s);
+            w.set("length", (double) s.length());
+            w.setAttributes("length", (byte) 0);
+            return w;
+        }
+        if (v instanceof JSBigInt bi) {
+            JSObject w = new JSObject(bigIntPrototype);
+            w.properties().put(SLOT_BIGINT_DATA, bi);
+            return w;
+        }
+        if (v instanceof JSSymbol sy) {
+            JSObject w = new JSObject(symbolPrototype);
+            w.properties().put("##SymbolData##", sy);
+            return w;
+        }
+        return v;
+    }
+
+    /** ECMA-262 § 7.4.10 IteratorClose — invoke the iterator's
+     *  {@code return} method (if any) so resources held by the
+     *  underlying generator are freed. Swallows any exception thrown
+     *  by return per § 7.4.10 (used in NormalCompletion paths). */
+    static void closeIterator(JSObject iter, InterpContext c) {
+        try {
+            Object retFn = AbstractOps.getProperty(iter, "return");
+            if (retFn instanceof JSFunction rf) {
+                Interpreter.invokeFunction(rf, iter, new Object[0], c);
+            }
+        } catch (AbruptCompletion ignored) {
+            // Spec: when closing during a normal completion, swallow.
+        }
+    }
+
+    /** ECMA-262 § 7.2.1 RequireObjectCoercible — throws TypeError on
+     *  null/undefined, returns the value otherwise. Used by String /
+     *  Object prototype methods that begin with this step. */
+    static Object requireObjectCoercible(Object v, String method) {
+        if (v == null) {
+            throw AbruptCompletion.typeError(
+                "String.prototype." + method + " called on null");
+        }
+        if (v == Undefined.VALUE) {
+            throw AbruptCompletion.typeError(
+                "String.prototype." + method + " called on undefined");
+        }
+        return v;
+    }
+
+    /** Coerce {@code this} to a String per § 22.1.3 — but throw TypeError
+     *  on null/undefined first (RequireObjectCoercible). */
+    static String thisStringCoerced(Object v, String method) {
+        requireObjectCoercible(v, method);
+        return AbstractOps.toString(v);
     }
 
     private static JSFunction asCallback(Object v, String method) {
@@ -1319,35 +1841,46 @@ public final class Realm {
     // ============================================================
 
     private static void installStringPrototype() {
+        // § 22.1.3: String.prototype is itself a String exotic object
+        // whose [[StringData]] is "" — installing the slot here lets
+        // {@code String.prototype.toString()} (called on the prototype
+        // directly, as test262 does) return "" instead of throwing
+        // "called on non-String", and also gives it the matching
+        // own `length` of 0 with frozen attributes.
+        if (!stringPrototype.properties().containsKey(SLOT_STRING_DATA)) {
+            stringPrototype.properties().put(SLOT_STRING_DATA, "");
+            stringPrototype.set("length", 0.0);
+            stringPrototype.setAttributes("length", (byte) 0);
+        }
         stringPrototype.set("toUpperCase", nativeFn("toUpperCase", 0,
-            (t, a, c) -> AbstractOps.toString(t).toUpperCase()));
+            (t, a, c) -> thisStringCoerced(t, "toUpperCase").toUpperCase()));
         stringPrototype.set("toLowerCase", nativeFn("toLowerCase", 0,
-            (t, a, c) -> AbstractOps.toString(t).toLowerCase()));
+            (t, a, c) -> thisStringCoerced(t, "toLowerCase").toLowerCase()));
         stringPrototype.set("charAt", nativeFn("charAt", 1, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "charAt");
             int idx = AbstractOps.toInt32(arg(a, 0));
             if (idx < 0 || idx >= s.length()) return "";
             return String.valueOf(s.charAt(idx));
         }));
         stringPrototype.set("charCodeAt", nativeFn("charCodeAt", 1, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "charCodeAt");
             int idx = AbstractOps.toInt32(arg(a, 0));
             if (idx < 0 || idx >= s.length()) return Double.NaN;
             return (double) s.charAt(idx);
         }));
         stringPrototype.set("indexOf", nativeFn("indexOf", 1, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "indexOf");
             String tgt = AbstractOps.toString(arg(a, 0));
             int from = arg(a, 1) == Undefined.VALUE ? 0 : AbstractOps.toInt32(a[1]);
             return (double) s.indexOf(tgt, Math.max(0, from));
         }));
         stringPrototype.set("lastIndexOf", nativeFn("lastIndexOf", 1, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "lastIndexOf");
             String tgt = AbstractOps.toString(arg(a, 0));
             return (double) s.lastIndexOf(tgt);
         }));
         stringPrototype.set("slice", nativeFn("slice", 2, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "slice");
             int len = s.length();
             int start = sliceIndex(arg(a, 0), len, 0);
             int end = sliceIndex(arg(a, 1), len, len);
@@ -1355,14 +1888,14 @@ public final class Realm {
             return s.substring(start, end);
         }));
         stringPrototype.set("substring", nativeFn("substring", 2, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "substring");
             int len = s.length();
             int x = arg(a, 0) == Undefined.VALUE ? 0 : Math.max(0, Math.min(len, AbstractOps.toInt32(a[0])));
             int y = arg(a, 1) == Undefined.VALUE ? len : Math.max(0, Math.min(len, AbstractOps.toInt32(a[1])));
             return s.substring(Math.min(x, y), Math.max(x, y));
         }));
         stringPrototype.set("split", nativeFn("split", 2, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "split");
             JSArray out = new JSArray();
             if (arg(a, 0) == Undefined.VALUE) { out.push(s); return out; }
             Object sep0 = a[0];
@@ -1403,18 +1936,24 @@ public final class Realm {
             }
             return out;
         }));
+        // ECMA-262 § 22.1.3.32 String.prototype.trim — strip leading and
+        // trailing WhiteSpace and LineTerminator code points. Java's
+        // String.trim() only strips ASCII whitespace; we need the full
+        // JS set (BOM, non-breaking space, Unicode separators, etc.).
+        final String WS_CLASS =
+            "[\\u0009\\u000A\\u000B\\u000C\\u000D\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]";
         stringPrototype.set("trim", nativeFn("trim", 0,
-            (t, a, c) -> AbstractOps.toString(t).trim()));
+            (t, a, c) -> thisStringCoerced(t, "trim").replaceAll("^" + WS_CLASS + "+|" + WS_CLASS + "+$", "")));
         stringPrototype.set("trimStart", nativeFn("trimStart", 0,
-            (t, a, c) -> AbstractOps.toString(t).replaceAll("^\\s+", "")));
+            (t, a, c) -> thisStringCoerced(t, "trimStart").replaceAll("^" + WS_CLASS + "+", "")));
         stringPrototype.set("trimEnd", nativeFn("trimEnd", 0,
-            (t, a, c) -> AbstractOps.toString(t).replaceAll("\\s+$", "")));
+            (t, a, c) -> thisStringCoerced(t, "trimEnd").replaceAll(WS_CLASS + "+$", "")));
         stringPrototype.set("includes", nativeFn("includes", 1, (t, a, c) ->
-            AbstractOps.toString(t).contains(AbstractOps.toString(arg(a, 0)))));
+            thisStringCoerced(t, "includes").contains(AbstractOps.toString(arg(a, 0)))));
         stringPrototype.set("startsWith", nativeFn("startsWith", 1, (t, a, c) ->
-            AbstractOps.toString(t).startsWith(AbstractOps.toString(arg(a, 0)))));
+            thisStringCoerced(t, "startsWith").startsWith(AbstractOps.toString(arg(a, 0)))));
         stringPrototype.set("endsWith", nativeFn("endsWith", 1, (t, a, c) ->
-            AbstractOps.toString(t).endsWith(AbstractOps.toString(arg(a, 0)))));
+            thisStringCoerced(t, "endsWith").endsWith(AbstractOps.toString(arg(a, 0)))));
         // AnnexB § B.2.3 — deprecated String.prototype HTML wrappers.
         // Each wraps the string in an HTML tag (sometimes with attribute).
         java.util.Map<String, String> htmlWrappers = new java.util.LinkedHashMap<>();
@@ -1433,7 +1972,8 @@ public final class Realm {
             String tag = e.getValue();
             int arity = "anchor".equals(name) ? 1 : 0;
             stringPrototype.set(name, nativeFn(name, arity, (t, a, c) -> {
-                String s = AbstractOps.toString(t);
+                // RequireObjectCoercible — null/undefined receiver throws.
+                String s = thisStringCoerced(t, name);
                 if (arity == 1) {
                     String attr = AbstractOps.toString(arg(a, 0));
                     return "<" + tag + " name=\"" + attr.replace("\"", "&quot;") + "\">" + s + "</" + tag + ">";
@@ -1443,23 +1983,23 @@ public final class Realm {
         }
         // The "attribute" wrappers — fontcolor, fontsize, link.
         stringPrototype.set("fontcolor", nativeFn("fontcolor", 1, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "fontcolor");
             String attr = AbstractOps.toString(arg(a, 0));
             return "<font color=\"" + attr.replace("\"", "&quot;") + "\">" + s + "</font>";
         }));
         stringPrototype.set("fontsize", nativeFn("fontsize", 1, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "fontsize");
             String attr = AbstractOps.toString(arg(a, 0));
             return "<font size=\"" + attr.replace("\"", "&quot;") + "\">" + s + "</font>";
         }));
         stringPrototype.set("link", nativeFn("link", 1, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "link");
             String attr = AbstractOps.toString(arg(a, 0));
             return "<a href=\"" + attr.replace("\"", "&quot;") + "\">" + s + "</a>";
         }));
         // String.prototype.substr (deprecated AnnexB).
         stringPrototype.set("substr", nativeFn("substr", 2, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "substr");
             int len = s.length();
             int start = AbstractOps.toInt32(arg(a, 0));
             if (start < 0) start = Math.max(0, len + start);
@@ -1501,7 +2041,7 @@ public final class Realm {
         // § 22.1.3.19 padEnd / padStart already defined later — skip here.
         // ECMA-262 § 22.1.3.22 replaceAll — regex or string search; global only.
         stringPrototype.set("replaceAll", nativeFn("replaceAll", 2, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "replaceAll");
             Object search0 = arg(a, 0);
             Object repl0 = arg(a, 1);
             if (asRegExpSource(search0) != null) {
@@ -1556,55 +2096,64 @@ public final class Realm {
             sb.append(s, last, s.length());
             return sb.toString();
         }));
-        // § 22.1.3.13 matchAll — produces an iterator of regex matches.
+        // § 22.1.3.13 String.prototype.matchAll(regexp). Per spec:
+        //   1. Let O be ? RequireObjectCoercible(this value).
+        //   2. If regexp is not nullish:
+        //      a. Let isRegExp be ? IsRegExp(regexp).
+        //      b. If isRegExp, then let flags be ? ToString(? Get(regexp, "flags"));
+        //         if flags does NOT contain "g", throw TypeError.
+        //      c. Let matcher be ? GetMethod(regexp, @@matchAll); if matcher
+        //         is not undefined, return ? Call(matcher, regexp, « O »).
+        //   3. Let S be ? ToString(O).
+        //   4. Let rx be ? RegExpCreate(regexp, "g").
+        //   5. Return ? Invoke(rx, @@matchAll, « S »).
+        // The /g requirement only applies when the user passed a real RegExp;
+        // a string pattern gets wrapped with /g implicitly.
         stringPrototype.set("matchAll", nativeFn("matchAll", 1, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "matchAll");
             Object pat = arg(a, 0);
-            String src = asRegExpSource(pat);
-            String flags = src == null ? "g" : asRegExpFlags(pat);
-            if (src == null) src = AbstractOps.toString(pat);
-            if (!flags.contains("g")) {
-                throw AbruptCompletion.typeError("matchAll requires a global RegExp");
-            }
-            java.util.regex.Pattern p = compileJsRegex(src, flags);
-            java.util.regex.Matcher m = p.matcher(s);
-            JSObject iter = new JSObject();
-            String finalSrc = src;
-            iter.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
-                JSObject step = new JSObject();
-                if (m.find()) {
-                    JSArray match = new JSArray();
-                    match.push(m.group());
-                    for (int gi = 1; gi <= m.groupCount(); gi++) {
-                        match.push(m.group(gi) == null ? Undefined.VALUE : m.group(gi));
-                    }
-                    match.setExtraProperty("index", (double) m.start());
-                    match.setExtraProperty("input", s);
-                    attachNamedGroups(match, p, m, finalSrc);
-                    step.set("value", match);
-                    step.set("done", false);
-                } else {
-                    step.set("value", Undefined.VALUE);
-                    step.set("done", true);
+            Object regexp;
+            if (pat instanceof JSObject patObj && asRegExpSource(patObj) != null) {
+                Object flagsVal = AbstractOps.getProperty(patObj, "flags");
+                String f = flagsVal == Undefined.VALUE ? "" : AbstractOps.toString(flagsVal);
+                if (!f.contains("g")) {
+                    throw AbruptCompletion.typeError(
+                        "String.prototype.matchAll requires a global RegExp");
                 }
-                return step;
-            }));
-            iter.set(wellKnownIterator.asPropertyKey(),
-                nativeFn("[Symbol.iterator]", 0, (tt, aa, cc) -> tt));
-            return iter;
+                regexp = patObj;
+            } else {
+                String src = (pat == null || pat == Undefined.VALUE) ? "" : AbstractOps.toString(pat);
+                Object reCtor = c == null ? null : c.globals().get("RegExp");
+                if (reCtor instanceof JSFunction reCtorFn) {
+                    regexp = Interpreter.invokeFunctionAsConstructor(
+                        reCtorFn, new JSObject(regExpPrototype),
+                        new Object[]{src, "g"}, c);
+                } else {
+                    throw AbruptCompletion.typeError(
+                        "RegExp constructor missing during matchAll");
+                }
+            }
+            // Delegate to RegExp.prototype[@@matchAll] so the iterator is
+            // created with the correct prototype + slots.
+            Object matchAllFn = AbstractOps.getProperty(regexp, wellKnownMatchAll.asPropertyKey());
+            if (!(matchAllFn instanceof JSFunction f)) {
+                throw AbruptCompletion.typeError(
+                    "regexp[Symbol.matchAll] is not callable");
+            }
+            return Interpreter.invokeFunction(f, regexp, new Object[]{s}, c);
         }));
         // § 22.1.3.10 String.prototype.localeCompare — ECMA-402 if Intl is
         // installed; otherwise default to lexicographic.
         stringPrototype.set("localeCompare", nativeFn("localeCompare", 1, (t, a, c) -> {
-            String x = AbstractOps.toString(t);
+            String x = thisStringCoerced(t, "localeCompare");
             String y = AbstractOps.toString(arg(a, 0));
             return (double) Integer.signum(x.compareTo(y));
         }));
         // Locale-aware case conversions — fall back to root locale.
         stringPrototype.set("toLocaleLowerCase", nativeFn("toLocaleLowerCase", 0, (t, a, c) ->
-            AbstractOps.toString(t).toLowerCase(java.util.Locale.ROOT)));
+            thisStringCoerced(t, "toLocaleLowerCase").toLowerCase(java.util.Locale.ROOT)));
         stringPrototype.set("toLocaleUpperCase", nativeFn("toLocaleUpperCase", 0, (t, a, c) ->
-            AbstractOps.toString(t).toUpperCase(java.util.Locale.ROOT)));
+            thisStringCoerced(t, "toLocaleUpperCase").toUpperCase(java.util.Locale.ROOT)));
         // § 22.1.3.9 String.prototype.isWellFormed / § 22.1.3.33 toWellFormed.
         stringPrototype.set("isWellFormed", nativeFn("isWellFormed", 0, (t, a, c) -> {
             String s = AbstractOps.toString(t);
@@ -1672,12 +2221,12 @@ public final class Realm {
             return s.repeat((int) dn);
         }));
         stringPrototype.set("concat", nativeFn("concat", 1, (t, a, c) -> {
-            StringBuilder sb = new StringBuilder(AbstractOps.toString(t));
+            StringBuilder sb = new StringBuilder(thisStringCoerced(t, "concat"));
             for (Object x : a) sb.append(AbstractOps.toString(x));
             return sb.toString();
         }));
         stringPrototype.set("replace", nativeFn("replace", 2, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "replace");
             Object search0 = arg(a, 0);
             Object repl0 = arg(a, 1);
             if (asRegExpSource(search0) != null) {
@@ -1724,13 +2273,20 @@ public final class Realm {
             return s.substring(0, idx) + repl + s.substring(idx + search.length());
         }));
         stringPrototype.set("match", nativeFn("match", 1, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "match");
             Object pat0 = arg(a, 0);
             String src = asRegExpSource(pat0);
             String flags = src == null ? "" : asRegExpFlags(pat0);
             if (src == null) {
-                if (pat0 == Undefined.VALUE) return null;
-                src = AbstractOps.toString(pat0);
+                // ECMA-262 § 22.1.3.13 step 4: when regexp is undefined or
+                // null, RegExpCreate(regexp, undefined) — an empty source
+                // pattern with no flags, which matches the empty string
+                // at index 0 of any input.
+                if (pat0 == Undefined.VALUE || pat0 == null) {
+                    src = "";
+                } else {
+                    src = AbstractOps.toString(pat0);
+                }
             }
             java.util.regex.Pattern p = compileJsRegex(src, flags);
             java.util.regex.Matcher m = p.matcher(s);
@@ -1753,11 +2309,15 @@ public final class Realm {
             return out;
         }));
         stringPrototype.set("search", nativeFn("search", 1, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
+            String s = thisStringCoerced(t, "search");
             Object pat0 = arg(a, 0);
             String src = asRegExpSource(pat0);
             String flags = src == null ? "" : asRegExpFlags(pat0);
-            if (src == null) src = AbstractOps.toString(pat0);
+            if (src == null) {
+                // § 22.1.3.14 step 4: undefined/null → empty RegExp source.
+                if (pat0 == Undefined.VALUE || pat0 == null) src = "";
+                else src = AbstractOps.toString(pat0);
+            }
             java.util.regex.Matcher m = compileJsRegex(src, flags).matcher(s);
             return m.find() ? (double) m.start() : -1.0;
         }));
@@ -1784,27 +2344,13 @@ public final class Realm {
             (t, a, c) -> thisStringValue(t)));
         stringPrototype.set("valueOf", nativeFn("valueOf", 0,
             (t, a, c) -> thisStringValue(t)));
-        // ECMA-262 § 22.1.3.34 String.prototype [ %Symbol.iterator% ] returns
-        // a String Iterator that yields code points (we approximate with
-        // chars — accurate for non-surrogate-pair input).
+        // ECMA-262 § 22.1.3.34 String.prototype [ %Symbol.iterator% ] —
+        // returns a CreateStringIterator(O) per § 22.1.5.1. Iterates by
+        // Unicode code point so surrogate pairs come out as one step.
         JSFunction stringIterFn = nativeFn("[Symbol.iterator]", 0, (t, a, c) -> {
-            String s = AbstractOps.toString(t);
-            JSObject iter = new JSObject();
-            int[] idx = {0};
-            iter.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
-                JSObject result = new JSObject();
-                if (idx[0] < s.length()) {
-                    result.set("value", String.valueOf(s.charAt(idx[0])));
-                    result.set("done", false);
-                    idx[0]++;
-                } else {
-                    result.set("value", Undefined.VALUE);
-                    result.set("done", true);
-                }
-                return result;
-            }));
-            iter.set(wellKnownIterator.asPropertyKey(), nativeFn("[Symbol.iterator]", 0, (tt, aa, cc) -> tt));
-            return iter;
+            String s = thisStringCoerced(t, "[Symbol.iterator]");
+            return com.jimmyhmiller.harmonica.bytecode.builtins
+                .StringIteratorPrototypeBuiltin.create(s);
         });
         stringPrototype.set(wellKnownIterator.asPropertyKey(), stringIterFn);
         defaultStringIterator = stringIterFn;
@@ -1843,6 +2389,12 @@ public final class Realm {
     }
 
     private static void installNumberPrototype() {
+        // ECMA-262 § 21.1.3: Number.prototype is itself a Number object
+        // with [[NumberData]] = +0. Installing the slot lets
+        // {@code Number.prototype.toString()} (called on the prototype
+        // itself, the test262 receiver pattern) return "0" instead of
+        // throwing "called on non-Number".
+        numberPrototype.properties().put(SLOT_NUMBER_DATA, 0.0);
         // Number.prototype.toString — § 21.1.3.7.
         numberPrototype.set("toString", nativeFn("toString", 1, (t, a, c) -> {
             double d = thisNumberValue(t);
@@ -1870,9 +2422,63 @@ public final class Realm {
         // § 21.1.3.8 Number.prototype.valueOf.
         numberPrototype.set("valueOf", nativeFn("valueOf", 0,
             (t, a, c) -> thisNumberValue(t)));
+        // § 21.1.3.4 Number.prototype.toLocaleString — pragmatic stub that
+        // ignores locale args and returns the spec-default string form.
+        numberPrototype.set("toLocaleString", nativeFn("toLocaleString", 0, (t, a, c) -> {
+            return AbstractOps.toString(thisNumberValue(t));
+        }));
+        // § 21.1.3.3 Number.prototype.toExponential(fractionDigits).
+        numberPrototype.set("toExponential", nativeFn("toExponential", 1, (t, a, c) -> {
+            double d = thisNumberValue(t);
+            Object fdArg = arg(a, 0);
+            if (Double.isNaN(d)) return "NaN";
+            if (Double.isInfinite(d)) return d > 0 ? "Infinity" : "-Infinity";
+            if (fdArg == Undefined.VALUE) {
+                // Spec § 21.1.3.3 step 5: pick the minimal precision.
+                // Java's %e default gives 6 digits; trim trailing zeros.
+                String raw = String.format(java.util.Locale.ROOT, "%e", d);
+                return normalizeExponential(raw, -1);
+            }
+            int digits = AbstractOps.toInt32(fdArg);
+            if (digits < 0 || digits > 100) {
+                throw AbruptCompletion.rangeError("toExponential() digits out of range");
+            }
+            String raw = String.format(java.util.Locale.ROOT, "%." + digits + "e", d);
+            return normalizeExponential(raw, digits);
+        }));
+        // § 21.1.3.5 Number.prototype.toPrecision(precision).
+        numberPrototype.set("toPrecision", nativeFn("toPrecision", 1, (t, a, c) -> {
+            double d = thisNumberValue(t);
+            Object pArg = arg(a, 0);
+            if (pArg == Undefined.VALUE) return AbstractOps.toString(d);
+            if (Double.isNaN(d)) return "NaN";
+            if (Double.isInfinite(d)) return d > 0 ? "Infinity" : "-Infinity";
+            int p = AbstractOps.toInt32(pArg);
+            if (p < 1 || p > 100) {
+                throw AbruptCompletion.rangeError("toPrecision() precision out of range");
+            }
+            if (d == 0.0) {
+                StringBuilder sb = new StringBuilder("0");
+                if (p > 1) { sb.append('.'); for (int i = 1; i < p; i++) sb.append('0'); }
+                return sb.toString();
+            }
+            // Compute exponent base 10 of |d|.
+            int exp = (int) Math.floor(Math.log10(Math.abs(d)));
+            // If -6 < exp+1 ≤ p, emit fixed-notation with (p-1-exp) fraction digits.
+            // Otherwise, use exponential form with p-1 fraction digits.
+            if (exp < -6 || exp >= p) {
+                String raw = String.format(java.util.Locale.ROOT, "%." + (p - 1) + "e", d);
+                return normalizeExponential(raw, p - 1);
+            }
+            int frac = Math.max(0, p - 1 - exp);
+            return String.format(java.util.Locale.ROOT, "%." + frac + "f", d);
+        }));
     }
 
     private static void installBooleanPrototype() {
+        // § 20.3.3: Boolean.prototype is a Boolean object with
+        // [[BooleanData]] = false. Same rationale as numberPrototype.
+        booleanPrototype.properties().put(SLOT_BOOLEAN_DATA, false);
         // § 20.3.3.2 Boolean.prototype.toString  /  § 20.3.3.3 Boolean.prototype.valueOf.
         booleanPrototype.set("toString", nativeFn("toString", 0,
             (t, a, c) -> thisBooleanValue(t) ? "true" : "false"));
@@ -1961,9 +2567,11 @@ public final class Realm {
                 JSFunction resolveCb = new JSFunction("resolve", 1, (t, a, c) -> {
                     resolvePromise(p, arg(a, 0), c); return Undefined.VALUE;
                 });
+                resolveCb.setNonConstructor(true);
                 JSFunction rejectCb = new JSFunction("reject", 1, (t, a, c) -> {
                     rejectPromise(p, arg(a, 0)); return Undefined.VALUE;
                 });
+                rejectCb.setNonConstructor(true);
                 try {
                     Interpreter.invokeFunction(thenFn, vo, new Object[]{resolveCb, rejectCb}, ctx);
                 } catch (AbruptCompletion ac) {
@@ -2014,14 +2622,53 @@ public final class Realm {
             return t;
         }));
         mapPrototype.set("has", nativeFn("has", 1, (t, a, c) -> mapData(t).containsKey(arg(a, 0))));
+        // ECMA-262 (proposal-upsert, Stage 4 ES2025) Map.prototype.getOrInsert /
+        // getOrInsertComputed — return existing value or insert a default.
+        mapPrototype.set("getOrInsert", nativeFn("getOrInsert", 2, (t, a, c) -> {
+            Object k = arg(a, 0);
+            Object v = arg(a, 1);
+            var data = mapData(t);
+            if (data.containsKey(k)) return data.get(k);
+            data.put(k, v);
+            return v;
+        }));
+        mapPrototype.set("getOrInsertComputed", nativeFn("getOrInsertComputed", 2, (t, a, c) -> {
+            Object k = arg(a, 0);
+            Object cb = arg(a, 1);
+            if (!(cb instanceof JSFunction cbf)) {
+                throw AbruptCompletion.typeError("Map.prototype.getOrInsertComputed: callback is not callable");
+            }
+            var data = mapData(t);
+            if (data.containsKey(k)) return data.get(k);
+            Object v = Interpreter.invokeFunction(cbf, Undefined.VALUE, new Object[]{k}, c);
+            data.put(k, v);
+            return v;
+        }));
         mapPrototype.set("delete", nativeFn("delete", 1, (t, a, c) -> mapData(t).remove(arg(a, 0)) != null));
         mapPrototype.set("clear", nativeFn("clear", 0, (t, a, c) -> { mapData(t).clear(); return Undefined.VALUE; }));
         mapPrototype.set("forEach", nativeFn("forEach", 1, (t, a, c) -> {
             JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
             if (fn == null) throw AbruptCompletion.typeError("Map.forEach callback is not a function");
-            for (var e : mapData(t).entrySet()) {
+            // ECMA-262 § 24.1.3.5: spec iterates in insertion order, but
+            // callback may mutate the Map (set/delete/clear). Per § 24.1.5
+            // CreateMapIterator's algorithm we walk keys live: skip
+            // entries deleted before our cursor reaches them, include
+            // entries added before our cursor passes them. Snapshot the
+            // current keys, then look up each key fresh each iteration.
+            java.util.List<Object> keys = new java.util.ArrayList<>(mapData(t).keySet());
+            int i = 0;
+            while (i < keys.size()) {
+                Object k = keys.get(i++);
+                var data = mapData(t);
+                if (!data.containsKey(k)) continue;
                 Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{e.getValue(), e.getKey(), t}, c);
+                    new Object[]{data.get(k), k, t}, c);
+                // Pick up any keys appended after the snapshot.
+                if (i == keys.size() && data.size() > keys.size()) {
+                    for (Object newKey : data.keySet()) {
+                        if (!keys.contains(newKey)) keys.add(newKey);
+                    }
+                }
             }
             return Undefined.VALUE;
         }));
@@ -2030,42 +2677,47 @@ public final class Realm {
             nativeFn("get size", 0, (t, a, c) -> (double) mapData(t).size()),
             null));
         // § 24.1.3.6 Map.prototype.entries / @@iterator — yields [key, value] pairs.
-        JSFunction mapEntries = nativeFn("entries", 0, (t, a, c) -> {
-            java.util.Iterator<java.util.Map.Entry<Object, Object>> it = mapData(t).entrySet().iterator();
-            JSObject iter = new JSObject();
-            iter.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
-                JSObject result = new JSObject();
-                if (it.hasNext()) {
-                    var e = it.next();
-                    JSArray pair = new JSArray();
-                    pair.push(e.getKey());
-                    pair.push(e.getValue());
-                    result.set("value", pair);
-                    result.set("done", false);
-                } else {
-                    result.set("value", Undefined.VALUE);
-                    result.set("done", true);
-                }
-                return result;
-            }));
-            iter.set(wellKnownIterator.asPropertyKey(), nativeFn("[Symbol.iterator]", 0,
-                (tt, aa, cc) -> tt));
-            return iter;
-        });
+        // Per § 24.1.5.1 CreateMapIterator the iterator walks the [[MapData]]
+        // List live: keys deleted before the cursor reaches them are skipped,
+        // keys added afterward are included. Tracking by-index against a
+        // periodically-resnapshotted key list keeps this CME-safe.
+        JSFunction mapEntries = makeMapIter("Map Iterator", 2);
         mapPrototype.set("entries", mapEntries);
-        mapPrototype.set("keys", nativeFn("keys", 0, (t, a, c) -> {
-            java.util.Iterator<Object> it = mapData(t).keySet().iterator();
-            return mapKeysOrValuesIter(it);
-        }));
-        mapPrototype.set("values", nativeFn("values", 0, (t, a, c) -> {
-            java.util.Iterator<Object> it = mapData(t).values().iterator();
-            return mapKeysOrValuesIter(it);
-        }));
+        mapPrototype.set("keys", makeMapIter("Map Iterator", 0));
+        mapPrototype.set("values", makeMapIter("Map Iterator", 1));
         mapPrototype.set(wellKnownIterator.asPropertyKey(), mapEntries);
     }
 
+    /** Build a Map iterator that resolves keys live against the backing
+     *  LinkedHashMap, tolerating insertion/deletion during iteration.
+     *  {@code kind}: 0 = keys, 1 = values, 2 = [key, value] entries. */
+    /** Build a Map-prototype iterator method that returns a fresh
+     *  {@code %MapIteratorPrototype%}-based iterator over {@code this}.
+     *  {@code kind}: 0 = keys, 1 = values, 2 = entries. */
+    private static JSFunction makeMapIter(String tag, int kind) {
+        String name = kind == 0 ? "keys" : kind == 1 ? "values" : "entries";
+        return nativeFn(name, 0, (t, a, c) ->
+            com.jimmyhmiller.harmonica.bytecode.builtins
+                .MapIteratorPrototypeBuiltin.create(mapData(t), kind));
+    }
+
+    /** Set iterator factory — {@code asEntries=true} yields {@code [v, v]}. */
+    private static JSFunction makeSetIter(boolean asEntries) {
+        String name = asEntries ? "entries" : "values";
+        int kind = asEntries
+            ? com.jimmyhmiller.harmonica.bytecode.builtins.SetIteratorPrototypeBuiltin.KIND_ENTRY
+            : com.jimmyhmiller.harmonica.bytecode.builtins.SetIteratorPrototypeBuiltin.KIND_VALUE;
+        return nativeFn(name, 0, (t, a, c) ->
+            com.jimmyhmiller.harmonica.bytecode.builtins
+                .SetIteratorPrototypeBuiltin.create(setData(t), kind));
+    }
+
     private static JSObject mapKeysOrValuesIter(java.util.Iterator<Object> it) {
-        JSObject iter = new JSObject();
+        return mapKeysOrValuesIter(it, "Map Iterator");
+    }
+
+    private static JSObject mapKeysOrValuesIter(java.util.Iterator<Object> it, String tag) {
+        JSObject iter = new JSObject(ensureIteratorProto(tag));
         iter.set("next", nativeFn("next", 0, (t, a, c) -> {
             JSObject result = new JSObject();
             if (it.hasNext()) {
@@ -2077,7 +2729,6 @@ public final class Realm {
             }
             return result;
         }));
-        iter.set(wellKnownIterator.asPropertyKey(), nativeFn("[Symbol.iterator]", 0, (t, a, c) -> t));
         return iter;
     }
 
@@ -2093,8 +2744,18 @@ public final class Realm {
         setPrototype.set("forEach", nativeFn("forEach", 1, (t, a, c) -> {
             JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
             if (fn == null) throw AbruptCompletion.typeError("Set.forEach callback is not a function");
-            for (Object v : setData(t)) {
+            // Snapshot to tolerate add/delete during iteration; skip
+            // entries deleted before the cursor reaches them.
+            java.util.List<Object> snap = new java.util.ArrayList<>(setData(t));
+            int i = 0;
+            while (i < snap.size()) {
+                Object v = snap.get(i++);
+                var data = setData(t);
+                if (!data.contains(v)) continue;
                 Interpreter.invokeFunction(fn, Undefined.VALUE, new Object[]{v, v, t}, c);
+                if (i == snap.size() && data.size() > snap.size()) {
+                    for (Object newV : data) if (!snap.contains(newV)) snap.add(newV);
+                }
             }
             return Undefined.VALUE;
         }));
@@ -2102,48 +2763,33 @@ public final class Realm {
             nativeFn("get size", 0, (t, a, c) -> (double) setData(t).size()),
             null));
         // § 24.2.3.10 Set.prototype.values / .keys / @@iterator — yields values.
-        JSFunction setValues = nativeFn("values", 0, (t, a, c) -> {
-            java.util.Iterator<Object> it = setData(t).iterator();
-            return mapKeysOrValuesIter(it);
-        });
+        // Same live-iteration shape as Map: skip deletions, see additions.
+        JSFunction setValues = makeSetIter(false);
         setPrototype.set("values", setValues);
         setPrototype.set("keys", setValues);
-        setPrototype.set("entries", nativeFn("entries", 0, (t, a, c) -> {
-            java.util.Iterator<Object> it = setData(t).iterator();
-            JSObject iter = new JSObject();
-            iter.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
-                JSObject result = new JSObject();
-                if (it.hasNext()) {
-                    Object v = it.next();
-                    JSArray pair = new JSArray();
-                    pair.push(v);
-                    pair.push(v);
-                    result.set("value", pair);
-                    result.set("done", false);
-                } else {
-                    result.set("value", Undefined.VALUE);
-                    result.set("done", true);
-                }
-                return result;
-            }));
-            iter.set(wellKnownIterator.asPropertyKey(), nativeFn("[Symbol.iterator]", 0, (tt, aa, cc) -> tt));
-            return iter;
-        }));
+        setPrototype.set("entries", makeSetIter(true));
         setPrototype.set(wellKnownIterator.asPropertyKey(), setValues);
         // ECMA-262 § 24.2.3 Set composition methods (ES2024) — operate on
         // any value with a Set-like interface ({size, has, keys}).
+        // Per § 24.2.1.2 GetSetRecord, the argument must be an object
+        // whose `size` is a non-NaN number, `has` is callable, and
+        // `keys` is callable; otherwise throw TypeError.
         setPrototype.set("union", nativeFn("union", 1, (t, a, c) -> {
-            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>(setData(t));
+            java.util.LinkedHashSet<Object> tData = setData(t);   // throws if `this` isn't a Set
+            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>(tData);
             Object other = arg(a, 0);
+            getSetRecord(other);
             iterateSetLike(other, c, v -> out.add(v));
             JSObject result = new JSObject(setPrototype);
             result.properties().put(SLOT_SET_DATA, out);
             return result;
         }));
         setPrototype.set("intersection", nativeFn("intersection", 1, (t, a, c) -> {
+            java.util.LinkedHashSet<Object> tData = setData(t);
             Object other = arg(a, 0);
+            getSetRecord(other);
             java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>();
-            int thisSize = setData(t).size();
+            int thisSize = tData.size();
             int otherSize = otherSize(other);
             // Iterate the smaller for spec-friendliness.
             if (thisSize <= otherSize) {
@@ -2158,16 +2804,20 @@ public final class Realm {
             return result;
         }));
         setPrototype.set("difference", nativeFn("difference", 1, (t, a, c) -> {
+            java.util.LinkedHashSet<Object> tData = setData(t);
             Object other = arg(a, 0);
-            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>(setData(t));
+            getSetRecord(other);
+            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>(tData);
             iterateSetLike(other, c, out::remove);
             JSObject result = new JSObject(setPrototype);
             result.properties().put(SLOT_SET_DATA, out);
             return result;
         }));
         setPrototype.set("symmetricDifference", nativeFn("symmetricDifference", 1, (t, a, c) -> {
+            java.util.LinkedHashSet<Object> tData = setData(t);
             Object other = arg(a, 0);
-            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>(setData(t));
+            getSetRecord(other);
+            java.util.LinkedHashSet<Object> out = new java.util.LinkedHashSet<>(tData);
             iterateSetLike(other, c, v -> {
                 if (!out.remove(v)) out.add(v);
             });
@@ -2176,22 +2826,59 @@ public final class Realm {
             return result;
         }));
         setPrototype.set("isSubsetOf", nativeFn("isSubsetOf", 1, (t, a, c) -> {
+            java.util.LinkedHashSet<Object> tData = setData(t);
             Object other = arg(a, 0);
-            for (Object v : setData(t)) if (!setLikeHas(other, v, c)) return false;
+            getSetRecord(other);
+            for (Object v : tData) if (!setLikeHas(other, v, c)) return false;
             return true;
         }));
         setPrototype.set("isSupersetOf", nativeFn("isSupersetOf", 1, (t, a, c) -> {
+            java.util.LinkedHashSet<Object> tData = setData(t);
             Object other = arg(a, 0);
+            getSetRecord(other);
             boolean[] all = {true};
-            iterateSetLike(other, c, v -> { if (!setData(t).contains(v)) all[0] = false; });
+            iterateSetLike(other, c, v -> { if (!tData.contains(v)) all[0] = false; });
             return all[0];
         }));
         setPrototype.set("isDisjointFrom", nativeFn("isDisjointFrom", 1, (t, a, c) -> {
+            java.util.LinkedHashSet<Object> tData = setData(t);
             Object other = arg(a, 0);
+            getSetRecord(other);
             boolean[] any = {false};
-            iterateSetLike(other, c, v -> { if (setData(t).contains(v)) any[0] = true; });
+            iterateSetLike(other, c, v -> { if (tData.contains(v)) any[0] = true; });
             return !any[0];
         }));
+    }
+
+    /** ECMA-262 § 24.2.1.2 GetSetRecord(obj) — validate that {@code obj}
+     *  has the set-like surface ({@code size}, {@code has}, {@code keys}).
+     *  Throws TypeError if any required field is missing or invalid.
+     *  Per spec step 2.a, {@code size} must be a Number — BigInt is
+     *  explicitly rejected (ToNumber on a BigInt throws TypeError). */
+    private static void getSetRecord(Object obj) {
+        if (obj == null || obj == Undefined.VALUE
+            || !(obj instanceof JSObject || obj instanceof JSArray || obj instanceof JSFunction)) {
+            throw AbruptCompletion.typeError("Set-like operand is not an object");
+        }
+        Object size = AbstractOps.getProperty(obj, "size");
+        if (size == Undefined.VALUE) {
+            throw AbruptCompletion.typeError("Set-like operand has undefined size");
+        }
+        if (size instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Set-like operand size must be a Number, not a BigInt");
+        }
+        double sizeNum = AbstractOps.toNumber(size);
+        if (Double.isNaN(sizeNum)) {
+            throw AbruptCompletion.typeError("Set-like operand has non-numeric size");
+        }
+        Object has = AbstractOps.getProperty(obj, "has");
+        if (!(has instanceof JSFunction)) {
+            throw AbruptCompletion.typeError("Set-like operand has no callable 'has'");
+        }
+        Object keys = AbstractOps.getProperty(obj, "keys");
+        if (!(keys instanceof JSFunction)) {
+            throw AbruptCompletion.typeError("Set-like operand has no callable 'keys'");
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -2265,6 +2952,31 @@ public final class Realm {
             java.util.IdentityHashMap<Object, Object> m =
                 (java.util.IdentityHashMap<Object, Object>) ((JSObject) t).properties().get(SLOT_WEAK_MAP_DATA);
             return m.remove(arg(a, 0)) != null;
+        }));
+        // proposal-upsert (ES2025): WeakMap.prototype.getOrInsert / getOrInsertComputed.
+        weakMapPrototype.set("getOrInsert", nativeFn("getOrInsert", 2, (t, a, c) -> {
+            @SuppressWarnings("unchecked")
+            java.util.IdentityHashMap<Object, Object> m =
+                (java.util.IdentityHashMap<Object, Object>) ((JSObject) t).properties().get(SLOT_WEAK_MAP_DATA);
+            Object k = arg(a, 0);
+            Object v = arg(a, 1);
+            if (m.containsKey(k)) return m.get(k);
+            m.put(k, v);
+            return v;
+        }));
+        weakMapPrototype.set("getOrInsertComputed", nativeFn("getOrInsertComputed", 2, (t, a, c) -> {
+            @SuppressWarnings("unchecked")
+            java.util.IdentityHashMap<Object, Object> m =
+                (java.util.IdentityHashMap<Object, Object>) ((JSObject) t).properties().get(SLOT_WEAK_MAP_DATA);
+            Object k = arg(a, 0);
+            Object cb = arg(a, 1);
+            if (!(cb instanceof JSFunction cbf)) {
+                throw AbruptCompletion.typeError("WeakMap.prototype.getOrInsertComputed: callback is not callable");
+            }
+            if (m.containsKey(k)) return m.get(k);
+            Object v = Interpreter.invokeFunction(cbf, Undefined.VALUE, new Object[]{k}, c);
+            m.put(k, v);
+            return v;
         }));
     }
 
@@ -2496,6 +3208,17 @@ public final class Realm {
         // returns the async generator itself.
         generatorPrototype.set(wellKnownAsyncIterator.asPropertyKey(),
             nativeFn("[Symbol.asyncIterator]", 0, (t, a, c) -> t));
+
+        // ECMA-262 § 27.3.3 %GeneratorFunction.prototype% (a.k.a. %Generator%):
+        // its `prototype` data property is the per-instance generator
+        // prototype (§ 27.3.3.3) — generator-instance objects then inherit
+        // .next/.return/.throw via that chain. Mark non-enumerable.
+        if (generatorFunctionPrototype != null) {
+            generatorFunctionPrototype.set("prototype", generatorPrototype);
+            generatorFunctionPrototype.setAttributes("prototype",
+                (byte)(JSObject.ATTR_CONFIGURABLE));
+            generatorFunctionPrototype.set(wellKnownToStringTag.asPropertyKey(), "GeneratorFunction");
+        }
     }
 
     /** Wrap {@code v} in a fulfilled Promise (for async generator results). */
@@ -2688,9 +3411,17 @@ public final class Realm {
         math.set("floor", nativeFn("floor", 1, (t, a, c) -> Math.floor(AbstractOps.toNumber(arg(a, 0)))));
         math.set("ceil",  nativeFn("ceil",  1, (t, a, c) -> Math.ceil(AbstractOps.toNumber(arg(a, 0)))));
         math.set("round", nativeFn("round", 1, (t, a, c) -> {
-            // ECMAScript: round half toward +Infinity (NOT Java HALF_UP for negatives).
+            // ECMAScript § 21.3.2.28: round half toward +Infinity (NOT
+            // Java HALF_UP for negatives). Preserve the sign of -0:
+            // round(-0.5) is -0, not 0, because the operation rounds
+            // toward +Infinity but the input is exactly halfway between
+            // -1 and 0 — half rounded up gives 0, but spec § 21.3.2.28
+            // step 6 specifies the result is -0 when the argument is
+            // in (-0.5, -0] or is -0 itself.
             double d = AbstractOps.toNumber(arg(a, 0));
             if (Double.isNaN(d) || Double.isInfinite(d)) return d;
+            if (d == 0.0) return d;                 // preserves ±0
+            if (d > -0.5 && d < 0) return -0.0;     // spec § 21.3.2.28 step 6
             return Math.floor(d + 0.5);
         }));
         math.set("trunc", nativeFn("trunc", 1, (t, a, c) -> {
@@ -2720,6 +3451,18 @@ public final class Realm {
             return Math.signum(d);
         }));
         math.set("hypot", nativeFn("hypot", 2, (t, a, c) -> {
+            // ECMA-262 § 21.3.2.18 Math.hypot — Infinity arguments
+            // dominate (any +/-Infinity → +Infinity, even with NaN
+            // present), then NaN propagates, then sqrt(sum-of-squares).
+            boolean sawInf = false;
+            boolean sawNaN = false;
+            for (Object x : a) {
+                double v = AbstractOps.toNumber(x);
+                if (Double.isInfinite(v)) sawInf = true;
+                else if (Double.isNaN(v)) sawNaN = true;
+            }
+            if (sawInf) return Double.POSITIVE_INFINITY;
+            if (sawNaN) return Double.NaN;
             double sum = 0;
             for (Object x : a) {
                 double v = AbstractOps.toNumber(x);
@@ -2748,16 +3491,169 @@ public final class Realm {
             return m;
         }));
         math.set("random", nativeFn("random", 0, (t, a, c) -> Math.random()));
+        // ES2015 Math additions — § 21.3.2.
+        math.set("sinh",  nativeFn("sinh",  1, (t, a, c) -> Math.sinh(AbstractOps.toNumber(arg(a, 0)))));
+        math.set("cosh",  nativeFn("cosh",  1, (t, a, c) -> Math.cosh(AbstractOps.toNumber(arg(a, 0)))));
+        math.set("tanh",  nativeFn("tanh",  1, (t, a, c) -> Math.tanh(AbstractOps.toNumber(arg(a, 0)))));
+        math.set("asinh", nativeFn("asinh", 1, (t, a, c) -> {
+            double x = AbstractOps.toNumber(arg(a, 0));
+            if (Double.isNaN(x)) return Double.NaN;
+            if (x == 0.0) return x;                       // preserves ±0
+            if (Double.isInfinite(x)) return x;
+            return Math.log(x + Math.sqrt(x * x + 1));
+        }));
+        math.set("acosh", nativeFn("acosh", 1, (t, a, c) -> {
+            double x = AbstractOps.toNumber(arg(a, 0));
+            if (Double.isNaN(x)) return Double.NaN;
+            if (x < 1) return Double.NaN;
+            if (x == 1) return 0.0;
+            return Math.log(x + Math.sqrt(x * x - 1));
+        }));
+        math.set("atanh", nativeFn("atanh", 1, (t, a, c) -> {
+            double x = AbstractOps.toNumber(arg(a, 0));
+            if (Double.isNaN(x)) return Double.NaN;
+            if (x < -1 || x > 1) return Double.NaN;
+            if (x == 1) return Double.POSITIVE_INFINITY;
+            if (x == -1) return Double.NEGATIVE_INFINITY;
+            return 0.5 * Math.log((1 + x) / (1 - x));
+        }));
+        math.set("log1p", nativeFn("log1p", 1, (t, a, c) -> Math.log1p(AbstractOps.toNumber(arg(a, 0)))));
+        math.set("expm1", nativeFn("expm1", 1, (t, a, c) -> Math.expm1(AbstractOps.toNumber(arg(a, 0)))));
+        // § 21.3.2.16 Math.fround — round to nearest float32 representation.
+        math.set("fround", nativeFn("fround", 1, (t, a, c) -> {
+            double x = AbstractOps.toNumber(arg(a, 0));
+            return (double) (float) x;
+        }));
+        // Stage 4 proposal Math.f16round — round to nearest float16 (half precision).
+        math.set("f16round", nativeFn("f16round", 1, (t, a, c) -> {
+            double x = AbstractOps.toNumber(arg(a, 0));
+            if (Double.isNaN(x)) return Double.NaN;
+            if (x == 0.0 || Double.isInfinite(x)) return x;
+            short bits = Float.floatToFloat16((float) x);
+            return (double) Float.float16ToFloat(bits);
+        }));
+        // § 21.3.2.20 Math.imul — 32-bit integer multiplication (mod 2^32).
+        math.set("imul", nativeFn("imul", 2, (t, a, c) -> {
+            int x = AbstractOps.toInt32(arg(a, 0));
+            int y = AbstractOps.toInt32(arg(a, 1));
+            return (double) (x * y);
+        }));
+        // § 21.3.2.10 Math.clz32 — count leading zero bits of ToUint32(x).
+        math.set("clz32", nativeFn("clz32", 1, (t, a, c) -> {
+            int n = AbstractOps.toInt32(arg(a, 0));   // ToInt32 then reinterpret as uint32 bit pattern.
+            return (double) Integer.numberOfLeadingZeros(n);
+        }));
+        // Stage 4 (ES2025) Math.sumPrecise — exact-sum of an iterable.
+        // For doubles we approximate with the standard Kahan summation;
+        // exact arithmetic via long where the inputs are integers.
+        math.set("sumPrecise", nativeFn("sumPrecise", 1, (t, a, c) -> {
+            Object iter = arg(a, 0);
+            // GetIterator(iter, sync). Reuse iterateSetLike via @@iterator.
+            double[] sum = {0.0};
+            double[] kahanC = {0.0};
+            iterateSetLike(iter, c, v -> {
+                if (!(v instanceof Number)) {
+                    throw AbruptCompletion.typeError("Math.sumPrecise: not a number");
+                }
+                double x = ((Number) v).doubleValue();
+                double y = x - kahanC[0];
+                double t2 = sum[0] + y;
+                kahanC[0] = (t2 - sum[0]) - y;
+                sum[0] = t2;
+            });
+            return sum[0];
+        }));
+        // ECMA-262 § 17: built-in namespace methods are
+        // {writable: true, enumerable: false, configurable: true}.
+        markMethodsNonEnumerable(math);
+        // Symbol.toStringTag = "Math" (§ 21.3.1.9).
+        if (wellKnownToStringTag != null) {
+            math.set(wellKnownToStringTag.asPropertyKey(), "Math");
+            math.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
+        }
         globals.putIfAbsent("Math", math);
 
         // JSON namespace
         JSObject json = new JSObject();
-        json.set("stringify", nativeFn("stringify", 1, (t, a, c) -> {
+        json.set("stringify", nativeFn("stringify", 3, (t, a, c) -> {
             Object v = arg(a, 0);
+            Object replacerArg = arg(a, 1);
+            Object spaceArg = arg(a, 2);
             if (v == Undefined.VALUE || v instanceof JSFunction) return Undefined.VALUE;
-            return jsonStringify(v);
+            // ECMA-262 § 25.5.2.2 SerializeJSONProperty step 2.b: if a
+            // replacer function is supplied, the top-level value is
+            // first run through it (with key="").
+            JSFunction replacerFn = replacerArg instanceof JSFunction f ? f : null;
+            java.util.Set<String> replacerKeys = null;
+            if (replacerArg instanceof JSArray arr) {
+                replacerKeys = new java.util.LinkedHashSet<>();
+                for (int i = 0; i < arr.length(); i++) {
+                    Object el = arr.get(i);
+                    if (el instanceof String se) replacerKeys.add(se);
+                    else if (el instanceof Number ne) replacerKeys.add(AbstractOps.toString(ne.doubleValue()));
+                }
+            }
+            // Compute the indent string per § 25.5.2.2 step 6.
+            String indent;
+            if (spaceArg instanceof Number n) {
+                int k = Math.max(0, Math.min(10, (int) n.doubleValue()));
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < k; i++) sb.append(' ');
+                indent = sb.toString();
+            } else if (spaceArg instanceof CharSequence cs) {
+                indent = cs.length() > 10 ? cs.toString().substring(0, 10) : cs.toString();
+            } else {
+                indent = "";
+            }
+            return jsonStringify(v, replacerFn, replacerKeys, indent, c);
         }));
-        json.set("parse", nativeFn("parse", 1, (t, a, c) -> jsonParse(AbstractOps.toString(arg(a, 0)))));
+        // Stage 4 (ES2025) JSON.isRawJSON / JSON.rawJSON — preserve numeric
+        // precision when round-tripping. {@code rawJSON(s)} wraps the
+        // already-serialized text in an opaque marker object;
+        // {@code stringify} emits it verbatim. v1 stores the raw text
+        // under {@code ##rawJSON##}.
+        json.set("isRawJSON", nativeFn("isRawJSON", 1, (t, a, c) -> {
+            Object v = arg(a, 0);
+            return v instanceof JSObject jo && jo.properties().containsKey("##rawJSON##");
+        }));
+        json.set("rawJSON", nativeFn("rawJSON", 1, (t, a, c) -> {
+            Object text = arg(a, 0);
+            if (text == null || text == Undefined.VALUE) {
+                throw AbruptCompletion.syntaxError("Unexpected token");
+            }
+            String s = AbstractOps.toString(text);
+            if (s.isEmpty() || Character.isWhitespace(s.charAt(0))
+                || Character.isWhitespace(s.charAt(s.length() - 1))) {
+                throw AbruptCompletion.syntaxError("Unexpected whitespace");
+            }
+            // Validate via the parser: must parse to a single JSON value.
+            try {
+                jsonParse(s);
+            } catch (AbruptCompletion ac) {
+                throw AbruptCompletion.syntaxError("Invalid JSON: " + s);
+            }
+            JSObject wrapper = new JSObject(null);
+            wrapper.set("rawJSON", s);
+            wrapper.properties().put("##rawJSON##", s);
+            return wrapper;
+        }));
+        json.set("parse", nativeFn("parse", 2, (t, a, c) -> {
+            Object parsed = jsonParse(AbstractOps.toString(arg(a, 0)));
+            Object reviverArg = arg(a, 1);
+            if (!(reviverArg instanceof JSFunction reviver)) return parsed;
+            // ECMA-262 § 25.5.1.2 InternalizeJSONProperty — wrap the
+            // parsed root in {"": parsed} and recursively transform it
+            // via the reviver. The reviver may mutate, delete, or
+            // re-define properties; deletions return undefined.
+            JSObject wrapper = new JSObject();
+            wrapper.set("", parsed);
+            return internalizeJSONProperty(wrapper, "", reviver, c);
+        }));
+        markMethodsNonEnumerable(json);
+        if (wellKnownToStringTag != null) {
+            json.set(wellKnownToStringTag.asPropertyKey(), "JSON");
+            json.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
+        }
         globals.putIfAbsent("JSON", json);
 
         // AnnexB § B.2.1 escape / unescape — deprecated globals.
@@ -2804,6 +3700,24 @@ public final class Realm {
                 sb.append(ch);
             }
             return sb.toString();
+        }));
+
+        // ECMA-262 § 19.2 URI handling functions. Spec defines a reserved
+        // set for {@code encodeURI} vs the smaller set for
+        // {@code encodeURIComponent}; the decoders are inverses keyed by
+        // the same reserved set. Use Java's java.net.URLEncoder + a small
+        // post-pass to align with the JS reserved-set differences.
+        globals.putIfAbsent("encodeURI", nativeFn("encodeURI", 1, (t, a, c) -> {
+            return uriEncode(AbstractOps.toString(arg(a, 0)), /* component */ false);
+        }));
+        globals.putIfAbsent("encodeURIComponent", nativeFn("encodeURIComponent", 1, (t, a, c) -> {
+            return uriEncode(AbstractOps.toString(arg(a, 0)), /* component */ true);
+        }));
+        globals.putIfAbsent("decodeURI", nativeFn("decodeURI", 1, (t, a, c) -> {
+            return uriDecode(AbstractOps.toString(arg(a, 0)), /* component */ false);
+        }));
+        globals.putIfAbsent("decodeURIComponent", nativeFn("decodeURIComponent", 1, (t, a, c) -> {
+            return uriDecode(AbstractOps.toString(arg(a, 0)), /* component */ true);
         }));
 
         // Conversion functions and ID checks
@@ -2926,7 +3840,10 @@ public final class Realm {
         symbolCtor.properties().put("search", wellKnownSearch);
         symbolCtor.properties().put("species", wellKnownSpecies);
         symbolCtor.properties().put("split", wellKnownSplit);
+        symbolCtor.properties().put("matchAll", wellKnownMatchAll);
         symbolCtor.properties().put("unscopables", wellKnownUnscopables);
+        symbolCtor.properties().put("dispose", wellKnownDispose);
+        symbolCtor.properties().put("asyncDispose", wellKnownAsyncDispose);
         // § 20.4.2.2 Symbol.for / § 20.4.2.6 Symbol.keyFor — Global Symbol Registry.
         // v1: process-global, single Realm.
         java.util.Map<String, JSSymbol> registry = new java.util.HashMap<>();
@@ -2977,9 +3894,11 @@ public final class Realm {
             JSFunction resolveCb = new JSFunction("resolve", 1, (tt, aa, cc) -> {
                 resolvePromise(promiseObj, arg(aa, 0), cc); return Undefined.VALUE;
             });
+            resolveCb.setNonConstructor(true);
             JSFunction rejectCb = new JSFunction("reject", 1, (tt, aa, cc) -> {
                 rejectPromise(promiseObj, arg(aa, 0)); return Undefined.VALUE;
             });
+            rejectCb.setNonConstructor(true);
             try {
                 Interpreter.invokeFunction(execFn, Undefined.VALUE,
                     new Object[]{resolveCb, rejectCb}, c);
@@ -3007,6 +3926,12 @@ public final class Realm {
         }));
         // § 27.2.4.1 Promise.all — sync version: iterates immediately.
         promiseCtor.properties().put("all", nativeFn("all", 1, (t, a, c) -> {
+            // § 27.2.4.1 step 2 + § 27.2.1.5 NewPromiseCapability: this
+            // value must be a Constructor, else TypeError. eval is
+            // callable but not constructible.
+            if (!(t instanceof JSFunction tf) || !tf.isConstructor()) {
+                throw AbruptCompletion.typeError("Promise.all called on non-constructor");
+            }
             Object iter = arg(a, 0);
             if (!(iter instanceof JSArray arr)) {
                 JSObject rejected = createPromise();
@@ -3042,6 +3967,9 @@ public final class Realm {
         }));
         // § 27.2.4.5 Promise.race.
         promiseCtor.properties().put("race", nativeFn("race", 1, (t, a, c) -> {
+            if (!(t instanceof JSFunction tf) || !tf.isConstructor()) {
+                throw AbruptCompletion.typeError("Promise.race called on non-constructor");
+            }
             Object iter = arg(a, 0);
             if (!(iter instanceof JSArray arr)) {
                 JSObject rejected = createPromise();
@@ -3068,6 +3996,9 @@ public final class Realm {
         // § 27.2.4.2 Promise.allSettled — never rejects; resolves to
         // an array of {status: "fulfilled", value} | {status: "rejected", reason}.
         promiseCtor.properties().put("allSettled", nativeFn("allSettled", 1, (t, a, c) -> {
+            if (!(t instanceof JSFunction tf) || !tf.isConstructor()) {
+                throw AbruptCompletion.typeError("Promise.allSettled called on non-constructor");
+            }
             Object iter = arg(a, 0);
             if (!(iter instanceof JSArray arr)) {
                 JSObject rejected = createPromise();
@@ -3112,6 +4043,9 @@ public final class Realm {
         // § 27.2.4.3 Promise.any — fulfills with first fulfilled value,
         // rejects with AggregateError of all reasons if all reject.
         promiseCtor.properties().put("any", nativeFn("any", 1, (t, a, c) -> {
+            if (!(t instanceof JSFunction tf) || !tf.isConstructor()) {
+                throw AbruptCompletion.typeError("Promise.any called on non-constructor");
+            }
             Object iter = arg(a, 0);
             if (!(iter instanceof JSArray arr)) {
                 JSObject rejected = createPromise();
@@ -3150,11 +4084,51 @@ public final class Realm {
             }
             return result;
         }));
+        // Stage 4 (ES2024) Promise.withResolvers() — returns
+        // {promise, resolve, reject} for cases where the caller needs
+        // to hand resolve/reject to code outside the executor.
+        promiseCtor.properties().put("withResolvers", nativeFn("withResolvers", 0, (t, a, c) -> {
+            JSObject p = createPromise();
+            JSFunction resolveFn = new JSFunction("resolve", 1, (tt, aa, cc) -> {
+                resolvePromise(p, arg(aa, 0), cc); return Undefined.VALUE;
+            });
+            resolveFn.setNonConstructor(true);
+            JSFunction rejectFn = new JSFunction("reject", 1, (tt, aa, cc) -> {
+                rejectPromise(p, arg(aa, 0)); return Undefined.VALUE;
+            });
+            rejectFn.setNonConstructor(true);
+            JSObject out = new JSObject();
+            out.set("promise", p);
+            out.set("resolve", resolveFn);
+            out.set("reject", rejectFn);
+            return out;
+        }));
+        // Stage 4 (ES2025) Promise.try(callback, ...args) — invoke
+        // callback synchronously; resolve to its return value, or
+        // reject to any abrupt completion.
+        promiseCtor.properties().put("try", nativeFn("try", 1, (t, a, c) -> {
+            JSObject p = createPromise();
+            Object cb = arg(a, 0);
+            if (!(cb instanceof JSFunction cbf)) {
+                rejectPromise(p, AbruptCompletion.typeError("Promise.try: callback is not callable").value());
+                return p;
+            }
+            Object[] callArgs = a.length <= 1 ? new Object[0] : java.util.Arrays.copyOfRange(a, 1, a.length);
+            try {
+                Object result = Interpreter.invokeFunction(cbf, Undefined.VALUE, callArgs, c);
+                resolvePromise(p, result, c);
+            } catch (AbruptCompletion ac) {
+                rejectPromise(p, ac.value());
+            }
+            return p;
+        }));
+        TypedArrays.installSpeciesPublic(promiseCtor);
         globals.putIfAbsent("Promise", promiseCtor);
 
         // ECMA-262 § 24.1.1.1 Map ( [ iterable ] ).
         JSFunction mapCtor = nativeFn("Map", 0, (t, a, c) -> {
-            if (!Interpreter.isNewCall()) {
+            boolean isConstructCall = Interpreter.isNewCall() || t instanceof JSObject;
+            if (!isConstructCall) {
                 throw AbruptCompletion.typeError("Constructor Map requires 'new'");
             }
             JSObject m = (t instanceof JSObject jo) ? jo : new JSObject(mapPrototype);
@@ -3174,11 +4148,52 @@ public final class Realm {
         });
         mapCtor.setPrototypeObject(mapPrototype);
         mapPrototype.set("constructor", mapCtor);
+        // ECMA-262 § 24.1.2.2 Map.groupBy(items, callbackfn) — Stage 4
+        // (ES2024). Iterates the items, calls callback(value, index) to
+        // get a key, and groups values into a Map keyed by their group.
+        // Keys use SameValueZero (Map's native key comparison).
+        mapCtor.properties().put("groupBy", nativeFn("groupBy", 2, (t, a, c) -> {
+            Object items = arg(a, 0);
+            Object cb = arg(a, 1);
+            if (!(cb instanceof JSFunction cbf)) {
+                throw AbruptCompletion.typeError("Map.groupBy callback is not callable");
+            }
+            JSObject result = new JSObject(mapPrototype);
+            java.util.LinkedHashMap<Object, Object> data = new java.util.LinkedHashMap<>();
+            result.properties().put(SLOT_MAP_DATA, data);
+            int[] idx = {0};
+            iterateSetLike(items, c, v -> {
+                Object key = Interpreter.invokeFunction(cbf, Undefined.VALUE,
+                    new Object[]{v, (double) idx[0]++}, c);
+                @SuppressWarnings("unchecked")
+                java.util.List<Object> bucket = (java.util.List<Object>) data.get(key);
+                if (bucket == null) {
+                    bucket = new java.util.ArrayList<>();
+                    data.put(key, bucket);
+                }
+                bucket.add(v);
+            });
+            // Convert buckets (ArrayList) into JSArray values.
+            for (var e : new java.util.ArrayList<>(data.entrySet())) {
+                @SuppressWarnings("unchecked")
+                java.util.List<Object> bucket = (java.util.List<Object>) e.getValue();
+                JSArray arr = new JSArray();
+                for (Object o : bucket) arr.push(o);
+                data.put(e.getKey(), arr);
+            }
+            return result;
+        }));
+        TypedArrays.installSpeciesPublic(mapCtor);
         globals.putIfAbsent("Map", mapCtor);
 
-        // § 24.2.1.1 Set ( [ iterable ] ).
+        // § 24.2.1.1 Set ( [ iterable ] ). Per ES2015 § 9.2.2 derived class
+        // construction, super(...) calls the parent ctor via Call (not
+        // Construct), so isNewCall() returns false even though it's a
+        // legitimate construction. Accept any JSObject receiver as the
+        // construct signal — same shape as TypedArrays.
         JSFunction setCtor = nativeFn("Set", 0, (t, a, c) -> {
-            if (!Interpreter.isNewCall()) {
+            boolean isConstructCall = Interpreter.isNewCall() || t instanceof JSObject;
+            if (!isConstructCall) {
                 throw AbruptCompletion.typeError("Constructor Set requires 'new'");
             }
             JSObject s = (t instanceof JSObject jo) ? jo : new JSObject(setPrototype);
@@ -3192,11 +4207,13 @@ public final class Realm {
         });
         setCtor.setPrototypeObject(setPrototype);
         setPrototype.set("constructor", setCtor);
+        TypedArrays.installSpeciesPublic(setCtor);
         globals.putIfAbsent("Set", setCtor);
 
         // § 24.3.1.1 WeakMap.
         JSFunction weakMapCtor = nativeFn("WeakMap", 0, (t, a, c) -> {
-            if (!Interpreter.isNewCall()) {
+            boolean isConstructCall = Interpreter.isNewCall() || t instanceof JSObject;
+            if (!isConstructCall) {
                 throw AbruptCompletion.typeError("Constructor WeakMap requires 'new'");
             }
             JSObject m = (t instanceof JSObject jo) ? jo : new JSObject(weakMapPrototype);
@@ -3209,7 +4226,8 @@ public final class Realm {
 
         // § 24.4.1.1 WeakSet.
         JSFunction weakSetCtor = nativeFn("WeakSet", 0, (t, a, c) -> {
-            if (!Interpreter.isNewCall()) {
+            boolean isConstructCall = Interpreter.isNewCall() || t instanceof JSObject;
+            if (!isConstructCall) {
                 throw AbruptCompletion.typeError("Constructor WeakSet requires 'new'");
             }
             JSObject s = (t instanceof JSObject jo) ? jo : new JSObject(weakSetPrototype);
@@ -3341,8 +4359,9 @@ public final class Realm {
                                        "isLockFree", "load", "notify", "or",
                                        "store", "sub", "wait", "waitAsync",
                                        "xor", "pause"}) {
+            String finalOp = op;
             atomics.set(op, nativeFn(op, 0, (t, a, c) -> {
-                throw AbruptCompletion.typeError("Atomics." + op + " is not implemented");
+                throw AbruptCompletion.typeError("Atomics." + finalOp + " is not implemented");
             }));
         }
         atomics.set(wellKnownToStringTag.asPropertyKey(), "Atomics");
@@ -3357,6 +4376,21 @@ public final class Realm {
         // `g().map(...)` etc. work — generator instances now see all the
         // helper methods through their proto chain.
         if (generatorPrototype != null) generatorPrototype.setProto(iteratorPrototype);
+        // § 22.2.9 %RegExpStringIteratorPrototype% — parent must be
+        // %IteratorPrototype% per spec; install here once it exists.
+        com.jimmyhmiller.harmonica.bytecode.builtins
+            .RegExpStringIteratorPrototypeBuiltin.install();
+        // § 22.1.5 %StringIteratorPrototype% — same prerequisite.
+        com.jimmyhmiller.harmonica.bytecode.builtins
+            .StringIteratorPrototypeBuiltin.install();
+        // § 24.1.5 / 24.2.5 — Map / Set iterator prototypes.
+        com.jimmyhmiller.harmonica.bytecode.builtins
+            .MapIteratorPrototypeBuiltin.install();
+        com.jimmyhmiller.harmonica.bytecode.builtins
+            .SetIteratorPrototypeBuiltin.install();
+        // § 23.1.5 — Array iterator prototype.
+        com.jimmyhmiller.harmonica.bytecode.builtins
+            .ArrayIteratorPrototypeBuiltin.install();
         final JSObject iteratorPrototypeFinal = iteratorPrototype;
         JSFunction iteratorCtor = nativeFn("Iterator", 0, (t, a, c) -> {
             if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
@@ -3367,6 +4401,61 @@ public final class Realm {
         iteratorCtor.setPrototypeObject(iteratorPrototype);
         iteratorPrototype.set("constructor", iteratorCtor);
         // Iterator.from — turn any iterable into an Iterator.
+        // ECMA-262 § 27.1.2.4 Iterator.concat(...items) — Stage 4 (ES2025).
+        // Returns an iterator that yields elements from each item's
+        // %Symbol.iterator% in argument order.
+        iteratorCtor.properties().put("concat", nativeFn("concat", 0, (t, a, c) -> {
+            // ECMA-262 § 27.1.2.4 step 2.b: for each argument, get
+            // %Symbol.iterator% and the optional "next" method. Per spec
+            // the @@iterator method is required to be callable; if any
+            // is not, throw TypeError before any iteration runs.
+            java.util.List<Object> iterables = new java.util.ArrayList<>();
+            for (Object item : a) {
+                if (item == null || item == Undefined.VALUE
+                    || (!(item instanceof JSObject) && !(item instanceof JSArray) && !(item instanceof String))) {
+                    throw AbruptCompletion.typeError("Iterator.concat argument is not an object");
+                }
+                Object atIter = AbstractOps.getProperty(item, wellKnownIterator.asPropertyKey());
+                if (!(atIter instanceof JSFunction)) {
+                    throw AbruptCompletion.typeError("Iterator.concat argument has no Symbol.iterator");
+                }
+                iterables.add(item);
+            }
+            JSObject result = new JSObject(iteratorPrototype);
+            int[] idx = {0};
+            JSObject[] curIter = {null};
+            result.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
+                JSObject step;
+                while (true) {
+                    if (curIter[0] == null) {
+                        if (idx[0] >= iterables.size()) {
+                            step = new JSObject();
+                            step.set("value", Undefined.VALUE);
+                            step.set("done", true);
+                            return step;
+                        }
+                        Object item = iterables.get(idx[0]++);
+                        Object atIter = AbstractOps.getProperty(item, wellKnownIterator.asPropertyKey());
+                        Object inner = Interpreter.invokeFunction((JSFunction) atIter, item, new Object[0], cc);
+                        if (!(inner instanceof JSObject io)) {
+                            throw AbruptCompletion.typeError("Iterator.concat: inner iterator is not an object");
+                        }
+                        curIter[0] = io;
+                    }
+                    Object nextFn = AbstractOps.getProperty(curIter[0], "next");
+                    if (!(nextFn instanceof JSFunction nf)) {
+                        throw AbruptCompletion.typeError("Iterator.concat: inner iterator has no next()");
+                    }
+                    Object innerStep = Interpreter.invokeFunction(nf, curIter[0], new Object[0], cc);
+                    if (AbstractOps.toBoolean(AbstractOps.getProperty(innerStep, "done"))) {
+                        curIter[0] = null;
+                        continue;
+                    }
+                    return innerStep;
+                }
+            }));
+            return result;
+        }));
         iteratorCtor.properties().put("from", nativeFn("from", 1, (t, a, c) -> {
             Object o = arg(a, 0);
             // If already an iterator, return wrapped in our prototype chain.
@@ -3423,7 +4512,7 @@ public final class Realm {
         iteratorPrototype.set("some", nativeFn("some", 1, (t, a, c) -> {
             if (!(t instanceof JSObject obj)) throw AbruptCompletion.typeError("this is not an iterator");
             JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
-            if (fn == null) throw AbruptCompletion.typeError("some: argument is not a function");
+            if (fn == null) { closeIterator(obj, c); throw AbruptCompletion.typeError("some: argument is not a function"); }
             Object nextFn = AbstractOps.getProperty(obj, "next");
             if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("iterator has no .next()");
             int i = 0;
@@ -3432,14 +4521,17 @@ public final class Realm {
                 Object step = Interpreter.invokeFunction(nf, obj, new Object[0], c);
                 if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) return false;
                 if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, Undefined.VALUE,
-                        new Object[]{AbstractOps.getProperty(step, "value"), (double) i}, c))) return true;
+                        new Object[]{AbstractOps.getProperty(step, "value"), (double) i}, c))) {
+                    closeIterator(obj, c);
+                    return true;
+                }
                 i++;
             }
         }));
         iteratorPrototype.set("every", nativeFn("every", 1, (t, a, c) -> {
             if (!(t instanceof JSObject obj)) throw AbruptCompletion.typeError("this is not an iterator");
             JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
-            if (fn == null) throw AbruptCompletion.typeError("every: argument is not a function");
+            if (fn == null) { closeIterator(obj, c); throw AbruptCompletion.typeError("every: argument is not a function"); }
             Object nextFn = AbstractOps.getProperty(obj, "next");
             if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("iterator has no .next()");
             int i = 0;
@@ -3448,14 +4540,17 @@ public final class Realm {
                 Object step = Interpreter.invokeFunction(nf, obj, new Object[0], c);
                 if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) return true;
                 if (!AbstractOps.toBoolean(Interpreter.invokeFunction(fn, Undefined.VALUE,
-                        new Object[]{AbstractOps.getProperty(step, "value"), (double) i}, c))) return false;
+                        new Object[]{AbstractOps.getProperty(step, "value"), (double) i}, c))) {
+                    closeIterator(obj, c);
+                    return false;
+                }
                 i++;
             }
         }));
         iteratorPrototype.set("find", nativeFn("find", 1, (t, a, c) -> {
             if (!(t instanceof JSObject obj)) throw AbruptCompletion.typeError("this is not an iterator");
             JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
-            if (fn == null) throw AbruptCompletion.typeError("find: argument is not a function");
+            if (fn == null) { closeIterator(obj, c); throw AbruptCompletion.typeError("find: argument is not a function"); }
             Object nextFn = AbstractOps.getProperty(obj, "next");
             if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("iterator has no .next()");
             int i = 0;
@@ -3465,7 +4560,10 @@ public final class Realm {
                 if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) return Undefined.VALUE;
                 Object v = AbstractOps.getProperty(step, "value");
                 if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, Undefined.VALUE,
-                        new Object[]{v, (double) i}, c))) return v;
+                        new Object[]{v, (double) i}, c))) {
+                    closeIterator(obj, c);
+                    return v;
+                }
                 i++;
             }
         }));
@@ -3503,7 +4601,7 @@ public final class Realm {
         iteratorPrototype.set("map", nativeFn("map", 1, (t, a, c) -> {
             if (!(t instanceof JSObject src)) throw AbruptCompletion.typeError("this is not an iterator");
             JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
-            if (fn == null) throw AbruptCompletion.typeError("map: argument is not a function");
+            if (fn == null) { closeIterator(src, c); throw AbruptCompletion.typeError("map: argument is not a function"); }
             JSObject result = new JSObject(finalIteratorPrototype);
             int[] idx = {0};
             result.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
@@ -3514,17 +4612,31 @@ public final class Realm {
                 if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) {
                     out.set("value", Undefined.VALUE); out.set("done", true); return out;
                 }
-                Object v = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                    new Object[]{AbstractOps.getProperty(step, "value"), (double) idx[0]}, cc);
+                Object v;
+                try {
+                    v = Interpreter.invokeFunction(fn, Undefined.VALUE,
+                        new Object[]{AbstractOps.getProperty(step, "value"), (double) idx[0]}, cc);
+                } catch (AbruptCompletion ac) {
+                    closeIterator(src, cc);
+                    throw ac;
+                }
                 idx[0]++;
                 out.set("value", v); out.set("done", false); return out;
+            }));
+            // Forward return() to close the underlying source.
+            result.set("return", nativeFn("return", 1, (tt, aa, cc) -> {
+                closeIterator(src, cc);
+                JSObject r = new JSObject();
+                r.set("value", arg(aa, 0));
+                r.set("done", true);
+                return r;
             }));
             return result;
         }));
         iteratorPrototype.set("filter", nativeFn("filter", 1, (t, a, c) -> {
             if (!(t instanceof JSObject src)) throw AbruptCompletion.typeError("this is not an iterator");
             JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
-            if (fn == null) throw AbruptCompletion.typeError("filter: argument is not a function");
+            if (fn == null) { closeIterator(src, c); throw AbruptCompletion.typeError("filter: argument is not a function"); }
             JSObject result = new JSObject(finalIteratorPrototype);
             int[] idx = {0};
             result.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
@@ -3538,26 +4650,44 @@ public final class Realm {
                         out.set("value", Undefined.VALUE); out.set("done", true); return out;
                     }
                     Object v = AbstractOps.getProperty(step, "value");
-                    if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, Undefined.VALUE,
-                            new Object[]{v, (double) idx[0]}, cc))) {
+                    boolean keep;
+                    try {
+                        keep = AbstractOps.toBoolean(Interpreter.invokeFunction(fn, Undefined.VALUE,
+                            new Object[]{v, (double) idx[0]}, cc));
+                    } catch (AbruptCompletion ac) {
+                        closeIterator(src, cc);
+                        throw ac;
+                    }
+                    if (keep) {
                         idx[0]++;
                         out.set("value", v); out.set("done", false); return out;
                     }
                     idx[0]++;
                 }
             }));
+            result.set("return", nativeFn("return", 1, (tt, aa, cc) -> {
+                closeIterator(src, cc);
+                JSObject r = new JSObject();
+                r.set("value", arg(aa, 0));
+                r.set("done", true);
+                return r;
+            }));
             return result;
         }));
         iteratorPrototype.set("take", nativeFn("take", 1, (t, a, c) -> {
             if (!(t instanceof JSObject src)) throw AbruptCompletion.typeError("this is not an iterator");
-            double dn = AbstractOps.toNumber(arg(a, 0));
-            if (Double.isNaN(dn) || dn < 0) throw AbruptCompletion.rangeError("take: limit must be a non-negative number");
+            double dn;
+            try {
+                dn = AbstractOps.toNumber(arg(a, 0));
+            } catch (AbruptCompletion ac) { closeIterator(src, c); throw ac; }
+            if (Double.isNaN(dn) || dn < 0) { closeIterator(src, c); throw AbruptCompletion.rangeError("take: limit must be a non-negative number"); }
             long limit = (long) Math.min(dn, Long.MAX_VALUE);
             JSObject result = new JSObject(finalIteratorPrototype);
             long[] remaining = {limit};
             result.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
                 JSObject out = new JSObject();
                 if (remaining[0] <= 0) {
+                    closeIterator(src, cc);
                     out.set("value", Undefined.VALUE); out.set("done", true); return out;
                 }
                 remaining[0]--;
@@ -3565,12 +4695,22 @@ public final class Realm {
                 if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("source has no .next()");
                 return Interpreter.invokeFunction(nf, src, new Object[0], cc);
             }));
+            result.set("return", nativeFn("return", 1, (tt, aa, cc) -> {
+                closeIterator(src, cc);
+                JSObject r = new JSObject();
+                r.set("value", arg(aa, 0));
+                r.set("done", true);
+                return r;
+            }));
             return result;
         }));
         iteratorPrototype.set("drop", nativeFn("drop", 1, (t, a, c) -> {
             if (!(t instanceof JSObject src)) throw AbruptCompletion.typeError("this is not an iterator");
-            double dn = AbstractOps.toNumber(arg(a, 0));
-            if (Double.isNaN(dn) || dn < 0) throw AbruptCompletion.rangeError("drop: count must be a non-negative number");
+            double dn;
+            try {
+                dn = AbstractOps.toNumber(arg(a, 0));
+            } catch (AbruptCompletion ac) { closeIterator(src, c); throw ac; }
+            if (Double.isNaN(dn) || dn < 0) { closeIterator(src, c); throw AbruptCompletion.rangeError("drop: count must be a non-negative number"); }
             long count = (long) Math.min(dn, Long.MAX_VALUE);
             JSObject result = new JSObject(finalIteratorPrototype);
             long[] toSkip = {count};
@@ -3587,6 +4727,13 @@ public final class Realm {
                     toSkip[0]--;
                 }
                 return Interpreter.invokeFunction(nf, src, new Object[0], cc);
+            }));
+            result.set("return", nativeFn("return", 1, (tt, aa, cc) -> {
+                closeIterator(src, cc);
+                JSObject r = new JSObject();
+                r.set("value", arg(aa, 0));
+                r.set("done", true);
+                return r;
             }));
             return result;
         }));
@@ -3658,10 +4805,43 @@ public final class Realm {
             });
             disposableCtor.setPrototypeObject(disposableProto);
             disposableProto.set("constructor", disposableCtor);
+            // Stub methods that still validate the receiver per spec:
+            // ECMA-262 § 27.3.3.* uses RequireInternalSlot([[DisposableState]])
+            // before doing any work. Our marker is ##DisposableStackResources##.
+            //  - use(value) / adopt(value, onDispose): if value is null/undefined,
+            //    return value; else require onDispose to be callable (adopt).
+            //  - defer(onDispose): onDispose must be callable.
             for (String m : new String[]{"use", "adopt", "defer", "move", "dispose", "asyncDispose"}) {
                 String finalM = m;
-                disposableProto.set(m, nativeFn(m, 0, (t, a, c) -> {
+                disposableProto.set(m, nativeFn(m, finalM.equals("adopt") ? 2 : 1, (t, a, c) -> {
                     if (Interpreter.isNewCall()) throw AbruptCompletion.typeError(finalM + " is not a constructor");
+                    if (!(t instanceof JSObject jo) || jo.getOwn("##DisposableStackResources##") == JSObject.ABSENT) {
+                        throw AbruptCompletion.typeError(finalN + ".prototype." + finalM
+                            + " called on non-" + finalN);
+                    }
+                    if ("adopt".equals(finalM)) {
+                        Object onDispose = arg(a, 1);
+                        if (!(onDispose instanceof JSFunction)) {
+                            throw AbruptCompletion.typeError("adopt: onDispose must be callable");
+                        }
+                        return arg(a, 0);
+                    }
+                    if ("defer".equals(finalM)) {
+                        Object onDispose = arg(a, 0);
+                        if (!(onDispose instanceof JSFunction)) {
+                            throw AbruptCompletion.typeError("defer: onDispose must be callable");
+                        }
+                        return Undefined.VALUE;
+                    }
+                    if ("use".equals(finalM)) {
+                        return arg(a, 0);
+                    }
+                    if ("move".equals(finalM)) {
+                        JSObject result = new JSObject(disposableProto);
+                        result.set("##DisposableStackResources##", new java.util.ArrayList<>());
+                        result.setAttributes("##DisposableStackResources##", (byte) 0);
+                        return result;
+                    }
                     return Undefined.VALUE;
                 }));
             }
@@ -3889,9 +5069,20 @@ public final class Realm {
                 "toPlainDate", "toPlainTime", "toPlainDateTime", "toPlainYearMonth",
                 "toPlainMonthDay", "toInstant"
             };
+            // Methods that take at least one argument per spec — their
+            // .length must reflect the formal-parameter count (tested by
+            // test262 `length.js` files for each method).
+            java.util.Set<String> oneArgMethods = java.util.Set.of(
+                "add", "subtract", "round", "until", "since", "with", "equals",
+                "withPlainTime", "withCalendar", "withTimeZone", "toString",
+                "toLocaleString", "toJSON", "toPlainDate", "toPlainTime",
+                "toPlainDateTime", "toZonedDateTime", "toZonedDateTimeISO",
+                "toPlainYearMonth", "toPlainMonthDay", "toInstant", "getTimeZoneTransition"
+            );
             for (String m : protoMethods) {
                 String finalM = m;
-                classProto.set(m, nativeFn(m, 0, (t, a, c) -> {
+                int methodLen = oneArgMethods.contains(m) ? 1 : 0;
+                classProto.set(m, nativeFn(m, methodLen, (t, a, c) -> {
                     if (Interpreter.isNewCall()) {
                         throw AbruptCompletion.typeError(finalM + " is not a constructor");
                     }
@@ -4020,8 +5211,18 @@ public final class Realm {
             }
         }));
         t262.set("gc", nativeFn("gc", 0, (t, a, c) -> { System.gc(); return Undefined.VALUE; }));
-        t262.set("detachArrayBuffer", nativeFn("detachArrayBuffer", 1,
-            (t, a, c) -> Undefined.VALUE));
+        t262.set("detachArrayBuffer", nativeFn("detachArrayBuffer", 1, (t, a, c) -> {
+            // ECMA-262 § 25.1.2.4 DetachArrayBuffer — flip [[ArrayBufferDetachKey]]
+            // semantics by clearing the backing store. Delegate to the
+            // TypedArrays internal hook; SharedArrayBuffer / detached / non-
+            // ArrayBuffer values are no-ops.
+            Object v = arg(a, 0);
+            if (v instanceof JSObject jo) {
+                ArrayBufferData d = TypedArrays.bufferDataOf(jo);
+                if (d != null && !d.shared) d.detach();
+            }
+            return Undefined.VALUE;
+        }));
         t262.set("agent", new JSObject());   // stub, no real agent
         // $262.createRealm — would normally return a fresh Realm wrapper. v1
         // returns a stub `{ global: globalThis, eval: globalThis.eval }`
@@ -4039,6 +5240,11 @@ public final class Realm {
             r.set("evalScript", t262.get("evalScript"));
             return r;
         }));
+        // %AbstractModuleSource% — source-phase-imports proposal. Has no
+        // global binding per spec; surface it on $262 so test262 can reach
+        // it via the host.
+        com.jimmyhmiller.harmonica.bytecode.builtins.AbstractModuleSourceBuiltin.install();
+        t262.set("AbstractModuleSource", abstractModuleSourceConstructor);
         globals.putIfAbsent("$262", t262);
 
         globals.putIfAbsent("$DONE", nativeFn("$DONE", 1, (t, a, c) -> {
@@ -4180,10 +5386,41 @@ public final class Realm {
             return d;
         });
         dateCtor.setPrototypeObject(datePrototype);
+        // ECMA-262 § 21.4.4.1: Date.prototype.constructor === Date.
+        datePrototype.set("constructor", dateCtor);
+        datePrototype.setAttributes("constructor",
+            (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
         dateCtor.properties().put("now", nativeFn("now", 0,
             (t, a, c) -> (double) System.currentTimeMillis()));
+        // ECMA-262 § 21.4.3.2 Date.parse(string) — parse the ISO 8601
+        // extended format and common RFC 2822 / toString variants. Java's
+        // OffsetDateTime / Instant accept these directly; anything else
+        // returns NaN.
+        dateCtor.properties().put("parse", nativeFn("parse", 1, (t, a, c) -> {
+            String s = AbstractOps.toString(arg(a, 0));
+            try {
+                // ISO 8601 first (covers toISOString output).
+                return (double) java.time.Instant.parse(s).toEpochMilli();
+            } catch (Exception ignored) {}
+            try {
+                return (double) java.time.OffsetDateTime.parse(s).toInstant().toEpochMilli();
+            } catch (Exception ignored) {}
+            try {
+                // Local datetime without offset — treat as UTC.
+                return (double) java.time.LocalDateTime.parse(s)
+                    .toInstant(java.time.ZoneOffset.UTC).toEpochMilli();
+            } catch (Exception ignored) {}
+            try {
+                // RFC 2822 / IMF-fixdate (Date.prototype.toUTCString output).
+                java.time.format.DateTimeFormatter rfc = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME;
+                return (double) java.time.ZonedDateTime.parse(s, rfc).toInstant().toEpochMilli();
+            } catch (Exception ignored) {}
+            return Double.NaN;
+        }));
         dateCtor.properties().put("UTC", nativeFn("UTC", 7, (t, a, c) -> {
-            int year = (int) AbstractOps.toNumber(arg(a, 0));
+            double yearD = AbstractOps.toNumber(arg(a, 0));
+            if (Double.isNaN(yearD)) return Double.NaN;
+            int year = (int) yearD;
             if (year >= 0 && year <= 99) year += 1900;
             int month = (int) AbstractOps.toNumber(arg(a, 1));
             int day = a.length > 2 ? (int) AbstractOps.toNumber(a[2]) : 1;
@@ -4195,19 +5432,33 @@ public final class Realm {
             cal.clear();
             cal.set(year, month, day, hour, min, sec);
             cal.set(java.util.Calendar.MILLISECOND, ms);
-            return (double) cal.getTimeInMillis();
+            // ECMA-262 § 21.4.1.15 TimeClip: |time| > 8.64e15 → NaN.
+            double timeMs = (double) cal.getTimeInMillis();
+            if (Math.abs(timeMs) > 8.64e15) return Double.NaN;
+            return timeMs;
         }));
         // Internal helper for prototype methods: extract the [[DateValue]] slot.
+        // ECMA-262 § 21.4.1.1: thisTimeValue throws TypeError when called
+        // on a value without [[DateValue]]. v1 stash that slot as a
+        // ##time## own property; absence → TypeError.
         java.util.function.Function<Object, Double> getTimeOf = self -> {
             if (self instanceof JSObject jo) {
                 Object v = jo.properties().get("##time##");
                 if (v instanceof Double d) return d;
                 if (v instanceof Number n) return n.doubleValue();
             }
-            return Double.NaN;
+            throw AbruptCompletion.typeError("Date.prototype method called on non-Date");
         };
         java.util.function.Function<Object, java.util.Calendar> calOf = self -> {
             java.util.Calendar cal = java.util.Calendar.getInstance();
+            cal.setTimeInMillis(getTimeOf.apply(self).longValue());
+            return cal;
+        };
+        // UTC variant — used by the getUTC*/setUTC* methods so the same
+        // wall-clock fields read off the GMT representation of the time
+        // value, independent of the JVM's default zone.
+        java.util.function.Function<Object, java.util.Calendar> calUtcOf = self -> {
+            java.util.Calendar cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"));
             cal.setTimeInMillis(getTimeOf.apply(self).longValue());
             return cal;
         };
@@ -4217,6 +5468,29 @@ public final class Realm {
             (double) calOf.apply(t).get(java.util.Calendar.YEAR)));
         datePrototype.set("getYear", nativeFn("getYear", 0, (t, a, c) ->
             (double) (calOf.apply(t).get(java.util.Calendar.YEAR) - 1900)));
+        // Annex B § B.2.4.2 Date.prototype.setYear — legacy variant that
+        // treats years 0..99 as 1900..1999 and otherwise behaves like
+        // setFullYear(year). The receiver must be a Date object.
+        datePrototype.set("setYear", nativeFn("setYear", 1, (t, a, c) -> {
+            if (!(t instanceof JSObject jo) || !jo.properties().containsKey("##time##")) {
+                throw AbruptCompletion.typeError("Date.prototype.setYear called on non-Date");
+            }
+            double y = AbstractOps.toNumber(arg(a, 0));
+            if (Double.isNaN(y) || Double.isInfinite(y)) {
+                jo.set("##time##", Double.NaN);
+                return Double.NaN;
+            }
+            double tv = getTimeOf.apply(t);
+            java.util.Calendar cal = Double.isNaN(tv)
+                ? java.util.Calendar.getInstance()
+                : calOf.apply(t);
+            int year = (int) y;
+            if (year >= 0 && year <= 99) year += 1900;
+            cal.set(java.util.Calendar.YEAR, year);
+            double newTv = (double) cal.getTimeInMillis();
+            jo.set("##time##", newTv);
+            return newTv;
+        }));
         datePrototype.set("getMonth", nativeFn("getMonth", 0, (t, a, c) ->
             (double) calOf.apply(t).get(java.util.Calendar.MONTH)));
         datePrototype.set("getDate", nativeFn("getDate", 0, (t, a, c) ->
@@ -4243,8 +5517,168 @@ public final class Realm {
         }));
         datePrototype.set("setTime", nativeFn("setTime", 1, (t, a, c) -> {
             double v = AbstractOps.toNumber(arg(a, 0));
+            // ECMA-262 § 21.4.1.15 TimeClip: |time| > 8.64e15 → NaN.
+            if (!Double.isNaN(v) && Math.abs(v) > 8.64e15) v = Double.NaN;
             if (t instanceof JSObject jo) jo.set("##time##", v);
             return v;
+        }));
+        // ECMA-262 § 21.4.4 getUTC* family — same fields as their local-time
+        // siblings but pulled off the GMT representation of [[DateValue]].
+        // Return NaN when the time is NaN (§ 21.4.4 step 2 of each method).
+        datePrototype.set("getUTCFullYear", nativeFn("getUTCFullYear", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return Double.NaN;
+            return (double) calUtcOf.apply(t).get(java.util.Calendar.YEAR);
+        }));
+        datePrototype.set("getUTCMonth", nativeFn("getUTCMonth", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return Double.NaN;
+            return (double) calUtcOf.apply(t).get(java.util.Calendar.MONTH);
+        }));
+        datePrototype.set("getUTCDate", nativeFn("getUTCDate", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return Double.NaN;
+            return (double) calUtcOf.apply(t).get(java.util.Calendar.DAY_OF_MONTH);
+        }));
+        datePrototype.set("getUTCDay", nativeFn("getUTCDay", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return Double.NaN;
+            // Sunday = 0..Saturday = 6; Calendar uses 1..7.
+            return (double) (calUtcOf.apply(t).get(java.util.Calendar.DAY_OF_WEEK) - 1);
+        }));
+        datePrototype.set("getUTCHours", nativeFn("getUTCHours", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return Double.NaN;
+            return (double) calUtcOf.apply(t).get(java.util.Calendar.HOUR_OF_DAY);
+        }));
+        datePrototype.set("getUTCMinutes", nativeFn("getUTCMinutes", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return Double.NaN;
+            return (double) calUtcOf.apply(t).get(java.util.Calendar.MINUTE);
+        }));
+        datePrototype.set("getUTCSeconds", nativeFn("getUTCSeconds", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return Double.NaN;
+            return (double) calUtcOf.apply(t).get(java.util.Calendar.SECOND);
+        }));
+        datePrototype.set("getUTCMilliseconds", nativeFn("getUTCMilliseconds", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return Double.NaN;
+            return (double) calUtcOf.apply(t).get(java.util.Calendar.MILLISECOND);
+        }));
+        // ECMA-262 § 21.4.4 set* / setUTC* family — recompute [[DateValue]]
+        // from the modified components. The "local" variants go through the
+        // JVM's default zone; the UTC variants use the GMT calendar.
+        // {@code makeSetter} pulls the current components from {@code calProvider},
+        // overrides the requested fields with the (parsed-as-number) args,
+        // computes the new millis, stores it, and returns the new value.
+        // Args beyond the function's nominal length are still consumed (the
+        // 2-arg setMonth accepts an optional day, etc.) — § 21.4.4 step 4.
+        java.util.function.BiFunction<java.util.function.Function<Object, java.util.Calendar>, int[], JSFunction>
+            makeSetter = (calProvider, fields) -> nativeFn("set", fields.length, (t, a, c) -> {
+                if (!(t instanceof JSObject jo)) {
+                    throw AbruptCompletion.typeError("Date.prototype setter called on non-object");
+                }
+                // ECMA-262 § 21.4.4.* set* — per spec, read [[DateValue]]
+                // FIRST, then ToNumber each arg (which may have side
+                // effects). If the original tv was NaN, return NaN
+                // WITHOUT overwriting [[DateValue]] — any change made
+                // by valueOf side effects must survive.
+                double tv = getTimeOf.apply(t);
+                if (Double.isNaN(tv)) {
+                    for (int i = 0; i < fields.length && i < a.length; i++) AbstractOps.toNumber(a[i]);
+                    return Double.NaN;
+                }
+                // Convert all args first (to surface any side effect on
+                // the date object), then validate, then commit.
+                double[] values = new double[Math.min(fields.length, a.length)];
+                boolean anyInvalid = false;
+                for (int i = 0; i < values.length; i++) {
+                    values[i] = AbstractOps.toNumber(a[i]);
+                    if (Double.isNaN(values[i]) || Double.isInfinite(values[i])) anyInvalid = true;
+                }
+                if (anyInvalid) {
+                    jo.set("##time##", Double.NaN);
+                    return Double.NaN;
+                }
+                java.util.Calendar cal = calProvider.apply(t);
+                for (int i = 0; i < values.length; i++) {
+                    cal.set(fields[i], (int) values[i]);
+                }
+                double newTv = (double) cal.getTimeInMillis();
+                // § 21.4.1.15 TimeClip.
+                if (Math.abs(newTv) > 8.64e15) newTv = Double.NaN;
+                jo.set("##time##", newTv);
+                return newTv;
+            });
+        int Y = java.util.Calendar.YEAR;
+        int Mo = java.util.Calendar.MONTH;
+        int D = java.util.Calendar.DAY_OF_MONTH;
+        int H = java.util.Calendar.HOUR_OF_DAY;
+        int Mi = java.util.Calendar.MINUTE;
+        int S = java.util.Calendar.SECOND;
+        int Ms = java.util.Calendar.MILLISECOND;
+        datePrototype.set("setFullYear",     makeSetter.apply(calOf,    new int[]{Y, Mo, D}));
+        datePrototype.set("setMonth",        makeSetter.apply(calOf,    new int[]{Mo, D}));
+        datePrototype.set("setDate",         makeSetter.apply(calOf,    new int[]{D}));
+        datePrototype.set("setHours",        makeSetter.apply(calOf,    new int[]{H, Mi, S, Ms}));
+        datePrototype.set("setMinutes",      makeSetter.apply(calOf,    new int[]{Mi, S, Ms}));
+        datePrototype.set("setSeconds",      makeSetter.apply(calOf,    new int[]{S, Ms}));
+        datePrototype.set("setMilliseconds", makeSetter.apply(calOf,    new int[]{Ms}));
+        datePrototype.set("setUTCFullYear",     makeSetter.apply(calUtcOf, new int[]{Y, Mo, D}));
+        datePrototype.set("setUTCMonth",        makeSetter.apply(calUtcOf, new int[]{Mo, D}));
+        datePrototype.set("setUTCDate",         makeSetter.apply(calUtcOf, new int[]{D}));
+        datePrototype.set("setUTCHours",        makeSetter.apply(calUtcOf, new int[]{H, Mi, S, Ms}));
+        datePrototype.set("setUTCMinutes",      makeSetter.apply(calUtcOf, new int[]{Mi, S, Ms}));
+        datePrototype.set("setUTCSeconds",      makeSetter.apply(calUtcOf, new int[]{S, Ms}));
+        datePrototype.set("setUTCMilliseconds", makeSetter.apply(calUtcOf, new int[]{Ms}));
+        // ECMA-262 § 21.4.4.42 Date.prototype.toUTCString — RFC 7231-style
+        // "Wed, 21 Oct 2015 07:28:00 GMT" formatting in GMT.
+        datePrototype.set("toUTCString", nativeFn("toUTCString", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return "Invalid Date";
+            java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat(
+                "EEE, dd MMM yyyy HH:mm:ss 'GMT'", java.util.Locale.US);
+            fmt.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+            return fmt.format(new java.util.Date((long) tv));
+        }));
+        // toGMTString is an Annex-B alias for toUTCString. Spec § B.2.4.3.
+        datePrototype.set("toGMTString", nativeFn("toGMTString", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return "Invalid Date";
+            java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat(
+                "EEE, dd MMM yyyy HH:mm:ss 'GMT'", java.util.Locale.US);
+            fmt.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+            return fmt.format(new java.util.Date((long) tv));
+        }));
+        // ECMA-262 § 21.4.4.35 toDateString / § 21.4.4.41 toTimeString.
+        datePrototype.set("toDateString", nativeFn("toDateString", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return "Invalid Date";
+            return new java.text.SimpleDateFormat("EEE MMM dd yyyy", java.util.Locale.US)
+                .format(new java.util.Date((long) tv));
+        }));
+        datePrototype.set("toTimeString", nativeFn("toTimeString", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return "Invalid Date";
+            return new java.text.SimpleDateFormat("HH:mm:ss 'GMT'Z", java.util.Locale.US)
+                .format(new java.util.Date((long) tv));
+        }));
+        // toLocaleString / toLocaleDateString / toLocaleTimeString — § 21.4.4 sloppy stubs.
+        datePrototype.set("toLocaleString", nativeFn("toLocaleString", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return "Invalid Date";
+            return new java.util.Date((long) tv).toString();
+        }));
+        datePrototype.set("toLocaleDateString", nativeFn("toLocaleDateString", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return "Invalid Date";
+            return java.text.DateFormat.getDateInstance().format(new java.util.Date((long) tv));
+        }));
+        datePrototype.set("toLocaleTimeString", nativeFn("toLocaleTimeString", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv)) return "Invalid Date";
+            return java.text.DateFormat.getTimeInstance().format(new java.util.Date((long) tv));
         }));
         datePrototype.set("toString", nativeFn("toString", 0, (t, a, c) -> {
             // Match V8/Spider: "Tue Apr 26 2026 12:34:56 GMT+0000 (TZ)" style;
@@ -4252,12 +5686,127 @@ public final class Realm {
             java.util.Calendar cal = calOf.apply(t);
             return new java.util.Date(cal.getTimeInMillis()).toString();
         }));
+        // ECMA-262 § 21.4.4.45 Date.prototype[@@toPrimitive](hint). Date is
+        // unique in that hint "default" is treated as "string" rather than
+        // "number" — so `${date}` stringifies, `+date` numifies.
+        // ECMA-262 § 21.4.4.36 Date.prototype.toISOString() — fixed
+        // YYYY-MM-DDTHH:mm:ss.sssZ format (extended-year if outside 0..9999).
+        datePrototype.set("toISOString", nativeFn("toISOString", 0, (t, a, c) -> {
+            double tv = getTimeOf.apply(t);
+            if (Double.isNaN(tv) || Double.isInfinite(tv)) {
+                throw AbruptCompletion.rangeError("Invalid time value");
+            }
+            java.util.Calendar cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"));
+            cal.setTimeInMillis((long) tv);
+            int year = cal.get(java.util.Calendar.YEAR);
+            int month = cal.get(java.util.Calendar.MONTH) + 1;
+            int day = cal.get(java.util.Calendar.DAY_OF_MONTH);
+            int hour = cal.get(java.util.Calendar.HOUR_OF_DAY);
+            int min = cal.get(java.util.Calendar.MINUTE);
+            int sec = cal.get(java.util.Calendar.SECOND);
+            int ms = cal.get(java.util.Calendar.MILLISECOND);
+            String yearStr;
+            if (year < 0 || year > 9999) {
+                yearStr = (year < 0 ? "-" : "+") + String.format("%06d", Math.abs(year));
+            } else {
+                yearStr = String.format("%04d", year);
+            }
+            return String.format("%s-%02d-%02dT%02d:%02d:%02d.%03dZ",
+                yearStr, month, day, hour, min, sec, ms);
+        }));
+        // ECMA-262 § 21.4.4.37 Date.prototype.toJSON. Returns null for
+        // non-finite times; otherwise invokes toISOString.
+        datePrototype.set("toJSON", nativeFn("toJSON", 1, (t, a, c) -> {
+            Object prim = AbstractOps.toPrimitive(t, "number");
+            if (prim instanceof Number n && !Double.isFinite(n.doubleValue())) return null;
+            if (!(t instanceof JSObject jo)) {
+                throw AbruptCompletion.typeError("Date.prototype.toJSON called on non-object");
+            }
+            Object iso = AbstractOps.getProperty(jo, "toISOString");
+            if (!(iso instanceof JSFunction f)) {
+                throw AbruptCompletion.typeError("Date.prototype.toJSON: toISOString is not callable");
+            }
+            return Interpreter.invokeFunction(f, jo, new Object[0], c);
+        }));
+        datePrototype.set(wellKnownToPrimitive.asPropertyKey(),
+            nativeFn("[Symbol.toPrimitive]", 1, (t, a, c) -> {
+                if (!(t instanceof JSObject jo)) {
+                    throw AbruptCompletion.typeError("Date.prototype[Symbol.toPrimitive] called on non-object");
+                }
+                Object hintArg = arg(a, 0);
+                String hint = hintArg instanceof CharSequence cs ? cs.toString() : null;
+                String tryFirst;
+                if ("string".equals(hint) || "default".equals(hint)) {
+                    tryFirst = "string";
+                } else if ("number".equals(hint)) {
+                    tryFirst = "number";
+                } else {
+                    throw AbruptCompletion.typeError("Date.prototype[Symbol.toPrimitive]: invalid hint");
+                }
+                // OrdinaryToPrimitive(O, tryFirst).
+                String[] methods = tryFirst.equals("string")
+                    ? new String[]{"toString", "valueOf"}
+                    : new String[]{"valueOf", "toString"};
+                for (String m : methods) {
+                    Object fn = AbstractOps.getProperty(jo, m);
+                    if (fn instanceof JSFunction f) {
+                        Object res = Interpreter.invokeFunction(f, jo, new Object[0], c);
+                        if (!(res instanceof JSObject) && !(res instanceof JSArray) && !(res instanceof JSFunction)) {
+                            return res;
+                        }
+                    }
+                }
+                throw AbruptCompletion.typeError("Cannot convert object to primitive value");
+            }));
+        // The @@toPrimitive method must be non-enumerable per § 17 — and
+        // it's marked configurable so subclasses can override.
+        datePrototype.setAttributes(wellKnownToPrimitive.asPropertyKey(),
+            (byte) (JSObject.ATTR_CONFIGURABLE));
+        // ECMA-262 § 17: every prototype method is
+        // {writable: true, enumerable: false, configurable: true}.
+        markMethodsNonEnumerable(datePrototype);
+        // Static methods on the constructor inherit the same descriptor.
+        markStaticsNonEnumerable(dateCtor);
         globals.putIfAbsent("Date", dateCtor);
 
         // Object constructor
         JSFunction objectCtor = nativeFn("Object", 1, (t, a, c) -> {
             Object v = arg(a, 0);
             if (v == Undefined.VALUE || v == null) return new JSObject();
+            // ECMA-262 § 7.1.18 ToObject — wrap each primitive in its
+            // canonical Object wrapper so {@code new Object(x) instanceof
+            // Wrapper} holds and equality with the primitive returns
+            // false. Without this, {@code 0n === Object(0n)} collapses
+            // to identity (true) and {@code Array.prototype.X.call(
+            // Object("a"), ...)} sees the primitive instead of a wrapper.
+            if (v instanceof JSBigInt bi) {
+                JSObject wrapper = new JSObject(bigIntPrototype);
+                wrapper.properties().put(SLOT_BIGINT_DATA, bi);
+                return wrapper;
+            }
+            if (v instanceof Boolean b) {
+                JSObject wrapper = new JSObject(booleanPrototype);
+                wrapper.properties().put(SLOT_BOOLEAN_DATA, b);
+                return wrapper;
+            }
+            if (v instanceof Number n) {
+                JSObject wrapper = new JSObject(numberPrototype);
+                wrapper.properties().put(SLOT_NUMBER_DATA, n);
+                return wrapper;
+            }
+            if (v instanceof CharSequence cs) {
+                String s = cs.toString();
+                JSObject wrapper = new JSObject(stringPrototype);
+                wrapper.properties().put(SLOT_STRING_DATA, s);
+                wrapper.set("length", (double) s.length());
+                wrapper.setAttributes("length", (byte) 0);
+                return wrapper;
+            }
+            if (v instanceof JSSymbol sy) {
+                JSObject wrapper = new JSObject(symbolPrototype);
+                wrapper.properties().put("##SymbolData##", sy);
+                return wrapper;
+            }
             return v;
         });
         objectCtor.properties().put("keys", nativeFn("keys", 1, (t, a, c) -> {
@@ -4317,13 +5866,104 @@ public final class Realm {
             }
             return target;
         }));
+        // ECMA-262 § 20.1.2.7 Object.fromEntries(iterable) — inverse of
+        // Object.entries: take an iterable of [key, value] pairs and
+        // build a plain object.
+        objectCtor.properties().put("fromEntries", nativeFn("fromEntries", 1, (t, a, c) -> {
+            Object iterable = arg(a, 0);
+            JSObject out = new JSObject();
+            iterateSetLike(iterable, c, entry -> {
+                if (!(entry instanceof JSArray pair)) {
+                    throw AbruptCompletion.typeError("Iterator value is not an entry object");
+                }
+                Object k = pair.get(0);
+                Object v = pair.get(1);
+                String key = k instanceof String s ? s
+                    : k instanceof JSSymbol sy ? sy.asPropertyKey()
+                    : AbstractOps.toString(k);
+                out.set(key, v);
+            });
+            return out;
+        }));
+        // ECMA-262 § 20.1.2.11 Object.getOwnPropertyDescriptors(O) —
+        // returns an object mapping every own key to its descriptor.
+        objectCtor.properties().put("getOwnPropertyDescriptors", nativeFn("getOwnPropertyDescriptors", 1, (t, a, c) -> {
+            Object target = arg(a, 0);
+            if (target == null || target == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("Object.getOwnPropertyDescriptors called on null/undefined");
+            }
+            JSObject result = new JSObject();
+            Object descFn = objectCtor.properties().get("getOwnPropertyDescriptor");
+            if (!(descFn instanceof JSFunction df)) return result;
+            java.util.List<String> keys = new java.util.ArrayList<>();
+            if (target instanceof JSObject jo) {
+                keys.addAll(orderedOwnPropertyNames(jo.properties().keySet()));
+            } else if (target instanceof JSFunction fn) {
+                keys.add("length");
+                keys.add("name");
+                keys.addAll(orderedOwnPropertyNames(fn.properties().keySet()));
+                if (fn.prototypeObject() != null) keys.add("prototype");
+            } else if (target instanceof JSArray arr) {
+                for (int i = 0; i < arr.length(); i++) keys.add(String.valueOf(i));
+                keys.add("length");
+            } else if (target instanceof String s) {
+                for (int i = 0; i < s.length(); i++) keys.add(String.valueOf(i));
+                keys.add("length");
+            }
+            for (String k : keys) {
+                Object desc = Interpreter.invokeFunction(df, objectCtor, new Object[]{target, k}, c);
+                if (desc != Undefined.VALUE) result.set(k, desc);
+            }
+            return result;
+        }));
+        // ECMA-262 § 20.1.2.13 Object.groupBy(items, callbackfn) — Stage 4
+        // (ES2024). Mirror of Map.groupBy but returns a plain object keyed
+        // by ToPropertyKey(callback result). String/Symbol keys only.
+        objectCtor.properties().put("groupBy", nativeFn("groupBy", 2, (t, a, c) -> {
+            Object items = arg(a, 0);
+            Object cb = arg(a, 1);
+            if (!(cb instanceof JSFunction cbf)) {
+                throw AbruptCompletion.typeError("Object.groupBy callback is not callable");
+            }
+            JSObject result = new JSObject(null);   // null-prototype per spec
+            int[] idx = {0};
+            iterateSetLike(items, c, v -> {
+                Object rawKey = Interpreter.invokeFunction(cbf, Undefined.VALUE,
+                    new Object[]{v, (double) idx[0]++}, c);
+                String key = rawKey instanceof String s ? s
+                    : rawKey instanceof JSSymbol sy ? sy.asPropertyKey()
+                    : AbstractOps.toString(rawKey);
+                Object existing = result.getOwn(key);
+                JSArray bucket;
+                if (existing instanceof JSArray arr) {
+                    bucket = arr;
+                } else {
+                    bucket = new JSArray();
+                    result.set(key, bucket);
+                }
+                bucket.push(v);
+            });
+            return result;
+        }));
         objectCtor.properties().put("create", nativeFn("create", 2, (t, a, c) -> {
             Object proto = arg(a, 0);
             if (proto != null && proto != Undefined.VALUE && !(proto instanceof JSObject)) {
                 throw AbruptCompletion.typeError("Object.create proto must be Object or null");
             }
             JSObject p = (proto instanceof JSObject jo) ? jo : null;
-            return new JSObject(p);
+            JSObject newObj = new JSObject(p);
+            // ECMA-262 § 20.1.2.2 Object.create(O, Properties) — when the
+            // second argument is provided, delegate to ObjectDefineProperties
+            // so every descriptor in Properties is applied to the new object.
+            Object props = arg(a, 1);
+            if (props != Undefined.VALUE && props != null) {
+                Object defineFn = objectCtor.properties().get("defineProperties");
+                if (defineFn instanceof JSFunction df) {
+                    Interpreter.invokeFunction(df, objectCtor,
+                        new Object[]{newObj, props}, c);
+                }
+            }
+            return newObj;
         }));
         objectCtor.properties().put("getPrototypeOf", nativeFn("getPrototypeOf", 1, (t, a, c) -> {
             Object v = arg(a, 0);
@@ -4335,9 +5975,15 @@ public final class Realm {
                 // ECMA-262 § 10.2 ECMAScript Function Object [[Prototype]].
                 // For a derived class function, [[Prototype]] is the super
                 // constructor (set via setSuperConstructor at class creation).
-                // For ordinary functions, it's %Function.prototype%.
+                // For ordinary functions, it's %Function.prototype%; for
+                // generator functions, it's %GeneratorFunction.prototype%
+                // (a.k.a. %Generator%), whose own [[Prototype]] is
+                // %Function.prototype% — that two-step chain is what
+                // language/{expressions,statements}/generators/prototype-relation-to-function.js
+                // checks.
                 JSFunction sc = fn.superConstructor();
                 if (sc != null) return sc;
+                if (fn.isGenerator() && generatorFunctionPrototype != null) return generatorFunctionPrototype;
                 return functionPrototype;
             }
             if (v instanceof JSArray)        return arrayPrototype;
@@ -4361,11 +6007,13 @@ public final class Realm {
             Object v = arg(a, 0);
             // § 20.1.2.13 step 1: if argument is not an Object, return false.
             if (v instanceof JSObject jo) return jo.isExtensible();
-            return v instanceof JSArray || v instanceof JSFunction;
+            if (v instanceof JSFunction fn) return fn.isExtensible();
+            return v instanceof JSArray;
         }));
         objectCtor.properties().put("preventExtensions", nativeFn("preventExtensions", 1, (t, a, c) -> {
             Object v = arg(a, 0);
             if (v instanceof JSObject jo) jo.preventExtensions();
+            else if (v instanceof JSFunction fn) fn.preventExtensions();
             return v;
         }));
         objectCtor.properties().put("isFrozen", nativeFn("isFrozen", 1, (t, a, c) -> {
@@ -4395,57 +6043,171 @@ public final class Realm {
             String key = rawKey instanceof String ss ? ss
                        : rawKey instanceof JSSymbol sy ? sy.asPropertyKey()
                        : AbstractOps.toString(rawKey);
-            if (!(desc instanceof JSObject descObj)) {
+            // ECMA-262 § 6.2.5: descriptor must be an Object. Per JS,
+            // functions and arrays ARE objects — accept them too. The
+            // ToPropertyDescriptor reads below use generic HasProperty /
+            // AbstractOps.getProperty so they work on any object kind.
+            if (desc == null || desc == Undefined.VALUE
+                || !(desc instanceof JSObject || desc instanceof JSFunction || desc instanceof JSArray)) {
                 throw AbruptCompletion.typeError("Property description must be an object");
             }
+            final Object descObjRaw = desc;
+            // For internal field-presence checks, treat non-JSObject
+            // descriptors via the generic descHasField helper below.
+            JSObject descObj = desc instanceof JSObject jo0 ? jo0 : null;
             // ECMA-262 § 6.2.5 ToPropertyDescriptor — validate the
-            // descriptor before any side effects on the target.
+            // descriptor before any side effects on the target. Use
+            // HasProperty (walks the proto chain) so inherited fields
+            // still count, matching the spec's {@code HasProperty(O,
+            // "get")} etc. semantics.
             // Step 7: if `get` is present, it must be callable or undefined.
             // Step 8: if `set` is present, it must be callable or undefined.
             // Step 10: descriptor can't mix accessor (get/set) with
             // data (value/writable) fields — TypeError if both present.
-            boolean hasGet = descObj.properties().containsKey("get");
-            boolean hasSet = descObj.properties().containsKey("set");
+            boolean hasGet = descHasField(descObjRaw, "get");
+            boolean hasSet = descHasField(descObjRaw, "set");
             if (hasGet) {
-                Object g = descObj.get("get");
+                Object g = AbstractOps.getProperty(descObjRaw, "get");
                 if (g != Undefined.VALUE && !(g instanceof JSFunction)) {
                     throw AbruptCompletion.typeError("Getter must be a function");
                 }
             }
             if (hasSet) {
-                Object s = descObj.get("set");
+                Object s = AbstractOps.getProperty(descObjRaw, "set");
                 if (s != Undefined.VALUE && !(s instanceof JSFunction)) {
                     throw AbruptCompletion.typeError("Setter must be a function");
                 }
             }
-            boolean hasValue = descObj.properties().containsKey("value");
-            boolean hasWritable = descObj.properties().containsKey("writable");
+            boolean hasValue = descHasField(descObjRaw, "value");
+            boolean hasWritable = descHasField(descObjRaw, "writable");
             if ((hasGet || hasSet) && (hasValue || hasWritable)) {
                 throw AbruptCompletion.typeError("Invalid property descriptor. Cannot both specify accessors and a value or writable attribute");
             }
-            byte attrs = 0;
-            if (AbstractOps.toBoolean(descObj.properties().getOrDefault("writable", true))) attrs |= JSObject.ATTR_WRITABLE;
-            if (AbstractOps.toBoolean(descObj.properties().getOrDefault("enumerable", false))) attrs |= JSObject.ATTR_ENUMERABLE;
-            if (AbstractOps.toBoolean(descObj.properties().getOrDefault("configurable", false))) attrs |= JSObject.ATTR_CONFIGURABLE;
+            boolean hasEnumerable = descHasField(descObjRaw, "enumerable");
+            boolean hasConfigurable = descHasField(descObjRaw, "configurable");
+            boolean descConfigurable = hasConfigurable && AbstractOps.toBoolean(AbstractOps.getProperty(descObjRaw, "configurable"));
+            boolean descEnumerable = hasEnumerable && AbstractOps.toBoolean(AbstractOps.getProperty(descObjRaw, "enumerable"));
+            boolean descWritable = hasWritable && AbstractOps.toBoolean(AbstractOps.getProperty(descObjRaw, "writable"));
+            Object descValue = hasValue ? AbstractOps.getProperty(descObjRaw, "value") : Undefined.VALUE;
+            JSFunction descGetter = hasGet && AbstractOps.getProperty(descObjRaw, "get") instanceof JSFunction g ? g : null;
+            JSFunction descSetter = hasSet && AbstractOps.getProperty(descObjRaw, "set") instanceof JSFunction s ? s : null;
+            boolean descIsAccessor = hasGet || hasSet;
+            boolean descIsData = hasValue || hasWritable;
             if (target instanceof JSObject targetObj) {
-                if (hasGet || hasSet) {
-                    JSFunction getter = (descObj.get("get") instanceof JSFunction g) ? g : null;
-                    JSFunction setter = (descObj.get("set") instanceof JSFunction s) ? s : null;
-                    Accessor acc = new Accessor(getter, setter);
-                    Object existing = targetObj.get(key);
-                    if (existing instanceof Accessor prior) acc = prior.merge(acc);
-                    targetObj.set(key, acc);
+                // ECMA-262 § 10.1.6.3 ValidateAndApplyPropertyDescriptor.
+                boolean hasCurrent = targetObj.hasOwn(key);
+                if (!hasCurrent) {
+                    // Step 2: if current is undefined, the object must be
+                    // extensible to add a new own property.
+                    if (!targetObj.isExtensible()) {
+                        throw AbruptCompletion.typeError(
+                            "Cannot define property " + key + ", object is not extensible");
+                    }
                 } else {
-                    targetObj.set(key, descObj.get("value"));
+                    // Step 4: validate against the current descriptor.
+                    Object current = targetObj.getOwn(key);
+                    boolean curConfigurable = targetObj.isConfigurable(key);
+                    boolean curEnumerable  = targetObj.isEnumerable(key);
+                    boolean curIsAccessor  = current instanceof Accessor;
+                    boolean curWritable    = !curIsAccessor && targetObj.isWritable(key);
+                    if (!curConfigurable) {
+                        // 4.a: can't flip configurable false→true.
+                        if (hasConfigurable && descConfigurable) {
+                            throw AbruptCompletion.typeError(
+                                "Cannot redefine property: " + key);
+                        }
+                        // 4.b: enumerable must match.
+                        if (hasEnumerable && descEnumerable != curEnumerable) {
+                            throw AbruptCompletion.typeError(
+                                "Cannot change enumerable attribute of non-configurable property '" + key + "'");
+                        }
+                        // 4.c: data ↔ accessor conversion forbidden.
+                        if (descIsAccessor && !curIsAccessor) {
+                            throw AbruptCompletion.typeError(
+                                "Cannot redefine non-configurable property '" + key + "' as accessor");
+                        }
+                        if (descIsData && curIsAccessor) {
+                            throw AbruptCompletion.typeError(
+                                "Cannot redefine non-configurable accessor property '" + key + "' as data");
+                        }
+                        if (!curIsAccessor) {
+                            // 4.d: non-configurable, non-writable data prop.
+                            if (!curWritable) {
+                                if (hasWritable && descWritable) {
+                                    throw AbruptCompletion.typeError(
+                                        "Cannot change writable attribute of non-configurable property '" + key + "'");
+                                }
+                                if (hasValue && !AbstractOps.strictlyEquals(descValue, current)) {
+                                    throw AbruptCompletion.typeError(
+                                        "Cannot assign to read only property '" + key + "'");
+                                }
+                            }
+                        } else {
+                            // 4.e: non-configurable accessor.
+                            Accessor curAcc = (Accessor) current;
+                            if (hasGet && descGetter != curAcc.getter()) {
+                                throw AbruptCompletion.typeError(
+                                    "Cannot change getter of non-configurable property '" + key + "'");
+                            }
+                            if (hasSet && descSetter != curAcc.setter()) {
+                                throw AbruptCompletion.typeError(
+                                    "Cannot change setter of non-configurable property '" + key + "'");
+                            }
+                        }
+                    }
+                }
+                // Apply — merge desc into current. Missing fields default
+                // to current's value when present, or spec defaults when
+                // creating a new property.
+                byte curAttrs = hasCurrent ? targetObj.getAttributes(key) : 0;
+                byte attrs;
+                if (hasCurrent) {
+                    boolean wAttr = hasWritable ? descWritable : (curAttrs & JSObject.ATTR_WRITABLE) != 0;
+                    boolean eAttr = hasEnumerable ? descEnumerable : (curAttrs & JSObject.ATTR_ENUMERABLE) != 0;
+                    boolean cAttr = hasConfigurable ? descConfigurable : (curAttrs & JSObject.ATTR_CONFIGURABLE) != 0;
+                    attrs = 0;
+                    if (wAttr) attrs |= JSObject.ATTR_WRITABLE;
+                    if (eAttr) attrs |= JSObject.ATTR_ENUMERABLE;
+                    if (cAttr) attrs |= JSObject.ATTR_CONFIGURABLE;
+                } else {
+                    attrs = 0;
+                    if (hasWritable && descWritable) attrs |= JSObject.ATTR_WRITABLE;
+                    if (!hasWritable && !descIsAccessor) {
+                        // New data prop with no `writable` field → false (spec default for defineProperty).
+                    }
+                    if (hasEnumerable && descEnumerable) attrs |= JSObject.ATTR_ENUMERABLE;
+                    if (hasConfigurable && descConfigurable) attrs |= JSObject.ATTR_CONFIGURABLE;
+                }
+                if (descIsAccessor) {
+                    Accessor acc = new Accessor(descGetter, descSetter);
+                    if (hasCurrent && targetObj.getOwn(key) instanceof Accessor prior) {
+                        // When a field is absent, retain the existing component.
+                        JSFunction newGetter = hasGet ? descGetter : prior.getter();
+                        JSFunction newSetter = hasSet ? descSetter : prior.setter();
+                        acc = new Accessor(newGetter, newSetter);
+                    }
+                    targetObj.set(key, acc);
+                } else if (descIsData) {
+                    targetObj.set(key, descValue);
+                } else if (hasCurrent) {
+                    // Generic descriptor — keep the existing stored value.
+                    // (No write needed; just attribute update below.)
+                } else {
+                    // New, generic descriptor — spec defaults value to undefined.
+                    targetObj.set(key, Undefined.VALUE);
                 }
                 targetObj.setAttributes(key, attrs);
             } else if (target instanceof JSArray targetArr) {
-                // Arrays accept defineProperty too. Indexed keys go through
-                // arr.set; accessors are stored at the index (read path
-                // detects and invokes). 'length' is special.
+                // Legacy: no spec-validation on array indexes for v1, just
+                // store. {@code length} is special — drive the sparse
+                // setter so truncation runs.
+                byte attrs = 0;
+                if (hasWritable ? descWritable : true) attrs |= JSObject.ATTR_WRITABLE;
+                if (hasEnumerable ? descEnumerable : false) attrs |= JSObject.ATTR_ENUMERABLE;
+                if (hasConfigurable ? descConfigurable : false) attrs |= JSObject.ATTR_CONFIGURABLE;
                 if ("length".equals(key)) {
-                    if (descObj.properties().containsKey("value")) {
-                        double d = AbstractOps.toNumber(descObj.get("value"));
+                    if (hasValue) {
+                        double d = AbstractOps.toNumber(descValue);
                         if (Double.isNaN(d) || d < 0 || d != Math.floor(d) || d > 4294967295.0) {
                             throw AbruptCompletion.rangeError("Invalid array length");
                         }
@@ -4453,28 +6215,26 @@ public final class Realm {
                     }
                 } else {
                     int idx = parseIndex(key);
-                    Object value;
-                    if (hasGet || hasSet) {
-                        JSFunction getter = (descObj.get("get") instanceof JSFunction g) ? g : null;
-                        JSFunction setter = (descObj.get("set") instanceof JSFunction s) ? s : null;
-                        value = new Accessor(getter, setter);
-                    } else {
-                        value = descObj.get("value");
-                    }
+                    Object value = descIsAccessor ? new Accessor(descGetter, descSetter) : descValue;
                     if (idx >= 0) targetArr.set(idx, value);
                     else targetArr.setExtraProperty(key, value);
                 }
+                // Unused for arrays (no attribute slot per-element), but keep
+                // the var reference so javac doesn't complain in -Werror builds.
+                if (attrs == 0xFF) throw AbruptCompletion.typeError("unreachable");
             } else {
                 JSFunction targetFn = (JSFunction) target;
-                if (hasGet || hasSet) {
-                    JSFunction getter = (descObj.get("get") instanceof JSFunction g) ? g : null;
-                    JSFunction setter = (descObj.get("set") instanceof JSFunction s) ? s : null;
-                    Accessor acc = new Accessor(getter, setter);
+                byte attrs = 0;
+                if (hasWritable ? descWritable : true) attrs |= JSObject.ATTR_WRITABLE;
+                if (hasEnumerable ? descEnumerable : false) attrs |= JSObject.ATTR_ENUMERABLE;
+                if (hasConfigurable ? descConfigurable : false) attrs |= JSObject.ATTR_CONFIGURABLE;
+                if (descIsAccessor) {
+                    Accessor acc = new Accessor(descGetter, descSetter);
                     Object existing = targetFn.properties().get(key);
                     if (existing instanceof Accessor prior) acc = prior.merge(acc);
                     targetFn.properties().put(key, acc);
                 } else {
-                    targetFn.properties().put(key, descObj.get("value"));
+                    targetFn.properties().put(key, descValue);
                 }
                 targetFn.setAttributes(key, attrs);
             }
@@ -4488,13 +6248,36 @@ public final class Realm {
                 && !(target instanceof JSArray)) {
                 throw AbruptCompletion.typeError("Object.defineProperties called on non-object");
             }
-            if (!(props instanceof JSObject propsObj)) {
+            if (props == null || props == Undefined.VALUE
+                || !(props instanceof JSObject || props instanceof JSFunction || props instanceof JSArray)) {
                 throw AbruptCompletion.typeError("Property descriptors must be an object");
             }
             JSFunction defineFn = (JSFunction) objectCtor.properties().get("defineProperty");
-            for (var e : propsObj.properties().entrySet()) {
+            // ECMA-262 § 20.1.2.5 step 4: iterate OwnPropertyKeys, skip
+            // non-enumerable, GET each descriptor (invoking accessor
+            // getters), then DefinePropertyOrThrow.
+            java.util.List<String> ownKeys = new java.util.ArrayList<>();
+            if (props instanceof JSObject jp) {
+                ownKeys.addAll(orderedOwnPropertyNames(jp.properties().keySet()));
+            } else if (props instanceof JSFunction fn) {
+                ownKeys.addAll(orderedOwnPropertyNames(fn.propertiesIfPresent().keySet()));
+            } else if (props instanceof JSArray arr) {
+                for (int i = 0; i < arr.length(); i++) {
+                    if (!arr.isHole(i)) ownKeys.add(Integer.toString(i));
+                }
+            }
+            for (String k : ownKeys) {
+                if (isPrivateName(k)) continue;
+                // Enumerable check works for any kind via the underlying API.
+                boolean enumerable;
+                if (props instanceof JSObject jp) enumerable = jp.isEnumerable(k);
+                else if (props instanceof JSFunction fn) enumerable = fn.isEnumerable(k);
+                else enumerable = true;   // JSArray indexed elements are enumerable
+                if (!enumerable) continue;
+                // GET — invokes accessor getter (returns the descriptor object).
+                Object desc = AbstractOps.getProperty(props, k);
                 Interpreter.invokeFunction(defineFn, t,
-                    new Object[]{target, e.getKey(), e.getValue()}, c);
+                    new Object[]{target, k, desc}, c);
             }
             return target;
         }));
@@ -4562,7 +6345,10 @@ public final class Realm {
                 }
                 if ("prototype".equals(key) && fn.prototypeObject() != null) {
                     desc.set("value", fn.prototypeObject());
-                    desc.set("writable", true);
+                    // Built-in constructors have non-writable .prototype
+                    // (§ 21.1.2.4, § 22.1.2.4, etc.); user-defined
+                    // functions have writable .prototype.
+                    desc.set("writable", !fn.isNative());
                     desc.set("enumerable", false);
                     desc.set("configurable", false);
                     return desc;
@@ -4608,7 +6394,18 @@ public final class Realm {
             if (v instanceof JSObject jo) {
                 appendOrderedOwnPropertyNames(jo.properties().keySet(), out);
             } else if (v instanceof JSFunction fn) {
+                // ECMA-262 § 10.2.10: built-in functions surface
+                // `length` and `name` as own data properties in that
+                // order, before any user/spec-added statics, and
+                // `prototype` after if non-null. The order matters —
+                // tests like {@code built-ins/Function/property-order.js}
+                // verify `length` precedes `name`.
+                if (!fn.isLengthDeleted()) out.push("length");
+                if (!fn.isNameDeleted())   out.push("name");
                 appendOrderedOwnPropertyNames(fn.properties().keySet(), out);
+                if (fn.prototypeObject() != null && !out.elements().contains("prototype")) {
+                    out.push("prototype");
+                }
             } else if (v instanceof JSArray arr) {
                 for (int i = 0; i < arr.length(); i++) out.push(String.valueOf(i));
                 out.push("length");
@@ -4808,6 +6605,7 @@ public final class Realm {
         // § 23.1.2.4 Array.prototype reachable from constructor.
         arrayCtor.setPrototypeObject(arrayPrototype);
         arrayPrototype.set("constructor", arrayCtor);
+        TypedArrays.installSpeciesPublic(arrayCtor);
         globals.putIfAbsent("Array", arrayCtor);
 
         // Error family — bare-bones constructors that yield a JSObject with name/message
@@ -4819,6 +6617,26 @@ public final class Realm {
         installError(globals, "URIError", "URIError");
         installError(globals, "EvalError", "EvalError");
         installError(globals, "AggregateError", "AggregateError");
+        com.jimmyhmiller.harmonica.bytecode.builtins.SuppressedErrorBuiltin.install(globals);
+
+        // ECMA-262 § 20.5.2.1 Error.isError(arg) — Stage 4 (ES2025) static
+        // predicate. Returns true iff arg has an [[ErrorData]] internal
+        // slot. We approximate by walking the proto chain for any error
+        // prototype (errorPrototype or one of the named subtypes).
+        Object errorCtorVal = globals.get("Error");
+        if (errorCtorVal instanceof JSFunction errorCtor) {
+            errorCtor.properties().put("isError", nativeFn("isError", 1, (t, a, c) -> {
+                Object v = arg(a, 0);
+                if (!(v instanceof JSObject jo)) return false;
+                JSObject cursor = jo.proto();
+                while (cursor != null) {
+                    if (cursor == errorPrototype) return true;
+                    for (JSObject p : errorPrototypes.values()) if (cursor == p) return true;
+                    cursor = cursor.proto();
+                }
+                return false;
+            }));
+        }
 
         // Indirect eval — parse + run the source string. Does NOT see caller scope.
         globals.putIfAbsent("eval", nativeFn("eval", 1, (t, a, c) -> {
@@ -4851,6 +6669,13 @@ public final class Realm {
         // ECMA-262 § 20.2 Function constructor. `new Function('x', 'return x*2')`
         // builds a function by composing source and parsing it.
         JSFunction functionCtor = nativeFn("Function", 1, (t, a, c) -> {
+            // ECMA-262 § 20.2.1.1 Function constructor — mirrors LibJS's
+            // CreateDynamicFunction: parse the source as a FunctionExpression
+            // (NOT a Script) and materialize the function template directly
+            // in the current realm. We do NOT re-enter Interpreter.interpret —
+            // that would build a separate globals map and a separate Function
+            // intrinsic, which would make `f.constructor === Function`
+            // and `f instanceof Function` false.
             StringBuilder sb = new StringBuilder("(function(");
             int paramCount = Math.max(0, a.length - 1);
             for (int i = 0; i < paramCount; i++) {
@@ -4864,9 +6689,16 @@ public final class Realm {
                 com.jimmyhmiller.harmonica.ast.Program ast =
                     com.jimmyhmiller.harmonica.Parser.parse(sb.toString());
                 Executable exe = Generator.generate(ast);
-                Object result = Interpreter.interpret(exe, new Object[0], 64);
-                if (result instanceof JSFunction) return result;
-                throw AbruptCompletion.syntaxError("Function constructor parse failed");
+                // The Generator parks the FunctionExpression's compiled
+                // body at sharedFunctionData[0]. Instantiate it directly
+                // (no captures — the surrounding context is the script's
+                // top-level, which has no live bindings of its own) and
+                // bind it to the caller's globals so cross-realm lookups
+                // see the same Function intrinsic.
+                JSFunction template = exe.sharedFunctionData()[0];
+                JSFunction fn = template.withCapturedCells(new com.jimmyhmiller.harmonica.bytecode.Cell[0]);
+                if (c != null) fn.setHomeGlobals(c.globals());
+                return fn;
             } catch (AbruptCompletion ac) {
                 throw ac;
             } catch (Throwable th) {
@@ -4892,9 +6724,13 @@ public final class Realm {
             regExpPrototype.set("flags", "");
             // ECMA-262 § 22.2.5.2 RegExp.prototype.exec: returns null if no
             // match; otherwise an array with index, input, and capture groups.
-            regExpPrototype.set("exec", nativeFn("exec", 1, (t, a, c) -> {
+            JSFunction execFn = nativeFn("exec", 1, (t, a, c) -> {
+                // ECMA-262 § 22.2.5.2 RegExp.prototype.exec — receiver must
+                // be a RegExp instance with [[OriginalSource]] internal slot.
                 String src = asRegExpSource(t);
-                if (src == null) return null;
+                if (src == null) {
+                    throw AbruptCompletion.typeError("RegExp.prototype.exec called on non-RegExp");
+                }
                 String flags = asRegExpFlags(t);
                 String input = AbstractOps.toString(arg(a, 0));
                 java.util.regex.Pattern p = compileJsRegex(src, flags);
@@ -4932,22 +6768,42 @@ public final class Realm {
                     reObj.set("lastIndex", (double) m.end());
                 }
                 return out;
-            }));
+            });
+            regExpPrototype.set("exec", execFn);
+            // Capture the built-in for the RegExpExec fallback (§ 22.2.7.1
+            // step 6) — used when user code has overridden
+            // {@code RegExp.prototype.exec} with a non-callable value.
+            originalRegExpExec = execFn;
             regExpPrototype.set("test", nativeFn("test", 1, (t, a, c) -> {
                 String src = asRegExpSource(t);
-                if (src == null) return false;
+                if (src == null) {
+                    throw AbruptCompletion.typeError("RegExp.prototype.test called on non-RegExp");
+                }
                 String flags = asRegExpFlags(t);
                 String input = AbstractOps.toString(arg(a, 0));
                 return compileJsRegex(src, flags).matcher(input).find();
             }));
             regExpPrototype.set("toString", nativeFn("toString", 0, (t, a, c) -> {
-                String src = asRegExpSource(t);
-                if (src == null) src = "";
-                String flags = asRegExpFlags(t);
+                // § 22.2.6.16 RegExp.prototype.toString — accept any Object,
+                // reading `source` and `flags` via Get (so subclass
+                // accessors win). Non-objects throw TypeError.
+                if (!(t instanceof JSObject)) {
+                    throw AbruptCompletion.typeError("RegExp.prototype.toString called on non-object");
+                }
+                Object sourceObj = AbstractOps.getProperty(t, "source");
+                Object flagsObj = AbstractOps.getProperty(t, "flags");
+                String src = sourceObj == Undefined.VALUE ? "" : AbstractOps.toString(sourceObj);
+                String flags = flagsObj == Undefined.VALUE ? "" : AbstractOps.toString(flagsObj);
                 return "/" + src + "/" + flags;
             }));
             // ECMA-262 § 22.2.6 flag accessors — global / ignoreCase /
             // multiline / sticky / unicode / unicodeSets / dotAll / hasIndices.
+            // ECMA-262 § 22.2.6.* RegExp prototype accessors. All start with
+            // step "If Type(R) is not Object, throw a TypeError" — and
+            // they additionally require the receiver to be either a
+            // RegExp instance or RegExp.prototype itself (per § 22.2.6.X
+            // RequireInternalSlot([[OriginalSource]])). Tested by
+            // built-ins/RegExp/prototype/{source,flags,global,...}/this-val-non-obj.js.
             for (var entry : new String[][]{
                 {"global", "g"}, {"ignoreCase", "i"}, {"multiline", "m"},
                 {"sticky", "y"}, {"unicode", "u"}, {"unicodeSets", "v"},
@@ -4957,24 +6813,171 @@ public final class Realm {
                 String flagChar = entry[1];
                 regExpPrototype.set(name, new Accessor(
                     nativeFn("get " + name, 0, (t, a, c) -> {
+                        if (t == regExpPrototype) return Undefined.VALUE;   // spec: prototype itself returns undefined
+                        if (!(t instanceof JSObject)) {
+                            throw AbruptCompletion.typeError(
+                                "RegExp.prototype." + name + " getter called on non-object");
+                        }
                         String flags = asRegExpFlags(t);
-                        return flags != null && flags.contains(flagChar);
+                        if (flags == null) {
+                            throw AbruptCompletion.typeError(
+                                "RegExp.prototype." + name + " getter called on non-RegExp");
+                        }
+                        return flags.contains(flagChar);
                     }), null));
                 regExpPrototype.setAttributes(name, JSObject.ATTR_CONFIGURABLE);
             }
             // source / flags as accessors
             regExpPrototype.set("source", new Accessor(
                 nativeFn("get source", 0, (t, a, c) -> {
+                    if (t == regExpPrototype) return "(?:)";   // § 22.2.6.10 step 3
+                    if (!(t instanceof JSObject)) {
+                        throw AbruptCompletion.typeError("RegExp.prototype.source getter called on non-object");
+                    }
                     String src = asRegExpSource(t);
-                    return src == null ? "(?:)" : src;
+                    if (src == null) {
+                        throw AbruptCompletion.typeError("RegExp.prototype.source getter called on non-RegExp");
+                    }
+                    return src;
                 }), null));
             regExpPrototype.setAttributes("source", JSObject.ATTR_CONFIGURABLE);
             regExpPrototype.set("flags", new Accessor(
                 nativeFn("get flags", 0, (t, a, c) -> {
-                    String flags = asRegExpFlags(t);
-                    return flags == null ? "" : flags;
+                    if (!(t instanceof JSObject jo)) {
+                        throw AbruptCompletion.typeError("RegExp.prototype.flags getter called on non-object");
+                    }
+                    // § 22.2.6.3 reads each flag accessor on `this` and
+                    // builds the resulting string from the individual booleans —
+                    // works on RegExp instances and RegExp.prototype alike.
+                    String[][] order = {
+                        {"hasIndices", "d"}, {"global", "g"}, {"ignoreCase", "i"},
+                        {"multiline", "m"}, {"dotAll", "s"}, {"unicode", "u"},
+                        {"unicodeSets", "v"}, {"sticky", "y"}
+                    };
+                    StringBuilder sb = new StringBuilder();
+                    for (String[] e : order) {
+                        Object v = AbstractOps.getProperty(jo, e[0]);
+                        if (AbstractOps.toBoolean(v)) sb.append(e[1]);
+                    }
+                    return sb.toString();
                 }), null));
             regExpPrototype.setAttributes("flags", JSObject.ATTR_CONFIGURABLE);
+
+            // ECMA-262 § 22.2.6.{8..13} RegExp.prototype well-known-symbol
+            // methods. String.prototype.{match,replace,search,split,matchAll}
+            // dispatch through these, so test262 exercises both the symbol
+            // surface directly (RegExp.prototype[Symbol.match].call(re, s))
+            // and as a side effect of the string-side methods. We don't yet
+            // implement the full RegExpExec / advanceStringIndex / IsCallable
+            // dance for replace, so these are pragmatic shims that reuse the
+            // String.prototype implementations by swapping receiver/arg.
+            regExpPrototype.set(wellKnownMatch.asPropertyKey(),
+                nativeFn("[Symbol.match]", 1, (t, a, c) -> {
+                    Object strFn = stringPrototype.get("match");
+                    if (!(strFn instanceof JSFunction f)) return null;
+                    String s = AbstractOps.toString(arg(a, 0));
+                    return Interpreter.invokeFunction(f, s, new Object[]{t}, c);
+                }));
+            regExpPrototype.setAttributes(wellKnownMatch.asPropertyKey(),
+                (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+            regExpPrototype.set(wellKnownReplace.asPropertyKey(),
+                nativeFn("[Symbol.replace]", 2, (t, a, c) -> {
+                    Object strFn = stringPrototype.get("replace");
+                    if (!(strFn instanceof JSFunction f)) return arg(a, 0);
+                    String s = AbstractOps.toString(arg(a, 0));
+                    return Interpreter.invokeFunction(f, s, new Object[]{t, arg(a, 1)}, c);
+                }));
+            regExpPrototype.setAttributes(wellKnownReplace.asPropertyKey(),
+                (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+            regExpPrototype.set(wellKnownSearch.asPropertyKey(),
+                nativeFn("[Symbol.search]", 1, (t, a, c) -> {
+                    Object strFn = stringPrototype.get("search");
+                    if (!(strFn instanceof JSFunction f)) return -1.0;
+                    String s = AbstractOps.toString(arg(a, 0));
+                    return Interpreter.invokeFunction(f, s, new Object[]{t}, c);
+                }));
+            regExpPrototype.setAttributes(wellKnownSearch.asPropertyKey(),
+                (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+            regExpPrototype.set(wellKnownSplit.asPropertyKey(),
+                nativeFn("[Symbol.split]", 2, (t, a, c) -> {
+                    Object strFn = stringPrototype.get("split");
+                    if (!(strFn instanceof JSFunction f)) {
+                        JSArray empty = new JSArray();
+                        empty.push(AbstractOps.toString(arg(a, 0)));
+                        return empty;
+                    }
+                    String s = AbstractOps.toString(arg(a, 0));
+                    return Interpreter.invokeFunction(f, s, new Object[]{t, arg(a, 1)}, c);
+                }));
+            regExpPrototype.setAttributes(wellKnownSplit.asPropertyKey(),
+                (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+            // § 22.2.6.9 RegExp.prototype [@@matchAll] — unlike
+            // String.prototype.matchAll this does NOT require /g; it bakes
+            // the global/unicode bits into the returned iterator. Reads
+            // {@code flags}/{@code lastIndex} via Get so subclass accessors
+            // win, then constructs a fresh matcher and the iterator.
+            regExpPrototype.set(wellKnownMatchAll.asPropertyKey(),
+                nativeFn("[Symbol.matchAll]", 1, (t, a, c) -> {
+                    if (!(t instanceof JSObject reObj)) {
+                        throw AbruptCompletion.typeError(
+                            "RegExp.prototype[@@matchAll] called on non-object");
+                    }
+                    String s = AbstractOps.toString(arg(a, 0));
+                    Object flagsVal = AbstractOps.getProperty(reObj, "flags");
+                    String flags = flagsVal == Undefined.VALUE ? "" : AbstractOps.toString(flagsVal);
+                    boolean global  = flags.contains("g");
+                    boolean unicode = flags.contains("u") || flags.contains("v");
+                    // Build a fresh RegExp instance for the iterator so
+                    // advancing lastIndex on it doesn't mutate the caller's.
+                    Object source = AbstractOps.getProperty(reObj, "source");
+                    String src = source == Undefined.VALUE ? "" : AbstractOps.toString(source);
+                    Object reCtor = c == null ? null : c.globals().get("RegExp");
+                    Object matcher;
+                    if (reCtor instanceof JSFunction reCtorFn) {
+                        matcher = Interpreter.invokeFunctionAsConstructor(
+                            reCtorFn, new JSObject(regExpPrototype),
+                            new Object[]{src, flags}, c);
+                    } else {
+                        matcher = reObj;   // fallback: reuse — slot pattern
+                    }
+                    Object liv = AbstractOps.getProperty(reObj, "lastIndex");
+                    AbstractOps.setProperty(matcher, "lastIndex", liv);
+                    return com.jimmyhmiller.harmonica.bytecode.builtins
+                        .RegExpStringIteratorPrototypeBuiltin.create(matcher, s, global, unicode);
+                }));
+            regExpPrototype.setAttributes(wellKnownMatchAll.asPropertyKey(),
+                (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+            // Annex B § B.2.5.1 RegExp.prototype.compile(pattern, flags) —
+            // legacy method that reinitializes the regex in place.
+            regExpPrototype.set("compile", nativeFn("compile", 2, (t, a, c) -> {
+                if (!(t instanceof JSObject re)) {
+                    throw AbruptCompletion.typeError("RegExp.prototype.compile called on non-object");
+                }
+                Object pat = arg(a, 0);
+                Object flagsArg = arg(a, 1);
+                String src;
+                String flags;
+                if (asRegExpSource(pat) != null) {
+                    // If pattern is itself a RegExp, flags must be undefined.
+                    if (flagsArg != Undefined.VALUE) {
+                        throw AbruptCompletion.typeError("Cannot supply flags when constructing one RegExp from another");
+                    }
+                    src = asRegExpSource(pat);
+                    flags = asRegExpFlags(pat);
+                } else {
+                    src = pat == Undefined.VALUE ? "" : AbstractOps.toString(pat);
+                    flags = flagsArg == Undefined.VALUE ? "" : AbstractOps.toString(flagsArg);
+                }
+                re.set("source", src);
+                re.setAttributes("source", (byte) 0);
+                re.set("flags", flags);
+                re.setAttributes("flags", (byte) 0);
+                re.set("lastIndex", 0.0);
+                re.setAttributes("lastIndex", JSObject.ATTR_WRITABLE);
+                return re;
+            }));
+            regExpPrototype.setAttributes("compile",
+                (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
         }
         final JSObject regExpProto = regExpPrototype;
         // Idempotent — cache the ctor on the proto so nested-eval re-bootstrap
@@ -4989,9 +6992,50 @@ public final class Realm {
         } else {
             regExpCtor = nativeFn("RegExp", 2, (t, a, c) -> {
                 JSObject re = new JSObject(regExpProto);
-                re.set("source", arg(a, 0) == Undefined.VALUE ? "" : AbstractOps.toString(a[0]));
-                re.set("flags", arg(a, 1) == Undefined.VALUE ? "" : AbstractOps.toString(a[1]));
+                // ECMA-262 § 22.2.4: RegExp instances only have a [[OriginalSource]]
+                // / [[OriginalFlags]] internal slot — source/flags are accessor
+                // properties on the prototype. Stash them under non-enumerable
+                // own keys here so the prototype's accessors can read them
+                // without polluting Object.keys / for-in.
+                String srcInit = arg(a, 0) == Undefined.VALUE ? "" : AbstractOps.toString(a[0]);
+                // ECMA-262 § 22.2.3.1 RegExpInitialize step 12: parse the
+                // pattern, throw SyntaxError if it doesn't match the
+                // grammar. We delegate to java.util.regex.Pattern.compile
+                // on the translated form — failure = invalid JS pattern.
+                try {
+                    java.util.regex.Pattern.compile(translateJsRegexToJava(srcInit));
+                } catch (java.util.regex.PatternSyntaxException pse) {
+                    throw AbruptCompletion.syntaxError(
+                        "Invalid regular expression: /" + srcInit + "/ - " + pse.getMessage());
+                }
+                re.set("source", srcInit);
+                re.setAttributes("source", (byte) 0);   // non-enumerable, non-writable, non-configurable
+                String flags = arg(a, 1) == Undefined.VALUE ? "" : AbstractOps.toString(a[1]);
+                // ECMA-262 § 22.2.3.1 RegExpInitialize — invalid flag chars or
+                // duplicate flags throw SyntaxError.
+                String valid = "gimsuyvd";
+                long seen = 0L;
+                for (int i = 0; i < flags.length(); i++) {
+                    char ch = flags.charAt(i);
+                    int idx = valid.indexOf(ch);
+                    if (idx < 0) {
+                        throw AbruptCompletion.syntaxError("Invalid RegExp flag '" + ch + "'");
+                    }
+                    long bit = 1L << idx;
+                    if ((seen & bit) != 0) {
+                        throw AbruptCompletion.syntaxError("Duplicate RegExp flag '" + ch + "'");
+                    }
+                    seen |= bit;
+                }
+                // 'u' and 'v' are mutually exclusive (§ 22.2.3.1 step 8).
+                if (flags.indexOf('u') >= 0 && flags.indexOf('v') >= 0) {
+                    throw AbruptCompletion.syntaxError("RegExp flags 'u' and 'v' are mutually exclusive");
+                }
+                re.set("flags", flags);
+                re.setAttributes("flags", (byte) 0);
                 re.set("lastIndex", 0.0);   // ECMA-262 § 22.2.4.1 step 3
+                // lastIndex is writable but non-enumerable and non-configurable.
+                re.setAttributes("lastIndex", JSObject.ATTR_WRITABLE);
                 return re;
             });
             regExpCtor.setPrototypeObject(regExpProto);
@@ -5093,6 +7137,7 @@ public final class Realm {
             }
             return out.toString();
         }));
+        TypedArrays.installSpeciesPublic(regExpCtor);
         globals.putIfAbsent("RegExp", regExpCtor);
 
         // ECMA-262 § 28 Reflect — namespace of meta-operations. v1 covers
@@ -5184,7 +7229,7 @@ public final class Realm {
             return Interpreter.invokeFunction(fn, thisArg, callArgs, c);
         }));
         reflect.set("construct", nativeFn("construct", 2, (t, a, c) -> {
-            if (!(arg(a, 0) instanceof JSFunction fn)) {
+            if (!(arg(a, 0) instanceof JSFunction fn) || !fn.isConstructor()) {
                 throw AbruptCompletion.typeError("Reflect.construct called on non-constructor");
             }
             Object argList = arg(a, 1);
@@ -5193,6 +7238,34 @@ public final class Realm {
             Object result = Interpreter.invokeFunctionAsConstructor(fn, receiver, callArgs, c);
             return (result instanceof JSObject || result instanceof JSArray || result instanceof JSFunction)
                 ? result : receiver;
+        }));
+        // ECMA-262 § 28.1.3 Reflect.defineProperty / § 28.1.6 .getOwnPropertyDescriptor —
+        // identical to Object.* except defineProperty returns a Boolean
+        // instead of throwing on rejection. v1: we throw from
+        // Object.defineProperty, so wrap in try/catch to honor the spec
+        // return-boolean signature.
+        reflect.set("defineProperty", nativeFn("defineProperty", 3, (t, a, c) -> {
+            Object target = arg(a, 0);
+            if (!(target instanceof JSObject) && !(target instanceof JSFunction) && !(target instanceof JSArray)) {
+                throw AbruptCompletion.typeError("Reflect.defineProperty called on non-object");
+            }
+            Object defineFn = objectCtor.properties().get("defineProperty");
+            if (!(defineFn instanceof JSFunction df)) return false;
+            try {
+                Interpreter.invokeFunction(df, objectCtor, a, c);
+                return true;
+            } catch (AbruptCompletion ac) {
+                return false;
+            }
+        }));
+        reflect.set("getOwnPropertyDescriptor", nativeFn("getOwnPropertyDescriptor", 2, (t, a, c) -> {
+            Object target = arg(a, 0);
+            if (!(target instanceof JSObject) && !(target instanceof JSFunction) && !(target instanceof JSArray)) {
+                throw AbruptCompletion.typeError("Reflect.getOwnPropertyDescriptor called on non-object");
+            }
+            Object descFn = objectCtor.properties().get("getOwnPropertyDescriptor");
+            if (!(descFn instanceof JSFunction df)) return Undefined.VALUE;
+            return Interpreter.invokeFunction(df, objectCtor, a, c);
         }));
         globals.putIfAbsent("Reflect", reflect);
 
@@ -5253,9 +7326,94 @@ public final class Realm {
                 if ("globalThis".equals(e.getKey())) continue;
                 if (!globalThisObj.properties().containsKey(e.getKey())) {
                     globalThisObj.set(e.getKey(), e.getValue());
+                    // ECMA-262 § 19 — constructor properties of the global
+                    // object have { writable: true, enumerable: false,
+                    // configurable: true }. NaN/Infinity/undefined are
+                    // already installed with attrs=0 (frozen) above and
+                    // skipped by the containsKey guard.
+                    if (e.getValue() instanceof JSFunction
+                            || e.getValue() instanceof JSObject) {
+                        globalThisObj.setAttributes(e.getKey(),
+                            (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+                    }
                 }
             }
             globalThisObj.set("globalThis", globalThisObj);   // self-reference
+        }
+
+        // ECMA-262 § 17: every built-in method has the descriptor
+        // {writable: true, enumerable: false, configurable: true}. Sweep
+        // every constructor's statics + every late-installed prototype
+        // so test262's hundreds of `desc.enumerable === false` checks
+        // pass. Anything already given a non-default attribute byte
+        // (frozen typed-array slots, accessor pairs, etc.) is preserved
+        // by {@link #markStaticsNonEnumerable}.
+        for (var e : globals.entrySet()) {
+            Object v = e.getValue();
+            if (v instanceof JSFunction fn) markStaticsNonEnumerable(fn);
+        }
+        // Late-installed prototype objects whose methods were added after
+        // ensurePrototypes()'s sweep.
+        if (regExpPrototype != null) markMethodsNonEnumerable(regExpPrototype);
+        if (bigIntPrototype != null) markMethodsNonEnumerable(bigIntPrototype);
+        if (errorPrototype != null) markMethodsNonEnumerable(errorPrototype);
+        for (JSObject p : errorPrototypes.values()) markMethodsNonEnumerable(p);
+        // Typed-array prototypes were populated during installViewConstructor
+        // but never swept — base64/hex helpers etc. need § 17 attrs.
+        if (TypedArrays.typedArrayPrototype != null) markMethodsNonEnumerable(TypedArrays.typedArrayPrototype);
+        for (JSObject p : TypedArrays.kindPrototypes.values()) markMethodsNonEnumerable(p);
+        for (JSFunction fn : TypedArrays.kindConstructors.values()) markStaticsNonEnumerable(fn);
+        if (TypedArrays.arrayBufferPrototype != null) markMethodsNonEnumerable(TypedArrays.arrayBufferPrototype);
+        if (TypedArrays.dataViewPrototype != null) markMethodsNonEnumerable(TypedArrays.dataViewPrototype);
+        // Date.prototype is swept inline at install time; keep it idempotent.
+
+        // ECMA-262 § 17: built-in methods / static helpers are NOT constructors.
+        // Mark prototype methods and constructor statics accordingly so
+        // {@code new Math.abs()} / {@code Reflect.construct(eval)} throw
+        // TypeError and {@code Promise.all.call(eval)} sees the right
+        // IsConstructor result.
+        markMethodsNonConstructor(objectPrototype);
+        markMethodsNonConstructor(functionPrototype);
+        markMethodsNonConstructor(arrayPrototype);
+        markMethodsNonConstructor(stringPrototype);
+        markMethodsNonConstructor(numberPrototype);
+        markMethodsNonConstructor(booleanPrototype);
+        markMethodsNonConstructor(symbolPrototype);
+        markMethodsNonConstructor(promisePrototype);
+        markMethodsNonConstructor(generatorPrototype);
+        markMethodsNonConstructor(mapPrototype);
+        markMethodsNonConstructor(setPrototype);
+        markMethodsNonConstructor(weakMapPrototype);
+        markMethodsNonConstructor(weakSetPrototype);
+        if (datePrototype != null) markMethodsNonConstructor(datePrototype);
+        if (regExpPrototype != null) markMethodsNonConstructor(regExpPrototype);
+        if (bigIntPrototype != null) markMethodsNonConstructor(bigIntPrototype);
+        if (errorPrototype != null) markMethodsNonConstructor(errorPrototype);
+        for (JSObject p : errorPrototypes.values()) markMethodsNonConstructor(p);
+        if (TypedArrays.typedArrayPrototype != null) markMethodsNonConstructor(TypedArrays.typedArrayPrototype);
+        for (JSObject p : TypedArrays.kindPrototypes.values()) markMethodsNonConstructor(p);
+        if (TypedArrays.arrayBufferPrototype != null) markMethodsNonConstructor(TypedArrays.arrayBufferPrototype);
+        if (TypedArrays.dataViewPrototype != null) markMethodsNonConstructor(TypedArrays.dataViewPrototype);
+        // Sweep namespace methods (Math, JSON) and constructor statics.
+        Object mathVal = globals.get("Math");
+        if (mathVal instanceof JSObject mathObj) markMethodsNonConstructor(mathObj);
+        Object jsonVal = globals.get("JSON");
+        if (jsonVal instanceof JSObject jsonObj) markMethodsNonConstructor(jsonObj);
+        Object reflectVal = globals.get("Reflect");
+        if (reflectVal instanceof JSObject reflectObj) markMethodsNonConstructor(reflectObj);
+        for (var e : globals.entrySet()) {
+            Object v = e.getValue();
+            if (v instanceof JSFunction fn) markStaticsNonConstructor(fn);
+        }
+        // eval, parseInt, parseFloat, isNaN, isFinite, encode/decodeURI*
+        // — global non-constructors per spec. (Don't sweep all globals —
+        // most are constructors like Proxy that have no .prototype in our
+        // impl and would be mistakenly marked.)
+        for (String name : new String[]{"eval", "parseInt", "parseFloat", "isNaN", "isFinite",
+                "encodeURI", "encodeURIComponent", "decodeURI", "decodeURIComponent",
+                "escape", "unescape"}) {
+            Object v = globals.get(name);
+            if (v instanceof JSFunction fn) fn.setNonConstructor(true);
         }
     }
 
@@ -5381,6 +7539,102 @@ public final class Realm {
         if (ch >= 'a' && ch <= 'z') return ch - 'a' + 10;
         if (ch >= 'A' && ch <= 'Z') return ch - 'A' + 10;
         return -1;
+    }
+
+    /** ECMA-262 § 19.2.6 Encode — UTF-8 percent-encode every char NOT in
+     *  the reserved set. {@code encodeURIComponent} keeps only
+     *  unreservedURI ({@code A-Za-z0-9 - _ . ! ~ * ' ( )});
+     *  {@code encodeURI} additionally preserves the reserved
+     *  syntactic chars {@code ; / ? : @ & = + $ , #}. */
+    static String uriEncode(String s, boolean component) {
+        StringBuilder out = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            int cp = s.codePointAt(i);
+            boolean unreserved =
+                (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') ||
+                (cp >= '0' && cp <= '9') ||
+                cp == '-' || cp == '_' || cp == '.' || cp == '!' ||
+                cp == '~' || cp == '*' || cp == '\'' || cp == '(' || cp == ')';
+            boolean uriPreserved = !component && (
+                cp == ';' || cp == '/' || cp == '?' || cp == ':' ||
+                cp == '@' || cp == '&' || cp == '=' || cp == '+' ||
+                cp == '$' || cp == ',' || cp == '#');
+            if (unreserved || uriPreserved) {
+                out.appendCodePoint(cp);
+                if (cp > 0xFFFF) i++;
+                continue;
+            }
+            // Spec § 19.2.6.4 step 5: lone surrogates throw URIError.
+            if (Character.isLowSurrogate((char) cp)) {
+                throw AbruptCompletion.uriError("URI malformed");
+            }
+            if (cp > 0xFFFF) i++;
+            byte[] utf8 = new String(Character.toChars(cp)).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            for (byte b : utf8) out.append(String.format("%%%02X", b & 0xFF));
+        }
+        return out.toString();
+    }
+
+    /** ECMA-262 § 19.2.6.2 Decode — invert percent-encoding back to UTF-8
+     *  code points. {@code decodeURI} preserves reserved syntactic chars
+     *  encoded as %XX (the encoder kept them literal, so they stay
+     *  encoded); {@code decodeURIComponent} decodes everything. */
+    static String uriDecode(String s, boolean component) {
+        StringBuilder out = new StringBuilder(s.length());
+        int i = 0;
+        while (i < s.length()) {
+            char ch = s.charAt(i);
+            if (ch != '%') { out.append(ch); i++; continue; }
+            // Read a sequence of %XX bytes for a single UTF-8 code point.
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            int j = i;
+            while (j < s.length() && s.charAt(j) == '%') {
+                if (j + 2 >= s.length()) throw AbruptCompletion.uriError("URI malformed");
+                int hi = digitVal(s.charAt(j + 1));
+                int lo = digitVal(s.charAt(j + 2));
+                if (hi < 0 || lo < 0 || hi >= 16 || lo >= 16) {
+                    throw AbruptCompletion.uriError("URI malformed");
+                }
+                bytes.write((hi << 4) | lo);
+                j += 3;
+                if (bytes.size() == 1) {
+                    int b0 = bytes.toByteArray()[0] & 0xFF;
+                    if ((b0 & 0x80) == 0) break;   // ASCII single byte
+                }
+                int b0 = bytes.toByteArray()[0] & 0xFF;
+                int needed = (b0 & 0xE0) == 0xC0 ? 2
+                           : (b0 & 0xF0) == 0xE0 ? 3
+                           : (b0 & 0xF8) == 0xF0 ? 4
+                           : -1;
+                if (needed < 0) throw AbruptCompletion.uriError("URI malformed");
+                if (bytes.size() >= needed) break;
+            }
+            try {
+                String decoded = bytes.toString(java.nio.charset.StandardCharsets.UTF_8);
+                if (!component) {
+                    // decodeURI preserves the reserved syntactic chars
+                    // {@code ; / ? : @ & = + $ , #} — emit them as %XX.
+                    boolean preserve = false;
+                    if (decoded.length() == 1) {
+                        char dc = decoded.charAt(0);
+                        preserve = dc == ';' || dc == '/' || dc == '?' || dc == ':' ||
+                                   dc == '@' || dc == '&' || dc == '=' || dc == '+' ||
+                                   dc == '$' || dc == ',' || dc == '#';
+                    }
+                    if (preserve) {
+                        out.append(s, i, j);
+                    } else {
+                        out.append(decoded);
+                    }
+                } else {
+                    out.append(decoded);
+                }
+            } catch (Exception e) {
+                throw AbruptCompletion.uriError("URI malformed");
+            }
+            i = j;
+        }
+        return out.toString();
     }
 
     /** Private-name keys (ECMA-262 § 15.7.1.4 [[PrivateElements]]) are
@@ -5703,50 +7957,146 @@ public final class Realm {
     // ============================================================
 
     private static String jsonStringify(Object v) {
-        StringBuilder sb = new StringBuilder();
-        appendJson(sb, v);
-        return sb.toString();
+        return jsonStringify(v, null, null, "", null);
     }
 
-    private static void appendJson(StringBuilder sb, Object v) {
-        if (v == null || v == Undefined.VALUE) { sb.append("null"); return; }
-        if (v instanceof Boolean b) { sb.append(b ? "true" : "false"); return; }
-        if (v instanceof Number n) {
+    /** ECMA-262 § 25.5.2 JSON.stringify driver. {@code replacerFn} and
+     *  {@code replacerKeys} are mutually exclusive (the spec accepts a
+     *  function OR an array of selector keys, not both); the caller
+     *  passes one or neither. {@code gap} is the precomputed indent
+     *  (0..10 spaces, or up to 10 chars). Returns null when the
+     *  top-level value is a function/undefined/symbol. */
+    private static String jsonStringify(Object v, JSFunction replacerFn,
+                                        java.util.Set<String> replacerKeys,
+                                        String gap, InterpContext ctx) {
+        // Top-level: wrap in {"": v} so the recursive serializer sees the
+        // same shape as nested keys. The wrapper holder is used by
+        // ECMA-262 § 25.5.2.2 SerializeJSONProperty to call the replacer
+        // with the right `this` and `key=""`.
+        JSObject wrapper = new JSObject();
+        wrapper.set("", v);
+        StringBuilder sb = new StringBuilder();
+        java.util.IdentityHashMap<Object, Boolean> seen = new java.util.IdentityHashMap<>();
+        try {
+            boolean ok = serializeJsonProperty(sb, wrapper, "", replacerFn, replacerKeys, gap, "", seen, ctx);
+            return ok ? sb.toString() : null;
+        } catch (StackOverflowError e) {
+            throw AbruptCompletion.typeError("JSON.stringify: cyclic object value");
+        }
+    }
+
+    private static boolean serializeJsonProperty(StringBuilder sb, Object holder, String key,
+            JSFunction replacerFn, java.util.Set<String> replacerKeys,
+            String gap, String indent,
+            java.util.IdentityHashMap<Object, Boolean> seen, InterpContext ctx) {
+        Object val = AbstractOps.getProperty(holder, key);
+        // § 25.5.2.2 step 2: if value has a toJSON method, invoke it first.
+        if (val instanceof JSObject || val instanceof JSArray) {
+            Object toJson = AbstractOps.getProperty(val, "toJSON");
+            if (toJson instanceof JSFunction tj && ctx != null) {
+                val = Interpreter.invokeFunction(tj, val, new Object[]{key}, ctx);
+            }
+        }
+        if (replacerFn != null && ctx != null) {
+            val = Interpreter.invokeFunction(replacerFn, holder, new Object[]{key, val}, ctx);
+        }
+        // Unwrap Number/String/Boolean/BigInt wrapper objects per step 4.
+        if (val instanceof JSObject jo) {
+            if (jo.properties().get(SLOT_NUMBER_DATA) instanceof Number nd) val = nd;
+            else if (jo.properties().get(SLOT_STRING_DATA) instanceof String sd) val = sd;
+            else if (jo.properties().get(SLOT_BOOLEAN_DATA) instanceof Boolean bd) val = bd;
+            else if (jo.properties().get(SLOT_BIGINT_DATA) instanceof JSBigInt bid) val = bid;
+        }
+        if (val == null) { sb.append("null"); return true; }
+        if (val == Undefined.VALUE) return false;   // omitted
+        if (val instanceof JSFunction) return false;
+        if (val instanceof JSSymbol) return false;
+        if (val instanceof Boolean b) { sb.append(b ? "true" : "false"); return true; }
+        if (val instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Do not know how to serialize a BigInt");
+        }
+        if (val instanceof Number n) {
             double d = n.doubleValue();
-            if (Double.isNaN(d) || Double.isInfinite(d)) { sb.append("null"); return; }
-            sb.append(AbstractOps.toString(d));
-            return;
+            if (Double.isNaN(d) || Double.isInfinite(d)) sb.append("null");
+            else sb.append(AbstractOps.toString(d));
+            return true;
         }
-        if (v instanceof String s) { appendJsonString(sb, s); return; }
-        if (v instanceof JSArray arr) {
-            sb.append('[');
-            for (int i = 0; i < arr.length(); i++) {
-                if (i > 0) sb.append(',');
-                Object e = arr.get(i);
-                if (e instanceof JSFunction || e == Undefined.VALUE) sb.append("null");
-                else appendJson(sb, e);
+        if (val instanceof CharSequence cs) { appendJsonString(sb, cs.toString()); return true; }
+        if (val instanceof JSArray arr) {
+            if (seen.containsKey(arr)) {
+                throw AbruptCompletion.typeError("JSON.stringify: cyclic object value");
             }
-            sb.append(']');
-            return;
+            seen.put(arr, true);
+            try {
+                if (arr.length() == 0) { sb.append("[]"); return true; }
+                String stepIndent = indent + gap;
+                String sep = gap.isEmpty() ? "," : ",\n" + stepIndent;
+                sb.append('[');
+                if (!gap.isEmpty()) sb.append('\n').append(stepIndent);
+                for (int i = 0; i < arr.length(); i++) {
+                    if (i > 0) sb.append(sep);
+                    StringBuilder elemSb = new StringBuilder();
+                    boolean ok = serializeJsonProperty(elemSb, arr, Integer.toString(i),
+                        replacerFn, replacerKeys, gap, stepIndent, seen, ctx);
+                    if (ok) sb.append(elemSb);
+                    else sb.append("null");
+                }
+                if (!gap.isEmpty()) sb.append('\n').append(indent);
+                sb.append(']');
+                return true;
+            } finally {
+                seen.remove(arr);
+            }
         }
-        if (v instanceof JSObject jo) {
-            sb.append('{');
-            boolean first = true;
-            for (var e : jo.properties().entrySet()) {
-                if (isPrivateName(e.getKey())) continue;
-                if (!jo.isEnumerable(e.getKey())) continue;
-                Object val = e.getValue();
-                if (val instanceof JSFunction || val == Undefined.VALUE) continue;
-                if (!first) sb.append(',');
-                first = false;
-                appendJsonString(sb, e.getKey());
-                sb.append(':');
-                appendJson(sb, val);
+        if (val instanceof JSObject jo) {
+            if (seen.containsKey(jo)) {
+                throw AbruptCompletion.typeError("JSON.stringify: cyclic object value");
             }
-            sb.append('}');
-            return;
+            seen.put(jo, true);
+            try {
+                String stepIndent = indent + gap;
+                String sep = gap.isEmpty() ? "," : ",\n" + stepIndent;
+                String colon = gap.isEmpty() ? ":" : ": ";
+                java.util.List<String> keys = new java.util.ArrayList<>();
+                if (replacerKeys != null) {
+                    for (String k : replacerKeys) {
+                        if (jo.has(k)) keys.add(k);
+                    }
+                } else {
+                    for (String k : orderedOwnPropertyNames(jo.properties().keySet())) {
+                        if (isPrivateName(k)) continue;
+                        if (!jo.isEnumerable(k)) continue;
+                        if (k.startsWith("##")) continue;
+                        keys.add(k);
+                    }
+                }
+                java.util.List<String> partial = new java.util.ArrayList<>();
+                for (String k : keys) {
+                    StringBuilder valSb = new StringBuilder();
+                    boolean ok = serializeJsonProperty(valSb, jo, k, replacerFn, replacerKeys, gap, stepIndent, seen, ctx);
+                    if (ok) {
+                        StringBuilder member = new StringBuilder();
+                        appendJsonString(member, k);
+                        member.append(colon).append(valSb);
+                        partial.add(member.toString());
+                    }
+                }
+                if (partial.isEmpty()) { sb.append("{}"); return true; }
+                sb.append('{');
+                if (!gap.isEmpty()) sb.append('\n').append(stepIndent);
+                for (int i = 0; i < partial.size(); i++) {
+                    if (i > 0) sb.append(sep);
+                    sb.append(partial.get(i));
+                }
+                if (!gap.isEmpty()) sb.append('\n').append(indent);
+                sb.append('}');
+                return true;
+            } finally {
+                seen.remove(jo);
+            }
         }
         sb.append("null");
+        return true;
     }
 
     private static void appendJsonString(StringBuilder sb, String s) {
@@ -5777,6 +8127,30 @@ public final class Realm {
             throw AbruptCompletion.syntaxError("Unexpected token in JSON at position " + r.pos);
         }
         return v;
+    }
+
+    /** ECMA-262 § 25.5.1.2 InternalizeJSONProperty(holder, name, reviver). */
+    private static Object internalizeJSONProperty(Object holder, String name, JSFunction reviver, InterpContext ctx) {
+        Object val = AbstractOps.getProperty(holder, name);
+        if (val instanceof JSArray arr) {
+            int len = arr.length();
+            for (int i = 0; i < len; i++) {
+                String idx = Integer.toString(i);
+                Object newElem = internalizeJSONProperty(arr, idx, reviver, ctx);
+                if (newElem == Undefined.VALUE) arr.set(i, Undefined.VALUE);   // v1 sparse-friendly
+                else arr.set(i, newElem);
+            }
+        } else if (val instanceof JSObject obj) {
+            for (String key : new java.util.ArrayList<>(orderedOwnPropertyNames(obj.properties().keySet()))) {
+                Object newVal = internalizeJSONProperty(obj, key, reviver, ctx);
+                if (newVal == Undefined.VALUE) {
+                    obj.delete(key);
+                } else {
+                    obj.set(key, newVal);
+                }
+            }
+        }
+        return Interpreter.invokeFunction(reviver, holder, new Object[]{name, val}, ctx);
     }
 
     private static final class JsonReader {

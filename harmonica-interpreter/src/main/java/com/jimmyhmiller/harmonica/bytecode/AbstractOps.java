@@ -198,49 +198,71 @@ public final class AbstractOps {
      * strings, compare lexicographically by UTF-16 code unit (Java's
      * String.compareTo); otherwise coerce both to Number and compare.
      */
+    /** ECMA-262 § 7.2.16 IsLessThan(x, y, LeftFirst). Returns -1/0/1
+     *  (signum) or {@code Integer.MIN_VALUE} for "undefined" (NaN-side
+     *  comparisons), so relational ops can map that to false.
+     *  {@code leftFirst}: true → coerce x (LHS of relational op) first,
+     *  matching spec evaluation order. */
+    private static int compareLessThan(Object lhs, Object rhs, boolean leftFirst) {
+        Object lp, rp;
+        if (leftFirst) {
+            lp = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction
+                ? toPrimitive(lhs, "number") : lhs;
+            rp = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction
+                ? toPrimitive(rhs, "number") : rhs;
+        } else {
+            rp = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction
+                ? toPrimitive(rhs, "number") : rhs;
+            lp = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction
+                ? toPrimitive(lhs, "number") : lhs;
+        }
+        if (lp instanceof CharSequence ls && rp instanceof CharSequence rs) {
+            return ls.toString().compareTo(rs.toString());
+        }
+        // BigInt mixed with Number — § 7.2.16 step 6 handles via mathematical value.
+        if (lp instanceof JSBigInt lb && rp instanceof JSBigInt rb) {
+            return lb.value.compareTo(rb.value);
+        }
+        if (lp instanceof JSBigInt lb && rp instanceof Number nr) {
+            double dr = nr.doubleValue();
+            if (Double.isNaN(dr)) return Integer.MIN_VALUE;
+            if (dr == Double.POSITIVE_INFINITY) return -1;
+            if (dr == Double.NEGATIVE_INFINITY) return 1;
+            return lb.value.compareTo(java.math.BigDecimal.valueOf(dr).toBigInteger());
+        }
+        if (lp instanceof Number nl && rp instanceof JSBigInt rb) {
+            double dl = nl.doubleValue();
+            if (Double.isNaN(dl)) return Integer.MIN_VALUE;
+            if (dl == Double.POSITIVE_INFINITY) return 1;
+            if (dl == Double.NEGATIVE_INFINITY) return -1;
+            return java.math.BigDecimal.valueOf(dl).toBigInteger().compareTo(rb.value);
+        }
+        double ln = toNumber(lp), rn = toNumber(rp);
+        if (Double.isNaN(ln) || Double.isNaN(rn)) return Integer.MIN_VALUE;
+        return Double.compare(ln, rn);
+    }
+
     public static Boolean lessThan         (Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return dl < dr;
-        Object lp = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction
-                  ? toPrimitive(lhs, "number") : lhs;
-        Object rp = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction
-                  ? toPrimitive(rhs, "number") : rhs;
-        if (lp instanceof CharSequence ls && rp instanceof CharSequence rs) {
-            return ls.toString().compareTo(rs.toString()) <  0;
-        }
-        return toNumber(lp) <  toNumber(rp);
+        int cmp = compareLessThan(lhs, rhs, /* leftFirst */ true);
+        return cmp != Integer.MIN_VALUE && cmp < 0;
     }
     public static Boolean lessThanEquals   (Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return dl <= dr;
-        Object lp = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction
-                  ? toPrimitive(lhs, "number") : lhs;
-        Object rp = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction
-                  ? toPrimitive(rhs, "number") : rhs;
-        if (lp instanceof CharSequence ls && rp instanceof CharSequence rs) {
-            return ls.toString().compareTo(rs.toString()) <= 0;
-        }
-        return toNumber(lp) <= toNumber(rp);
+        // `a <= b` ↔ !IsLessThan(b, a, false). LeftFirst=false: coerce a (lhs) first.
+        int cmp = compareLessThan(rhs, lhs, /* leftFirst */ false);
+        return cmp != Integer.MIN_VALUE && cmp > 0 || cmp == 0;
     }
     public static Boolean greaterThan      (Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return dl > dr;
-        Object lp = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction
-                  ? toPrimitive(lhs, "number") : lhs;
-        Object rp = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction
-                  ? toPrimitive(rhs, "number") : rhs;
-        if (lp instanceof CharSequence ls && rp instanceof CharSequence rs) {
-            return ls.toString().compareTo(rs.toString()) >  0;
-        }
-        return toNumber(lp) >  toNumber(rp);
+        int cmp = compareLessThan(rhs, lhs, /* leftFirst */ false);
+        return cmp != Integer.MIN_VALUE && cmp < 0;
     }
     public static Boolean greaterThanEquals(Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return dl >= dr;
-        Object lp = lhs instanceof JSObject || lhs instanceof JSArray || lhs instanceof JSFunction
-                  ? toPrimitive(lhs, "number") : lhs;
-        Object rp = rhs instanceof JSObject || rhs instanceof JSArray || rhs instanceof JSFunction
-                  ? toPrimitive(rhs, "number") : rhs;
-        if (lp instanceof CharSequence ls && rp instanceof CharSequence rs) {
-            return ls.toString().compareTo(rs.toString()) >= 0;
-        }
-        return toNumber(lp) >= toNumber(rp);
+        // `a >= b` ↔ !IsLessThan(a, b, true). LeftFirst=true: coerce a (lhs) first.
+        int cmp = compareLessThan(lhs, rhs, /* leftFirst */ true);
+        return cmp != Integer.MIN_VALUE && cmp > 0 || cmp == 0;
     }
     public static Boolean strictlyInequals(Object lhs, Object rhs) { return !strictlyEquals(lhs, rhs); }
 
@@ -395,17 +417,71 @@ public final class AbstractOps {
         return d;
     }
 
+    /** ECMA-262 § 7.1.13 ToBigInt — coerce a value to a BigInt or throw
+     *  TypeError. Numbers / Symbols / null / undefined all reject;
+     *  Booleans become 0n / 1n; Strings parse as bigint literals;
+     *  Objects go through ToPrimitive(hint=number). */
+    public static JSBigInt toBigInt(Object v) {
+        Object prim = toPrimitive(v, "number");
+        if (prim instanceof JSBigInt bi) return bi;
+        if (prim instanceof Boolean b) return new JSBigInt(b ? java.math.BigInteger.ONE : java.math.BigInteger.ZERO);
+        if (prim instanceof CharSequence cs) {
+            String s = cs.toString().trim();
+            if (s.isEmpty()) return new JSBigInt(java.math.BigInteger.ZERO);
+            try {
+                if (s.length() >= 2 && s.charAt(0) == '0') {
+                    char p = s.charAt(1);
+                    if (p == 'x' || p == 'X') return new JSBigInt(new java.math.BigInteger(s.substring(2), 16));
+                    if (p == 'o' || p == 'O') return new JSBigInt(new java.math.BigInteger(s.substring(2), 8));
+                    if (p == 'b' || p == 'B') return new JSBigInt(new java.math.BigInteger(s.substring(2), 2));
+                }
+                return new JSBigInt(new java.math.BigInteger(s));
+            } catch (NumberFormatException nfe) {
+                throw AbruptCompletion.syntaxError("Cannot convert " + s + " to BigInt");
+            }
+        }
+        if (prim instanceof Number) {
+            throw AbruptCompletion.typeError("Cannot convert a Number to a BigInt");
+        }
+        if (prim instanceof JSSymbol) {
+            throw AbruptCompletion.typeError("Cannot convert a Symbol value to a BigInt");
+        }
+        if (prim == null || prim == Undefined.VALUE) {
+            throw AbruptCompletion.typeError("Cannot convert " + (prim == null ? "null" : "undefined") + " to a BigInt");
+        }
+        throw AbruptCompletion.typeError("Cannot convert to BigInt");
+    }
+
     /** https://tc39.es/ecma262/#sec-tonumber */
     public static double toNumber(Object v) {
         if (v == null)            return 0.0;
         if (v == Undefined.VALUE) return Double.NaN;
         if (v instanceof Boolean b) return b ? 1.0 : 0.0;
         if (v instanceof Number n)  return n.doubleValue();
-        // ECMA-262 § 7.1.4.2 — ToNumber on a Symbol throws TypeError.
+        // ECMA-262 § 7.1.4.2 — ToNumber on a Symbol or BigInt throws TypeError.
         if (v instanceof JSSymbol) throw AbruptCompletion.typeError("Cannot convert a Symbol value to a number");
+        if (v instanceof JSBigInt) throw AbruptCompletion.typeError("Cannot convert a BigInt value to a number");
         if (v instanceof CharSequence) {
             String t = v.toString().trim();
             if (t.isEmpty()) return 0.0;   // ECMA spec: "" → 0, "  " → 0
+            // ECMA-262 § 7.1.4.1 StringNumericLiteral — accept 0x/0o/0b
+            // integer literals (no sign on these per spec). Common in
+            // test262 ({@code length: "0x0002"} on array-likes).
+            if (t.length() >= 2 && t.charAt(0) == '0') {
+                char p = t.charAt(1);
+                if (p == 'x' || p == 'X') {
+                    try { return (double) Long.parseLong(t.substring(2), 16); }
+                    catch (NumberFormatException e) { return Double.NaN; }
+                }
+                if (p == 'o' || p == 'O') {
+                    try { return (double) Long.parseLong(t.substring(2), 8); }
+                    catch (NumberFormatException e) { return Double.NaN; }
+                }
+                if (p == 'b' || p == 'B') {
+                    try { return (double) Long.parseLong(t.substring(2), 2); }
+                    catch (NumberFormatException e) { return Double.NaN; }
+                }
+            }
             // Fast pre-check: most strings reaching toNumber on the lodash
             // hot path don't look like numbers. parseDouble's
             // NumberFormatException construction (with stack trace allocation
@@ -443,7 +519,9 @@ public final class AbstractOps {
      */
     public static Object toPrimitive(Object v, String hint) {
         if (v == null || v == Undefined.VALUE) return v;
-        if (v instanceof Boolean || v instanceof Number || v instanceof CharSequence) return v;
+        // BigInt, Symbol, Boolean, Number, String — all already primitive.
+        if (v instanceof Boolean || v instanceof Number || v instanceof CharSequence
+            || v instanceof JSBigInt || v instanceof JSSymbol) return v;
         InterpContext ctx = InterpContext.current();
         // Step 1: GetMethod(input, %Symbol.toPrimitive%). If non-null, call
         // it with the hint string. Result must be primitive or TypeError.
@@ -485,12 +563,29 @@ public final class AbstractOps {
     //  Property access
     // -------------------------------------------------------------
 
+    /**
+     * Best-effort string rendering of a property key for use inside an
+     * error message — never calls ToPrimitive, so a user-supplied key
+     * with a throwing toString won't escape this method.
+     */
+    private static String displayKeyForError(Object key) {
+        if (key == null) return "null";
+        if (key == Undefined.VALUE) return "undefined";
+        if (key instanceof String s) return s;
+        if (key instanceof JSSymbol sy) return sy.toString();
+        if (key instanceof Number || key instanceof Boolean || key instanceof JSBigInt) return key.toString();
+        return "<object>";
+    }
+
     /** ECMAScript-ish {@code base[key]} read. Throws on null/undefined receiver. */
     public static Object getProperty(Object base, Object key) {
         if (base == null || base == Undefined.VALUE) {
-            // Don't ToString a Symbol key here: it would mask the underlying
-            // null/undefined error with a useless Symbol-coercion error.
-            String displayKey = key instanceof JSSymbol sy ? sy.toString() : toString(key);
+            // Per § 6.2.4.5 GetValue, ToObject(base) runs before
+            // ToPropertyKey(key). If key is an object with a throwing
+            // toString/valueOf, calling toString here would propagate that
+            // error instead of the TypeError the spec requires. Stringify
+            // only primitive-ish keys; show "<object>" otherwise.
+            String displayKey = displayKeyForError(key);
             throw AbruptCompletion.typeError("Cannot read properties of " + (base == null ? "null" : "undefined")
                 + " (reading '" + displayKey + "')");
         }
@@ -568,7 +663,8 @@ public final class AbstractOps {
                 throw AbruptCompletion.typeError("Cannot read private member " + prop + " from an object whose class did not declare it");
             }
             Object v = obj.get(prop);
-            if (v instanceof Accessor acc && acc.getter() != null) {
+            if (v instanceof Accessor acc) {
+                if (acc.getter() == null) return Undefined.VALUE;
                 InterpContext ctx = InterpContext.current();
                 if (ctx == null) return v;   // pre-interpret bootstrap path
                 return Interpreter.invokeFunction(acc.getter(), base, new Object[0], ctx);
@@ -580,7 +676,8 @@ public final class AbstractOps {
             int idx = parseIndex(prop);
             if (idx >= 0 && idx < arr.length()) {
                 Object v = arr.get(idx);
-                if (v instanceof Accessor acc && acc.getter() != null) {
+                if (v instanceof Accessor acc) {
+                    if (acc.getter() == null) return Undefined.VALUE;
                     InterpContext ctx = InterpContext.current();
                     if (ctx == null) return Undefined.VALUE;
                     return Interpreter.invokeFunction(acc.getter(), base, new Object[0], ctx);
@@ -609,13 +706,25 @@ public final class AbstractOps {
             return Undefined.VALUE;
         }
         if (base instanceof JSFunction fn) {
+            // ECMA-262 § 10.2.4: strict functions expose `arguments` and
+            // `caller` as %ThrowTypeError% poison-pill accessors —
+            // observing either throws TypeError. Tested by
+            // language/statements/class/strict-mode/arguments-callee.js.
+            // Skip for native functions (they have neither slot in spec).
+            if (("arguments".equals(prop) || "caller".equals(prop))
+                    && !fn.isNative() && !fn.hasOwnStatic(prop)
+                    && fn.body() != null && fn.body().strictMode()) {
+                throw AbruptCompletion.typeError(
+                    "'" + prop + "' may not be accessed on strict mode functions");
+            }
             // Static-style properties live on the function itself.
             if (fn.hasOwnStatic(prop)) {
                 Object v = fn.getOwnStatic(prop);
                 // Accessor-defined static (e.g. Constructor[Symbol.species])
                 // — invoke its getter with the function as receiver, per
-                // § 10.1.8.1 OrdinaryGet step 7.
-                if (v instanceof Accessor acc && acc.getter() != null) {
+                // § 10.1.8.1 OrdinaryGet step 7. Missing getter → undefined.
+                if (v instanceof Accessor acc) {
+                    if (acc.getter() == null) return Undefined.VALUE;
                     InterpContext ctx = InterpContext.current();
                     if (ctx == null) return v;
                     return Interpreter.invokeFunction(acc.getter(), base, new Object[0], ctx);
@@ -636,7 +745,13 @@ public final class AbstractOps {
             // `Foo.prototype.method = ...` just works without `class`).
             if ("prototype".equals(prop)) {
                 if (fn.prototypeObject() == null && !fn.isNative()) {
-                    JSObject p = new JSObject();
+                    // § 27.6.1: an async generator function's .prototype
+                    // chains through %AsyncGeneratorPrototype%.
+                    JSObject parent = (fn.isAsync() && fn.isGenerator()
+                                       && Realm.asyncGeneratorPrototype != null)
+                        ? Realm.asyncGeneratorPrototype
+                        : null;
+                    JSObject p = parent == null ? new JSObject() : new JSObject(parent);
                     p.set("constructor", fn);
                     fn.setPrototypeObject(p);
                 }
@@ -688,19 +803,29 @@ public final class AbstractOps {
     /** ECMAScript-ish {@code base[key] = value} write. Throws on null/undefined receiver. */
     public static void setProperty(Object base, Object key, Object value) {
         if (base == null || base == Undefined.VALUE) {
-            throw AbruptCompletion.typeError("Cannot set properties of " + (base == null ? "null" : "undefined"));
+            // See getProperty: avoid toString(key) here so a throwing
+            // toString/valueOf on the key doesn't replace the spec-required
+            // TypeError with whatever ToPrimitive threw.
+            throw AbruptCompletion.typeError("Cannot set properties of " + (base == null ? "null" : "undefined")
+                + " (setting '" + displayKeyForError(key) + "')");
         }
         // Hot path: array[i] = value with a numeric key. Skip the
         // Long.toString -> parseIndex round-trip (matches the same fast
         // path in getProperty). Profile showed setProperty was the top
         // caller of Long.toString (17% of allocated bytes for the lodash
-        // workload).
+        // workload). Only take it when the existing in-range slot isn't
+        // an accessor — otherwise we'd silently overwrite a setter
+        // (language/statements/for-in/head-lhs-let.js installs one on
+        // Array.prototype['1']) and bypass the spec's [[Set]] dispatch.
         if (base instanceof JSArray arr && key instanceof Number n) {
             double d = n.doubleValue();
             int idx = (int) d;
-            if (idx == d && idx >= 0) {
-                arr.set(idx, value);
-                return;
+            if (idx == d && idx >= 0 && idx < arr.length()) {
+                Object existing = arr.get(idx);
+                if (!(existing instanceof Accessor)) {
+                    arr.set(idx, value);
+                    return;
+                }
             }
         }
         // ECMA-262 § 28.2.7.5 [[Set]] on a Proxy.
@@ -823,8 +948,47 @@ public final class AbstractOps {
                         return;   // accessor with no setter: silent drop in sloppy mode
                     }
                 }
+                // No own element at this index — § 10.1.9.2 step 2 says to
+                // walk the prototype chain (Array.prototype, then Object
+                // .prototype) for an inherited setter. Required by
+                // language/statements/for-in/head-lhs-let.js which defines
+                // Array.prototype['1'] as a setter and assigns through it.
+                JSObject protoCursor = Realm.arrayPrototype;
+                while (protoCursor != null) {
+                    Object existing = protoCursor.getOwn(prop);
+                    if (existing instanceof Accessor acc) {
+                        if (acc.setter() != null) {
+                            InterpContext ctx = InterpContext.current();
+                            if (ctx != null) {
+                                Interpreter.invokeFunction(acc.setter(), base, new Object[]{value}, ctx);
+                                return;
+                            }
+                        }
+                        return;   // accessor without setter: silent drop in sloppy mode
+                    }
+                    if (existing != JSObject.ABSENT) break;
+                    protoCursor = protoCursor.proto();
+                }
                 arr.set(idx, value);
                 return;
+            }
+            // Non-index property — also honor accessors installed on
+            // Array.prototype (or higher up the chain) at non-index keys.
+            JSObject protoCursor2 = Realm.arrayPrototype;
+            while (protoCursor2 != null) {
+                Object existing = protoCursor2.getOwn(prop);
+                if (existing instanceof Accessor acc) {
+                    if (acc.setter() != null) {
+                        InterpContext ctx = InterpContext.current();
+                        if (ctx != null) {
+                            Interpreter.invokeFunction(acc.setter(), base, new Object[]{value}, ctx);
+                            return;
+                        }
+                    }
+                    return;
+                }
+                if (existing != JSObject.ABSENT) break;
+                protoCursor2 = protoCursor2.proto();
             }
             // Non-index property — store in the array's extra-properties
             // map so tagged-template strings.raw and similar patterns work.
@@ -848,6 +1012,32 @@ public final class AbstractOps {
             if (("name".equals(prop) || "length".equals(prop)) && !fn.hasOwnStatic(prop)) {
                 return;
             }
+            // ECMA-262 § 10.1.9.2 OrdinarySetWithOwnDescriptor: if an own
+            // static property holds an Accessor with a setter, invoke it.
+            // Class statics install accessors via {@code fn.properties().put}
+            // (see Op.NewClass), so static {@code get}/{@code set} pairs
+            // need this branch to dispatch through the setter rather than
+            // overwriting the accessor cell or silently dropping the write.
+            if (fn.hasOwnStatic(prop)) {
+                Object existing = fn.getOwnStatic(prop);
+                if (existing instanceof Accessor acc) {
+                    if (acc.setter() != null) {
+                        InterpContext ctx = InterpContext.current();
+                        if (ctx != null) {
+                            Interpreter.invokeFunction(acc.setter(), fn, new Object[]{value}, ctx);
+                            return;
+                        }
+                        // No live ctx (bootstrap) — fall through; better
+                        // than silently dropping.
+                    } else {
+                        InterpContext ctx = InterpContext.current();
+                        if (ctx != null && ctx.executable() != null && ctx.executable().strictMode()) {
+                            throw AbruptCompletion.typeError("Cannot set property '" + prop + "' of " + fn + " which has only a getter");
+                        }
+                        return;
+                    }
+                }
+            }
             // Respect non-writable static properties (e.g. {@code
             // BYTES_PER_ELEMENT} on TypedArray constructors). Sloppy mode
             // silently drops the write; strict mode throws — § 10.1.9.2
@@ -856,6 +1046,14 @@ public final class AbstractOps {
                 InterpContext ctx = InterpContext.current();
                 if (ctx != null && ctx.executable() != null && ctx.executable().strictMode()) {
                     throw AbruptCompletion.typeError("Cannot assign to read only property '" + prop + "'");
+                }
+                return;
+            }
+            // Adding a NEW property requires [[Extensible]] = true.
+            if (!fn.hasOwnStatic(prop) && !fn.isExtensible()) {
+                InterpContext ctx = InterpContext.current();
+                if (ctx != null && ctx.executable() != null && ctx.executable().strictMode()) {
+                    throw AbruptCompletion.typeError("Cannot add property " + prop + ", function is not extensible");
                 }
                 return;
             }

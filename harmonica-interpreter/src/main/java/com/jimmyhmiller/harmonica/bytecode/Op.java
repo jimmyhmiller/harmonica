@@ -426,7 +426,13 @@ public sealed interface Op {
     record Increment(Variable dst) implements Op {
         @Override public Operation operation() { return Operation.INCREMENT; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, AbstractOps.boxDouble(AbstractOps.toNumber(dst.retrieve(ctx)) + 1.0));
+            // ECMA-262 § 13.4 ++ uses ToNumeric, so BigInt stays BigInt.
+            Object cur = dst.retrieve(ctx);
+            if (cur instanceof JSBigInt bi) {
+                dst.store(ctx, new JSBigInt(bi.value.add(java.math.BigInteger.ONE)));
+            } else {
+                dst.store(ctx, AbstractOps.boxDouble(AbstractOps.toNumber(cur) + 1.0));
+            }
             return pc + 1;
         }
     }
@@ -434,7 +440,12 @@ public sealed interface Op {
     record Decrement(Variable dst) implements Op {
         @Override public Operation operation() { return Operation.DECREMENT; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            dst.store(ctx, AbstractOps.boxDouble(AbstractOps.toNumber(dst.retrieve(ctx)) - 1.0));
+            Object cur = dst.retrieve(ctx);
+            if (cur instanceof JSBigInt bi) {
+                dst.store(ctx, new JSBigInt(bi.value.subtract(java.math.BigInteger.ONE)));
+            } else {
+                dst.store(ctx, AbstractOps.boxDouble(AbstractOps.toNumber(cur) - 1.0));
+            }
             return pc + 1;
         }
     }
@@ -442,10 +453,15 @@ public sealed interface Op {
     record PostfixIncrement(Variable dst, Operand src) implements Op {
         @Override public Operation operation() { return Operation.POSTFIX_INCREMENT; }
         @Override public int interpret(InterpContext ctx, int pc) {
-            // Reuse the source's already-boxed Double for the dst store; box
+            // Reuse the source's already-boxed value for the dst store; box
             // the new value via the small-double cache so ++ in tight loops
-            // doesn't allocate.
+            // doesn't allocate. BigInt is preserved per § 13.4 ToNumeric.
             Object orig = src.retrieve(ctx);
+            if (orig instanceof JSBigInt bi) {
+                dst.store(ctx, orig);
+                if (src instanceof Variable v) v.store(ctx, new JSBigInt(bi.value.add(java.math.BigInteger.ONE)));
+                return pc + 1;
+            }
             double n = AbstractOps.toNumber(orig);
             dst.store(ctx, orig instanceof Double ? orig : AbstractOps.boxDouble(n));
             if (src instanceof Variable v) v.store(ctx, AbstractOps.boxDouble(n + 1.0));
@@ -457,6 +473,11 @@ public sealed interface Op {
         @Override public Operation operation() { return Operation.POSTFIX_DECREMENT; }
         @Override public int interpret(InterpContext ctx, int pc) {
             Object orig = src.retrieve(ctx);
+            if (orig instanceof JSBigInt bi) {
+                dst.store(ctx, orig);
+                if (src instanceof Variable v) v.store(ctx, new JSBigInt(bi.value.subtract(java.math.BigInteger.ONE)));
+                return pc + 1;
+            }
             double n = AbstractOps.toNumber(orig);
             dst.store(ctx, orig instanceof Double ? orig : AbstractOps.boxDouble(n));
             if (src instanceof Variable v) v.store(ctx, AbstractOps.boxDouble(n - 1.0));
@@ -1060,7 +1081,11 @@ public sealed interface Op {
                         }
                     }
                 }
-                if (resolved instanceof Accessor acc && acc.getter() != null) {
+                if (resolved instanceof Accessor acc) {
+                    if (acc.getter() == null) {
+                        dst.store(ctx, Undefined.VALUE);
+                        return pc + 1;
+                    }
                     Object v = Interpreter.invokeFunction(acc.getter(), b, new Object[0], ctx);
                     dst.store(ctx, v);
                     return pc + 1;
@@ -1069,8 +1094,10 @@ public sealed interface Op {
                 return pc + 1;
             }
             Object v = AbstractOps.getProperty(b, property);
-            if (v instanceof Accessor acc && acc.getter() != null) {
-                v = Interpreter.invokeFunction(acc.getter(), b, new Object[0], ctx);
+            if (v instanceof Accessor acc) {
+                v = acc.getter() == null
+                    ? Undefined.VALUE
+                    : Interpreter.invokeFunction(acc.getter(), b, new Object[0], ctx);
             }
             dst.store(ctx, v);
             return pc + 1;
@@ -1106,8 +1133,10 @@ public sealed interface Op {
                 return pc + 1;
             }
             Object v = AbstractOps.getProperty(b, "length");
-            if (v instanceof Accessor acc && acc.getter() != null) {
-                v = Interpreter.invokeFunction(acc.getter(), b, new Object[0], ctx);
+            if (v instanceof Accessor acc) {
+                v = acc.getter() == null
+                    ? Undefined.VALUE
+                    : Interpreter.invokeFunction(acc.getter(), b, new Object[0], ctx);
             }
             dst.store(ctx, v);
             return pc + 1;
@@ -1761,8 +1790,10 @@ public sealed interface Op {
             }
             // ECMA-262 § 15.3 ArrowFunction has no [[Construct]]; § 27.7 async
             // functions and § 27.5 generators also lack [[Construct]] (calling
-            // `new` on them should throw before the body runs).
-            if (fn.isArrow() || fn.isAsync() || fn.isGenerator()) {
+            // `new` on them should throw before the body runs). Built-in
+            // prototype methods + global non-ctor helpers (eval, etc.) are
+            // marked nonConstructor at bootstrap.
+            if (!fn.isConstructor()) {
                 throw AbruptCompletion.typeError("not a constructor: " + (fn.name() != null ? fn.name() : "<anonymous>"));
             }
             JSObject receiver = new JSObject(ensureFunctionPrototype(fn));
@@ -1787,7 +1818,17 @@ public sealed interface Op {
     private static JSObject ensureFunctionPrototype(JSFunction fn) {
         JSObject p = fn.prototypeObject();
         if (p == null && !fn.isNative()) {
-            p = new JSObject();
+            // § 27.6.1 — an async generator function's prototype inherits
+            // from %AsyncGeneratorPrototype% (which itself chains to
+            // %AsyncIteratorPrototype%). Test262 probes this via
+            // Object.getPrototypeOf(Object.getPrototypeOf(asyncGen.prototype)).
+            // Sync generators continue to use the default flow (their chain
+            // is wired through Realm.generatorPrototype elsewhere).
+            JSObject proto = (fn.isAsync() && fn.isGenerator()
+                              && com.jimmyhmiller.harmonica.bytecode.Realm.asyncGeneratorPrototype != null)
+                ? com.jimmyhmiller.harmonica.bytecode.Realm.asyncGeneratorPrototype
+                : null;
+            p = proto == null ? new JSObject() : new JSObject(proto);
             p.set("constructor", fn);
             fn.setPrototypeObject(p);
         }
@@ -2179,6 +2220,10 @@ public sealed interface Op {
             Object[] args = ctx.args();
             int len = args == null ? 0 : args.length;
             JSObject obj = new JSObject();
+            // Internal-slot marker so Object.prototype.toString returns
+            // "[object Arguments]" (spec § 20.1.3.6 checks [[ParameterMap]]).
+            obj.properties().put("##ArgumentsParameterMap##", obj);
+            obj.setAttributes("##ArgumentsParameterMap##", (byte) 0);
             // Spec step 4 — length goes in first.
             obj.set("length", (double) len);
             // Spec step 5 — indexed properties via CreateDataPropertyOrThrow.
@@ -3175,8 +3220,10 @@ public sealed interface Op {
                 }
             }
             Object v = AbstractOps.getProperty(b, key);
-            if (v instanceof Accessor acc && acc.getter() != null) {
-                v = Interpreter.invokeFunction(acc.getter(), b, new Object[0], ctx);
+            if (v instanceof Accessor acc) {
+                v = acc.getter() == null
+                    ? Undefined.VALUE
+                    : Interpreter.invokeFunction(acc.getter(), b, new Object[0], ctx);
             }
             dst.store(ctx, v);
             return pc + 1;
@@ -3224,14 +3271,14 @@ public sealed interface Op {
                 }
                 case OWN -> AbstractOps.setProperty(b, key, value);
                 case NORMAL -> {
-                    Object existing = AbstractOps.getProperty(b, key);
-                    if (existing instanceof Accessor acc) {
-                        if (acc.setter() != null) {
-                            Interpreter.invokeFunction(acc.setter(), b, new Object[]{value}, ctx);
-                        }
-                    } else {
-                        AbstractOps.setProperty(b, key, value);
-                    }
+                    // setProperty walks the prototype chain itself and
+                    // dispatches through any setter it finds, so the
+                    // pre-check that used to live here was both redundant
+                    // and a source of double-ToString on the key (the
+                    // {@code S11.13.1_A7_T4} pattern in test262: a property
+                    // key with a side-effecting toString must be observed
+                    // exactly once for plain assignment).
+                    AbstractOps.setProperty(b, key, value);
                 }
             }
             return pc + 1;
@@ -3345,6 +3392,45 @@ public sealed interface Op {
             // call @@toPrimitive / toString / valueOf, but user-defined
             // conversions aren't yet supported.
             if (dst instanceof Variable dstVar) dstVar.store(ctx, v);
+            return pc + 1;
+        }
+    }
+
+    /**
+     * ECMA-262 § 7.1.19 ToPropertyKey — coerce a property-key expression
+     * to a String or Symbol exactly once. Lowered between the LHS
+     * evaluation and the GetBy/PutBy in compound assignments and
+     * update expressions, so a key with a side-effecting toString
+     * (the {@code S11.13.2_A7.*_T4} pattern in test262) isn't observed
+     * twice. Strings/Symbols pass through; Numbers and BigInts
+     * stringify cheaply; objects go through ToPrimitive + ToString.
+     *
+     * <p>{@code base} (optional) lets the caller enforce spec order:
+     * per § 6.2.4.5 GetValue, {@code ToObject(base)} must run before
+     * {@code ToPropertyKey(key)}, so when {@code base} is null/undefined
+     * we throw the matching TypeError without invoking the key's
+     * toString — otherwise a throwing toString masks the required
+     * TypeError (e.g. {@code S11.13.2_A7.*_T1/T2}).
+     */
+    record ToPropertyKey(Variable dst, Operand value, Operand base) implements Op {
+        public ToPropertyKey(Variable dst, Operand value) { this(dst, value, null); }
+        @Override public Operation operation() { return Operation.TO_STRING; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            if (base != null) {
+                Object b = base.retrieve(ctx);
+                if (b == null || b == Undefined.VALUE) {
+                    throw AbruptCompletion.typeError(
+                        "Cannot " + (b == null ? "read properties of null" : "read properties of undefined"));
+                }
+            }
+            Object v = value.retrieve(ctx);
+            Object key;
+            if (v instanceof String || v instanceof JSSymbol) {
+                key = v;
+            } else {
+                key = AbstractOps.toString(v);
+            }
+            dst.store(ctx, key);
             return pc + 1;
         }
     }

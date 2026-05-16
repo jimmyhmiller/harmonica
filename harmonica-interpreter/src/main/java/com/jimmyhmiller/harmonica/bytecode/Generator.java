@@ -7981,6 +7981,16 @@ public final class Generator {
             Variable.Register valueReg;
             if (useComputed) {
                 propKey = lowerExpression(me.property());
+                // Coerce the property key once — GetByValue + PutByValue
+                // each toString their key, but per § 13.4.4 / § 13.4.5 an
+                // update expression evaluates the operand reference (and
+                // therefore ToPropertyKey) only once. `base` lets the op
+                // throw the null/undefined TypeError before invoking a
+                // potentially throwing toString.
+                Variable.Register propKeyReg = allocRegister();
+                emit(new Op.ToPropertyKey(propKeyReg, propKey, base));
+                release(propKey);
+                propKey = propKeyReg;
                 valueReg = allocRegister();
                 emit(new Op.GetByValue(valueReg, base, propKey, memberChainNameOrSuffix(me.object())));
             } else {
@@ -9831,6 +9841,17 @@ public final class Generator {
             Operand prop = null;
             if (me.computed() && foldedName == null) {
                 prop = lowerExpression(me.property());
+                // ECMA-262 § 13.15.2: in `base[prop] op= rhs`, ToPropertyKey
+                // runs exactly once. GetByValue + PutByValue each toString
+                // their key, so without an explicit coercion the key would
+                // be observed twice (S11.13.2_A7.*_T4). Pre-coerce here.
+                // Pass `base` so the op honors the spec's ToObject-before-
+                // ToPropertyKey ordering (S11.13.2_A7.*_T1/T2 expect the
+                // null-base TypeError, not whatever toString throws).
+                Variable.Register propKeyReg = allocRegister();
+                emit(new Op.ToPropertyKey(propKeyReg, prop, base));
+                release(prop);
+                prop = propKeyReg;
             }
             // Read current value via the cached base/prop.
             Variable.Register currVal = allocRegister();

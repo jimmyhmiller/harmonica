@@ -297,7 +297,7 @@ public final class ModuleLoader {
         Executable exe = Generator.generate(ast, /* moduleMode */ true);
 
         rec.moduleGlobals = new ModuleGlobals();
-        rec.namespace = new JSObject();
+        rec.namespace = new JSObject(null);   // ECMA-262 § 28.3 — module namespaces have null [[Prototype]].
 
         // Walk the program for import/export records.
         ImportExportRecords records = extractImportsExports(ast);
@@ -525,7 +525,7 @@ public final class ModuleLoader {
 
     /** Build accessor properties on rec.namespace for each export binding. */
     private void rebuildNamespace(ModuleRecord rec) {
-        rec.namespace = new JSObject();
+        rec.namespace = new JSObject(null);   // ECMA-262 § 28.3 — module namespaces have null [[Prototype]].
         for (Map.Entry<String, ModuleRecord.ExportBinding> e : rec.exports.entrySet()) {
             String exportedName = e.getKey();
             Map<String, Object> source = e.getValue().source();

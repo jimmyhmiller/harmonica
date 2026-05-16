@@ -390,6 +390,8 @@ public final class Disassembler {
                                             : "");
             case Op.ToPrimitiveWithStringHint o -> "ToPrimitiveWithStringHint dst:" + operand(o.dst(), exe)
                                                    + ", value:" + operand(o.value(), exe);
+            case Op.ToPropertyKey o -> "ToPropertyKey dst:" + dst(o.dst())
+                                       + ", value:" + operand(o.value(), exe);
             case Op.ImportCall o     -> "ImportCall " + dst(o.dst())
                                         + ", specifier:" + operand(o.specifier(), exe)
                                         + ", options:" + operand(o.options(), exe);

@@ -314,17 +314,13 @@ public final class TypedArrays {
             }
             case BIGINT64:
             case BIGUINT64: {
-                // Per spec, the value must be a BigInt (or coerce via ToBigInt).
-                long bits;
-                if (value instanceof JSBigInt bi) {
-                    bits = bi.value.longValue();
-                } else {
-                    // ToBigInt fallback: throw for Number, otherwise convert via Realm helper.
-                    if (value instanceof Number) {
-                        throw AbruptCompletion.typeError("Cannot convert a Number to BigInt");
-                    }
-                    bits = (long) AbstractOps.toNumber(value);
-                }
+                // ECMA-262 § 23.2.4.5: ToBigInt the value first, then take
+                // the low 64 bits in 2's complement. Numbers / Symbols /
+                // null / undefined / non-numeric strings all throw via
+                // ToBigInt; Booleans → 0n/1n; objects coerce through
+                // @@toPrimitive / valueOf / toString.
+                JSBigInt bi = value instanceof JSBigInt jb ? jb : AbstractOps.toBigInt(value);
+                long bits = bi.value.longValue();
                 for (int j = 0; j < 8; j++) data[off + j] = (byte) (bits >> (8 * j));
                 return;
             }
@@ -742,12 +738,18 @@ public final class TypedArrays {
     private static void dvGet(JSObject proto, String name, int size, boolean takesLE, TypedArrayKind kind) {
         int arity = takesLE ? 1 : 1;
         proto.set(name, nativeFn(name, arity, (t, a, c) -> {
+            // ECMA-262 § 25.3.1.1 GetViewValue. Spec order:
+            //   1. Validate receiver is DataView
+            //   4. getIndex = ToIndex(requestIndex)   ← may throw RangeError
+            //   6. let buffer = view.[[ViewedArrayBuffer]]
+            //   7. If IsDetachedBuffer(buffer) → TypeError
+            //   8. If getIndex + size > view.byteLength → RangeError
             JSObject self = requireDataView(t, name);
             TypedArrayState s = (TypedArrayState) self.getOwn(SLOT_DATA_VIEW);
-            ArrayBufferData d = bufferDataOf(s.buffer);
-            if (d == null || d.isDetached()) throw AbruptCompletion.typeError("Buffer is detached");
             long byteOffset = toIndex(arg(a, 0));
             boolean littleEndian = takesLE && AbstractOps.toBoolean(arg(a, 1));
+            ArrayBufferData d = bufferDataOf(s.buffer);
+            if (d == null || d.isDetached()) throw AbruptCompletion.typeError("Buffer is detached");
             int viewLen = s.byteLengthOrAuto >= 0 ? s.byteLengthOrAuto
                                                   : Math.max(0, d.byteLength() - s.byteOffset);
             if (byteOffset + size > viewLen) {
@@ -761,20 +763,35 @@ public final class TypedArrays {
     private static void dvSet(JSObject proto, String name, int size, boolean takesLE, TypedArrayKind kind) {
         int arity = takesLE ? 2 : 2;
         proto.set(name, nativeFn(name, arity, (t, a, c) -> {
+            // Spec order (§ 25.3.1.2 SetViewValue):
+            //   1. Validate receiver
+            //   4. getIndex = ToIndex(requestIndex)   ← may throw
+            //   5. numberValue / bigIntValue = To{Number,BigInt}(value) ← may throw / detach
+            //   8. Re-fetch buffer + detach check (after coercions)
+            //   9. Bounds check
             JSObject self = requireDataView(t, name);
             TypedArrayState s = (TypedArrayState) self.getOwn(SLOT_DATA_VIEW);
-            ArrayBufferData d = bufferDataOf(s.buffer);
-            if (d == null || d.isDetached()) throw AbruptCompletion.typeError("Buffer is detached");
             long byteOffset = toIndex(arg(a, 0));
             Object value = arg(a, 1);
+            // Coerce the value to its native form NOW so any side-effecting
+            // valueOf / @@toPrimitive (which may detach the buffer) runs
+            // before the detach check.
+            Object coerced;
+            if (kind == TypedArrayKind.BIGINT64 || kind == TypedArrayKind.BIGUINT64) {
+                coerced = AbstractOps.toBigInt(value);
+            } else {
+                coerced = AbstractOps.toNumber(value);
+            }
             boolean littleEndian = takesLE && AbstractOps.toBoolean(arg(a, 2));
+            ArrayBufferData d = bufferDataOf(s.buffer);
+            if (d == null || d.isDetached()) throw AbruptCompletion.typeError("Buffer is detached");
             int viewLen = s.byteLengthOrAuto >= 0 ? s.byteLengthOrAuto
                                                   : Math.max(0, d.byteLength() - s.byteOffset);
             if (byteOffset + size > viewLen) {
                 throw AbruptCompletion.rangeError("Offset out of bounds for " + name);
             }
             int off = s.byteOffset + (int) byteOffset;
-            writeBytes(d.data, off, size, kind, littleEndian, value);
+            writeBytes(d.data, off, size, kind, littleEndian, coerced);
             return Undefined.VALUE;
         }));
     }
@@ -817,7 +834,15 @@ public final class TypedArrays {
             case FLOAT32:  bits = Float.floatToRawIntBits((float) AbstractOps.toNumber(value)) & 0xFFFFFFFFL; break;
             case FLOAT64:  bits = Double.doubleToRawLongBits(AbstractOps.toNumber(value)); break;
             case BIGINT64:
-            case BIGUINT64: bits = (long) AbstractOps.toNumber(value); break;
+            case BIGUINT64:
+                // ECMA-262 § 25.3.1.2 ToBigInt64 / ToBigUint64 — clamp the
+                // BigInt's bit pattern to a signed/unsigned 64-bit slot.
+                if (value instanceof JSBigInt bi) {
+                    bits = bi.value.longValue();   // 2's-complement low 64 bits
+                } else {
+                    bits = AbstractOps.toBigInt(value).value.longValue();
+                }
+                break;
             default:       bits = 0;
         }
         if (littleEndian) {
@@ -964,27 +989,60 @@ public final class TypedArrays {
         }));
 
         p.set("set", nativeFn("set", 1, (t, a, c) -> {
+            // ECMA-262 § 23.2.3.27 %TypedArray%.prototype.set(source, offset).
+            // 1) Validate receiver. 2) ToInteger(offset) (may have side
+            //    effects — e.g. detach the buffer). 3) Re-validate buffer.
+            //    4) ToObject(source). 5) If source is a typed array,
+            //    use the typed-array path; otherwise array-like path.
             TypedArrayState s = requireTypedArray(t, "set");
             Object src = arg(a, 0);
-            int offset = arg(a, 1) == Undefined.VALUE ? 0 : (int) toIntegerOrInfinity(arg(a, 1));
-            if (offset < 0) throw AbruptCompletion.rangeError("offset out of range");
+            double offsetD = arg(a, 1) == Undefined.VALUE ? 0 : toIntegerOrInfinity(arg(a, 1));
+            if (offsetD < 0 || Double.isNaN(offsetD)) {
+                throw AbruptCompletion.rangeError("offset out of range");
+            }
+            // Re-validate target: offset coercion may have detached.
+            if (s.outOfBounds()) {
+                throw AbruptCompletion.typeError("TypedArray.prototype.set: target buffer is detached");
+            }
+            int offset = (int) Math.min(offsetD, Integer.MAX_VALUE);
+            if (src == null || src == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("TypedArray.prototype.set: source is " + (src == null ? "null" : "undefined"));
+            }
             if (src instanceof JSObject so && stateOf(so) != null) {
                 TypedArrayState ss = stateOf(so);
+                if (ss.outOfBounds()) {
+                    throw AbruptCompletion.typeError("TypedArray.prototype.set: source buffer is detached");
+                }
                 int slen = ss.length();
                 if (offset + slen > s.length()) throw AbruptCompletion.rangeError("set: offset + source.length > target.length");
-                for (int i = 0; i < slen; i++) storeElement(s, offset + i, loadElement(ss, i));
+                // Spec note: when src and target overlap, copy through a
+                // temporary; otherwise direct.
+                Object[] tmp = new Object[slen];
+                for (int i = 0; i < slen; i++) tmp[i] = loadElement(ss, i);
+                for (int i = 0; i < slen; i++) storeElement(s, offset + i, tmp[i]);
             } else if (src instanceof JSArray arr) {
                 int slen = arr.length();
                 if (offset + slen > s.length()) throw AbruptCompletion.rangeError("set: offset + source.length > target.length");
                 for (int i = 0; i < slen; i++) storeElement(s, offset + i, arr.get(i));
             } else if (src instanceof JSObject so) {
+                // Array-like: coerce length, then read each index.
                 Object lenVal = AbstractOps.getProperty(so, "length");
-                int slen = (int) AbstractOps.toInt32(lenVal);
+                double lenD = AbstractOps.toNumber(lenVal);
+                if (Double.isNaN(lenD)) lenD = 0;
+                int slen = (int) Math.max(0, Math.min(lenD, Integer.MAX_VALUE));
                 if (offset + slen > s.length()) throw AbruptCompletion.rangeError("set: offset + source.length > target.length");
                 for (int i = 0; i < slen; i++) {
                     Object v = AbstractOps.getProperty(so, Integer.toString(i));
+                    // Each storeElement coerces; if the buffer detaches
+                    // mid-coercion, storeElement is a no-op so we re-check.
+                    if (s.outOfBounds()) {
+                        throw AbruptCompletion.typeError("TypedArray.prototype.set: target buffer detached mid-set");
+                    }
                     storeElement(s, offset + i, v);
                 }
+            } else {
+                // Primitive source — wrap to handle as array-like.
+                throw AbruptCompletion.typeError("TypedArray.prototype.set: source is not an object");
             }
             return Undefined.VALUE;
         }));
@@ -1227,18 +1285,24 @@ public final class TypedArrays {
             int len = s.length();
             Object cmpArg = arg(a, 0);
             JSFunction cmp = cmpArg == Undefined.VALUE ? null : asFn(cmpArg, "sort");
-            // Read all elements into a Java array, sort, write back.
-            Double[] vals = new Double[len];
-            for (int i = 0; i < len; i++) {
-                Object v = loadElement(s, i);
-                vals[i] = v instanceof Double dd ? dd : 0.0;
-            }
+            // ECMA-262 § 23.2.3.30: read all elements via loadElement,
+            // sort, write back. Keep them boxed as Object so BigInt
+            // typed arrays preserve their JSBigInt values across the sort.
+            Object[] vals = new Object[len];
+            for (int i = 0; i < len; i++) vals[i] = loadElement(s, i);
             if (cmp == null) {
-                // Default compare: ascending numeric, NaN sorts last.
+                // Default compare: ascending numeric (or BigInt), NaN last.
                 java.util.Arrays.sort(vals, (x, y) -> {
-                    if (Double.isNaN(x)) return Double.isNaN(y) ? 0 : 1;
-                    if (Double.isNaN(y)) return -1;
-                    return Double.compare(x, y);
+                    if (x instanceof java.math.BigInteger || x instanceof JSBigInt) {
+                        java.math.BigInteger bx = x instanceof JSBigInt jbx ? jbx.value : (java.math.BigInteger) x;
+                        java.math.BigInteger by = y instanceof JSBigInt jby ? jby.value : (java.math.BigInteger) y;
+                        return bx.compareTo(by);
+                    }
+                    double dx = x instanceof Number nx ? nx.doubleValue() : Double.NaN;
+                    double dy = y instanceof Number ny ? ny.doubleValue() : Double.NaN;
+                    if (Double.isNaN(dx)) return Double.isNaN(dy) ? 0 : 1;
+                    if (Double.isNaN(dy)) return -1;
+                    return Double.compare(dx, dy);
                 });
             } else {
                 java.util.Arrays.sort(vals, (x, y) -> {
@@ -1306,13 +1370,24 @@ public final class TypedArrays {
             (byte) (JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
 
         p.set("toLocaleString", nativeFn("toLocaleString", 0, (t, a, c) -> {
+            // ECMA-262 § 23.2.3.31 — for each element, invoke its
+            // .toLocaleString(), ToString the result, join with ",".
+            // Numbers/BigInts default to their decimal form (the
+            // implementation's locale-aware formatter is identity here).
             TypedArrayState s = requireTypedArray(t, "toLocaleString");
             int len = s.length();
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < len; i++) {
                 if (i > 0) sb.append(',');
                 Object v = loadElement(s, i);
-                sb.append(AbstractOps.toString(v));
+                if (v == null || v == Undefined.VALUE) continue;
+                Object toLoc = AbstractOps.getProperty(v, "toLocaleString");
+                if (toLoc instanceof JSFunction tf) {
+                    Object r = Interpreter.invokeFunction(tf, v, new Object[0], c);
+                    sb.append(AbstractOps.toString(r));
+                } else {
+                    sb.append(AbstractOps.toString(v));
+                }
             }
             return sb.toString();
         }));
@@ -1392,6 +1467,127 @@ public final class TypedArrays {
             return out;
         }));
         installSpecies(ctor);
+
+        // ECMA-262 (Uint8Array base64/hex proposal, Stage 4 ES2025) —
+        // Uint8Array-only static helpers and prototype methods for
+        // encoding/decoding base64 and hex.
+        if (kind == TypedArrayKind.UINT8) {
+            ctor.properties().put("fromBase64", nativeFn("fromBase64", 1, (t, a, c) -> {
+                String s = AbstractOps.toString(arg(a, 0));
+                try {
+                    byte[] decoded = java.util.Base64.getDecoder().decode(s.replaceAll("\\s+", ""));
+                    JSObject out = createTypedArrayFromKind(kind, decoded.length);
+                    TypedArrayState st = stateOf(out);
+                    ArrayBufferData buf = bufferDataOf(st.buffer);
+                    System.arraycopy(decoded, 0, buf.data, st.byteOffset, decoded.length);
+                    return out;
+                } catch (IllegalArgumentException e) {
+                    throw AbruptCompletion.syntaxError("Invalid base64 input");
+                }
+            }));
+            ctor.properties().put("fromHex", nativeFn("fromHex", 1, (t, a, c) -> {
+                String s = AbstractOps.toString(arg(a, 0));
+                if ((s.length() & 1) != 0) throw AbruptCompletion.syntaxError("Hex string length must be even");
+                byte[] decoded = new byte[s.length() / 2];
+                for (int i = 0; i < decoded.length; i++) {
+                    int hi = Character.digit(s.charAt(i * 2), 16);
+                    int lo = Character.digit(s.charAt(i * 2 + 1), 16);
+                    if (hi < 0 || lo < 0) throw AbruptCompletion.syntaxError("Invalid hex character");
+                    decoded[i] = (byte) ((hi << 4) | lo);
+                }
+                JSObject out = createTypedArrayFromKind(kind, decoded.length);
+                TypedArrayState st = stateOf(out);
+                ArrayBufferData buf = bufferDataOf(st.buffer);
+                System.arraycopy(decoded, 0, buf.data, st.byteOffset, decoded.length);
+                return out;
+            }));
+            proto.set("toBase64", nativeFn("toBase64", 0, (t, a, c) -> {
+                TypedArrayState st = stateOf(t instanceof JSObject jo ? jo : null);
+                if (st == null || st.kind != TypedArrayKind.UINT8) {
+                    throw AbruptCompletion.typeError("toBase64 called on non-Uint8Array");
+                }
+                ArrayBufferData buf = bufferDataOf(st.buffer);
+                if (buf == null || buf.isDetached()) throw AbruptCompletion.typeError("Buffer is detached");
+                int len = st.byteLengthOrAuto >= 0 ? st.byteLengthOrAuto
+                                                  : Math.max(0, buf.byteLength() - st.byteOffset);
+                byte[] slice = new byte[len];
+                System.arraycopy(buf.data, st.byteOffset, slice, 0, len);
+                // Check for `alphabet` and `omitPadding` options.
+                String alphabet = "base64";
+                boolean omitPadding = false;
+                if (arg(a, 0) instanceof JSObject opts) {
+                    Object alpha = AbstractOps.getProperty(opts, "alphabet");
+                    if (alpha instanceof CharSequence cs) alphabet = cs.toString();
+                    omitPadding = AbstractOps.toBoolean(AbstractOps.getProperty(opts, "omitPadding"));
+                }
+                java.util.Base64.Encoder enc = "base64url".equals(alphabet)
+                    ? java.util.Base64.getUrlEncoder()
+                    : java.util.Base64.getEncoder();
+                if (omitPadding) enc = enc.withoutPadding();
+                return enc.encodeToString(slice);
+            }));
+            proto.set("toHex", nativeFn("toHex", 0, (t, a, c) -> {
+                TypedArrayState st = stateOf(t instanceof JSObject jo ? jo : null);
+                if (st == null || st.kind != TypedArrayKind.UINT8) {
+                    throw AbruptCompletion.typeError("toHex called on non-Uint8Array");
+                }
+                ArrayBufferData buf = bufferDataOf(st.buffer);
+                if (buf == null || buf.isDetached()) throw AbruptCompletion.typeError("Buffer is detached");
+                int len = st.byteLengthOrAuto >= 0 ? st.byteLengthOrAuto
+                                                  : Math.max(0, buf.byteLength() - st.byteOffset);
+                StringBuilder sb = new StringBuilder(len * 2);
+                for (int i = 0; i < len; i++) {
+                    int b = buf.data[st.byteOffset + i] & 0xFF;
+                    sb.append(Character.forDigit(b >>> 4, 16));
+                    sb.append(Character.forDigit(b & 0xF, 16));
+                }
+                return sb.toString();
+            }));
+            // setFromBase64 / setFromHex — in-place decode into the target.
+            proto.set("setFromBase64", nativeFn("setFromBase64", 1, (t, a, c) -> {
+                if (!(t instanceof JSObject self) || stateOf(self) == null
+                    || stateOf(self).kind != TypedArrayKind.UINT8) {
+                    throw AbruptCompletion.typeError("setFromBase64 called on non-Uint8Array");
+                }
+                TypedArrayState st = stateOf(self);
+                ArrayBufferData buf = bufferDataOf(st.buffer);
+                String s = AbstractOps.toString(arg(a, 0));
+                byte[] decoded;
+                try { decoded = java.util.Base64.getDecoder().decode(s.replaceAll("\\s+", "")); }
+                catch (IllegalArgumentException e) { throw AbruptCompletion.syntaxError("Invalid base64 input"); }
+                int capacity = st.byteLengthOrAuto >= 0 ? st.byteLengthOrAuto
+                                                       : Math.max(0, buf.byteLength() - st.byteOffset);
+                int written = Math.min(decoded.length, capacity);
+                System.arraycopy(decoded, 0, buf.data, st.byteOffset, written);
+                JSObject result = new JSObject();
+                result.set("read", (double) written);
+                result.set("written", (double) written);
+                return result;
+            }));
+            proto.set("setFromHex", nativeFn("setFromHex", 1, (t, a, c) -> {
+                if (!(t instanceof JSObject self) || stateOf(self) == null
+                    || stateOf(self).kind != TypedArrayKind.UINT8) {
+                    throw AbruptCompletion.typeError("setFromHex called on non-Uint8Array");
+                }
+                TypedArrayState st = stateOf(self);
+                ArrayBufferData buf = bufferDataOf(st.buffer);
+                String s = AbstractOps.toString(arg(a, 0));
+                if ((s.length() & 1) != 0) throw AbruptCompletion.syntaxError("Hex string length must be even");
+                int capacity = st.byteLengthOrAuto >= 0 ? st.byteLengthOrAuto
+                                                       : Math.max(0, buf.byteLength() - st.byteOffset);
+                int pairCount = Math.min(s.length() / 2, capacity);
+                for (int i = 0; i < pairCount; i++) {
+                    int hi = Character.digit(s.charAt(i * 2), 16);
+                    int lo = Character.digit(s.charAt(i * 2 + 1), 16);
+                    if (hi < 0 || lo < 0) throw AbruptCompletion.syntaxError("Invalid hex character");
+                    buf.data[st.byteOffset + i] = (byte) ((hi << 4) | lo);
+                }
+                JSObject result = new JSObject();
+                result.set("read", (double) (pairCount * 2));
+                result.set("written", (double) pairCount);
+                return result;
+            }));
+        }
 
         kindConstructors.put(kind, ctor);
         globals.putIfAbsent(kind.name, ctor);
@@ -1619,7 +1815,13 @@ public final class TypedArrays {
     }
 
     private static void installSpecies(JSFunction ctor) {
-        // ctor[Symbol.species] = function get() { return ctor; }
+        installSpeciesPublic(ctor);
+    }
+
+    /** Public helper for installing the default {@code @@species}
+     *  accessor on a constructor — used by Realm.java for Array, Map,
+     *  Set, Promise, RegExp. */
+    public static void installSpeciesPublic(JSFunction ctor) {
         JSFunction speciesGetter = nativeFn("get [Symbol.species]", 0, (t, a, c) -> t);
         ctor.properties().put(Realm.wellKnownSpecies.asPropertyKey(),
             new Accessor(speciesGetter, null));
