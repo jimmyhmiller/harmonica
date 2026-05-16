@@ -52,6 +52,44 @@ public final class JSArray {
     }
     public java.util.Map<String, Object> extraProperties() { return extraProperties; }
 
+    /** Per-index attribute side-table for indexed elements + length. Only
+     *  populated when an attribute differs from the spec defaults so we don't
+     *  allocate on every push. Default for indexed elements is the usual
+     *  data-property triple {writable, enumerable, configurable} = (T, T, T);
+     *  default for {@code length} is (T, F, F). */
+    private java.util.HashMap<String, Byte> indexAttributes;
+    /** True iff Object.preventExtensions has been called on this array. */
+    private boolean extensible = true;
+    public boolean isExtensible() { return extensible; }
+    public void preventExtensions() { this.extensible = false; }
+
+    /** Lookup the attribute byte for an indexed key or "length". */
+    public byte getIndexAttributes(String key) {
+        if (indexAttributes != null) {
+            Byte b = indexAttributes.get(key);
+            if (b != null) return b;
+        }
+        if ("length".equals(key)) return JSObject.ATTR_WRITABLE;   // (T, F, F)
+        return JSObject.ATTR_DEFAULT;                              // (T, T, T)
+    }
+    public void setIndexAttributes(String key, byte attrs) {
+        if (indexAttributes == null) indexAttributes = new java.util.HashMap<>();
+        indexAttributes.put(key, attrs);
+    }
+    public boolean hasIndexAttributes(String key) {
+        return indexAttributes != null && indexAttributes.containsKey(key);
+    }
+    /** Drop attribute entries for keys outside the new length — used by
+     *  Object.defineProperty's length-shrink path so freed slots don't
+     *  retain non-configurable flags. */
+    public void clearIndexAttributesAtOrAbove(int floor) {
+        if (indexAttributes == null) return;
+        indexAttributes.entrySet().removeIf(e -> {
+            int idx = sparseKeyToIndex(e.getKey());
+            return idx >= floor;
+        });
+    }
+
     public JSArray() {
         // Default ArrayList capacity is 10. Most JSArrays in the lodash
         // workload start empty and grow via push, so the default works;

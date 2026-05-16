@@ -923,16 +923,53 @@ public final class AbstractOps {
         if (base instanceof JSArray arr) {
             // ECMA-262 § 10.4.2.4 ArraySetLength — writing .length truncates
             // or extends. Validate as uint32 (RangeError otherwise) and
-            // delegate to the sparse-aware setter.
+            // delegate to the sparse-aware setter. Respect a frozen length
+            // (writable=false) by silent-failing in sloppy mode.
             if ("length".equals(prop)) {
+                byte la = arr.getIndexAttributes("length");
+                if ((la & JSObject.ATTR_WRITABLE) == 0) return;   // frozen, silent fail
                 double d = toNumber(value);
                 if (Double.isNaN(d) || d < 0 || d != Math.floor(d) || d > 4294967295.0) {
                     throw AbruptCompletion.rangeError("Invalid array length");
                 }
-                arr.setLength((int) Math.min((long) d, Integer.MAX_VALUE));
+                int newLen = (int) Math.min((long) d, Integer.MAX_VALUE);
+                if (newLen < arr.length()) {
+                    // Stop at the first non-configurable index encountered,
+                    // matching § 10.4.2.4 step 17 (truncate as far as possible
+                    // then return false / silent fail in sloppy mode).
+                    for (int i = arr.length() - 1; i >= newLen; i--) {
+                        String k = Integer.toString(i);
+                        if (arr.hasIndexAttributes(k)) {
+                            byte ia = arr.getIndexAttributes(k);
+                            if ((ia & JSObject.ATTR_CONFIGURABLE) == 0) {
+                                arr.setLength(i + 1);
+                                arr.clearIndexAttributesAtOrAbove(i + 1);
+                                return;
+                            }
+                        }
+                    }
+                    arr.setLength(newLen);
+                    arr.clearIndexAttributesAtOrAbove(newLen);
+                } else {
+                    arr.setLength(newLen);
+                }
                 return;
             }
             int idx = parseIndex(prop);
+            // Reject writes past a frozen length — index would force length to grow.
+            if (idx >= 0 && idx >= arr.length()) {
+                byte la = arr.getIndexAttributes("length");
+                if ((la & JSObject.ATTR_WRITABLE) == 0) return;
+            }
+            // Reject writes to non-writable indexed slots — silent fail in
+            // sloppy mode. Accessor properties have writable=undefined in their
+            // descriptor; the [[Set]] path runs the setter (or silent-fails)
+            // before this check, so only data slots flow here.
+            if (idx >= 0 && idx < arr.length() && arr.hasIndexAttributes(prop)
+                    && !(arr.get(idx) instanceof Accessor)) {
+                byte ia = arr.getIndexAttributes(prop);
+                if ((ia & JSObject.ATTR_WRITABLE) == 0) return;
+            }
             if (idx >= 0) {
                 // Invoke setter if there's an Accessor at this index.
                 if (idx < arr.length()) {

@@ -15822,6 +15822,7 @@ statements/class/elements/async-private-method/returns-async-arrow.js
 statements/class/elements/async-private-method/returns-async-function-returns-arguments-from-own-function.js
 statements/class/elements/async-private-method/returns-async-function-returns-newtarget.js
 statements/class/elements/async-private-method/returns-async-function.js
+statements/class/elements/class-field-on-frozen-objects.js
 statements/class/elements/comp-name-init-err-contains-arguments.js
 statements/class/elements/comp-name-init-err-contains-super.js
 statements/class/elements/computed-name-toprimitive.js

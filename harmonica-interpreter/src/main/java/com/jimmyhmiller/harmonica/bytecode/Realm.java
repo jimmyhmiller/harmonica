@@ -615,24 +615,58 @@ public final class Realm {
         // "Error", etc.) — we recover the common cases from
         // {@code @@toStringTag} plus a few special slots we model.
         objectPrototype.set("toString", nativeFn("toString", 0, (thisVal, a, c) -> {
+            // § 20.1.3.6 — uses GetBuiltinTag(O) to pick the brand from
+            // [[ArrayIteratorPrototype]]-style internal slots; @@toStringTag
+            // wins when present. Primitives are auto-boxed and their wrapper
+            // class shows up as the brand.
             if (thisVal == null)               return "[object Null]";
             if (thisVal == Undefined.VALUE)    return "[object Undefined]";
+            // Primitives — per spec the wrapped form contributes the brand.
+            if (thisVal instanceof Boolean)     return "[object Boolean]";
+            if (thisVal instanceof Number)      return "[object Number]";
+            if (thisVal instanceof JSBigInt)    return "[object BigInt]";
+            if (thisVal instanceof JSSymbol)    return "[object Symbol]";
+            if (thisVal instanceof CharSequence) return "[object String]";
+            // Proxies route to their target's brand (or hand off to spec
+            // logic in the target's toString).
+            if (thisVal instanceof JSObject pjo && isProxy(pjo)) {
+                Object target = proxyTarget(pjo);
+                if (target != null) thisVal = target;
+            }
             if (thisVal instanceof JSArray)    return "[object Array]";
             if (thisVal instanceof JSFunction) return "[object Function]";
             // Prefer @@toStringTag when set on the object (or its proto chain).
             if (thisVal instanceof JSObject jo && wellKnownToStringTag != null) {
                 Object tag = AbstractOps.getProperty(jo, wellKnownToStringTag.asPropertyKey());
                 if (tag instanceof CharSequence cs) return "[object " + cs + "]";
-                // Recognize a handful of internal slots the spec maps to
-                // specific tags so test262's {@code Object.prototype.toString
-                // .call(arguments)} / .call(new Error()) / etc. return the
-                // expected "[object Arguments]" / "[object Error]" etc.
+                // Recognize internal slots → brand mappings (§ 20.1.3.6 step 14).
                 if (jo.properties().containsKey("##ArgumentsParameterMap##")) return "[object Arguments]";
                 if (jo.properties().containsKey("##time##")) return "[object Date]";
                 if (jo.properties().containsKey(SLOT_NUMBER_DATA)) return "[object Number]";
                 if (jo.properties().containsKey(SLOT_BOOLEAN_DATA)) return "[object Boolean]";
                 if (jo.properties().containsKey(SLOT_STRING_DATA)) return "[object String]";
                 if (jo.properties().containsKey(SLOT_BIGINT_DATA)) return "[object BigInt]";
+                // Error instances: walk prototype chain for an Error-named proto.
+                JSObject cursor = jo;
+                while (cursor != null) {
+                    Object nm = cursor.getOwn("name");
+                    if (nm instanceof CharSequence nmS) {
+                        String nameStr = nmS.toString();
+                        if (errorPrototypes.containsValue(cursor)) return "[object Error]";
+                        // For the root Error prototype itself: when name === "Error".
+                        if ("Error".equals(nameStr) && errorPrototypes.containsKey("Error")
+                                && errorPrototypes.get("Error") == cursor) return "[object Error]";
+                    }
+                    cursor = cursor.proto();
+                }
+                // RegExp instances: look for source/flags slots or the regex prototype.
+                if (regExpPrototype != null) {
+                    JSObject cursor2 = jo;
+                    while (cursor2 != null) {
+                        if (cursor2 == regExpPrototype) return "[object RegExp]";
+                        cursor2 = cursor2.proto();
+                    }
+                }
             }
             return "[object Object]";
         }));
@@ -917,6 +951,117 @@ public final class Realm {
     }
 
     /** {@code HasProperty(O, ToString(i))} for the integer index. */
+    /** § 22.1.3.{6,7,21} — throw TypeError if the search arg is a RegExp.
+     *  Both real RegExp objects and Object-with-@@match=true count. */
+    static void rejectRegExpSearch(Object v, String method) {
+        if (v instanceof JSObject jo) {
+            // Real RegExp.
+            if (asRegExpSource(jo) != null) {
+                throw AbruptCompletion.typeError(
+                    "String.prototype." + method + " called with a RegExp argument");
+            }
+            // Quacks like a RegExp via @@match.
+            if (wellKnownMatch != null) {
+                Object flag = AbstractOps.getProperty(jo, wellKnownMatch.asPropertyKey());
+                if (flag != Undefined.VALUE && AbstractOps.toBoolean(flag)) {
+                    throw AbruptCompletion.typeError(
+                        "String.prototype." + method + " called with a RegExp argument");
+                }
+            }
+        }
+    }
+
+    /** § 7.1.5 ToIntegerOrInfinity for a string-method position arg —
+     *  clamped to [0, len]. Default applied when v is undefined. */
+    static int stringMethodPos(Object v, int len, int defaultVal) {
+        if (v == Undefined.VALUE) return defaultVal;
+        double d = AbstractOps.toNumber(v);
+        if (Double.isNaN(d)) return 0;
+        if (Double.isInfinite(d)) return d > 0 ? len : 0;
+        long n = (long) d;
+        if (n < 0) return 0;
+        if (n > len) return len;
+        return (int) n;
+    }
+
+    /** § 22.1.3.14.1 GetSubstitution — expand the {@code $...} escapes in
+     *  the replacement template. {@code captures} is a list of capture
+     *  group values (1-indexed in the template); {@code namedCaptures} is
+     *  the optional JSObject of named groups (null if none). */
+    static String getSubstitution(String matched, String str, int position,
+                                  java.util.List<Object> captures,
+                                  JSObject namedCaptures, String replacement) {
+        StringBuilder out = new StringBuilder();
+        int len = replacement.length();
+        int tailPos = position + matched.length();
+        for (int i = 0; i < len; i++) {
+            char ch = replacement.charAt(i);
+            if (ch != '$' || i + 1 >= len) { out.append(ch); continue; }
+            char next = replacement.charAt(i + 1);
+            switch (next) {
+                case '$' -> { out.append('$'); i++; }
+                case '&' -> { out.append(matched); i++; }
+                case '`' -> { out.append(str, 0, position); i++; }
+                case '\'' -> { out.append(str, Math.min(tailPos, str.length()), str.length()); i++; }
+                case '<' -> {
+                    int close = replacement.indexOf('>', i + 2);
+                    if (close < 0 || namedCaptures == null) {
+                        out.append(ch);
+                    } else {
+                        String name = replacement.substring(i + 2, close);
+                        Object v = namedCaptures.getOwn(name);
+                        if (v != null && v != JSObject.ABSENT && v != Undefined.VALUE) {
+                            out.append(AbstractOps.toString(v));
+                        }
+                        i = close;
+                    }
+                }
+                default -> {
+                    if (next >= '0' && next <= '9') {
+                        int n = next - '0';
+                        int consumed = 1;
+                        if (i + 2 < len) {
+                            char third = replacement.charAt(i + 2);
+                            if (third >= '0' && third <= '9') {
+                                int nn = n * 10 + (third - '0');
+                                if (nn >= 1 && nn <= captures.size()) {
+                                    n = nn;
+                                    consumed = 2;
+                                }
+                            }
+                        }
+                        if (n >= 1 && n <= captures.size()) {
+                            Object cap = captures.get(n - 1);
+                            if (cap != null && cap != Undefined.VALUE) {
+                                out.append(AbstractOps.toString(cap));
+                            }
+                            i += consumed;
+                        } else {
+                            // No matching capture — emit the literal $N.
+                            out.append(ch);
+                        }
+                    } else {
+                        out.append(ch);
+                    }
+                }
+            }
+        }
+        return out.toString();
+    }
+
+    /** § 23.1.3.2.1 IsConcatSpreadable — defer to @@isConcatSpreadable when
+     *  set, otherwise IsArray. */
+    static boolean isConcatSpreadable(Object v) {
+        if (v == null || v == Undefined.VALUE) return false;
+        boolean isObjectLike = v instanceof JSObject || v instanceof JSArray || v instanceof JSFunction;
+        if (!isObjectLike) return false;
+        if (wellKnownIsConcatSpreadable != null) {
+            Object flag = AbstractOps.getProperty(v, wellKnownIsConcatSpreadable.asPropertyKey());
+            if (flag != Undefined.VALUE) return AbstractOps.toBoolean(flag);
+        }
+        return v instanceof JSArray;
+    }
+
     static boolean hasIndexed(Object t, int i) {
         checkInterruptTick(i);
         if (t instanceof JSArray arr) {
@@ -1039,18 +1184,24 @@ public final class Realm {
             return out;
         }));
         arrayPrototype.set("concat", nativeFn("concat", 1, (t, a, c) -> {
+            // § 23.1.3.2: prepend `this` to the item list and walk each item
+            // through IsConcatSpreadable.
+            Object self = toObject(t);
             JSArray out = new JSArray();
-            int len = lengthOfArrayLike(t);
-            for (int i = 0; i < len; i++) out.push(getIndexed(t, i));
-            for (Object x : a) {
-                if (x instanceof JSArray other) for (Object e : other.elements()) out.push(e);
-                else if (x instanceof JSObject jo
-                        && AbstractOps.toBoolean(AbstractOps.getProperty(jo,
-                                wellKnownIsConcatSpreadable.asPropertyKey()))) {
-                    int xl = lengthOfArrayLike(jo);
-                    for (int i = 0; i < xl; i++) out.push(getIndexed(jo, i));
+            Object[] items = new Object[a.length + 1];
+            items[0] = self;
+            System.arraycopy(a, 0, items, 1, a.length);
+            for (Object e : items) {
+                boolean spread = isConcatSpreadable(e);
+                if (spread) {
+                    int xl = lengthOfArrayLike(e);
+                    for (int i = 0; i < xl; i++) {
+                        if (hasIndexed(e, i)) out.push(getIndexed(e, i));
+                        else out.push(Op.HOLE);
+                    }
+                } else {
+                    out.push(e);
                 }
-                else out.push(x);
             }
             return out;
         }));
@@ -1955,12 +2106,35 @@ public final class Realm {
             (t, a, c) -> thisStringCoerced(t, "trimStart").replaceAll("^" + WS_CLASS + "+", "")));
         stringPrototype.set("trimEnd", nativeFn("trimEnd", 0,
             (t, a, c) -> thisStringCoerced(t, "trimEnd").replaceAll(WS_CLASS + "+$", "")));
-        stringPrototype.set("includes", nativeFn("includes", 1, (t, a, c) ->
-            thisStringCoerced(t, "includes").contains(AbstractOps.toString(arg(a, 0)))));
-        stringPrototype.set("startsWith", nativeFn("startsWith", 1, (t, a, c) ->
-            thisStringCoerced(t, "startsWith").startsWith(AbstractOps.toString(arg(a, 0)))));
-        stringPrototype.set("endsWith", nativeFn("endsWith", 1, (t, a, c) ->
-            thisStringCoerced(t, "endsWith").endsWith(AbstractOps.toString(arg(a, 0)))));
+        // § 22.1.3.7 includes / § 22.1.3.21 startsWith / § 22.1.3.6 endsWith.
+        // All three throw TypeError when search is a RegExp; coerce position
+        // via ToIntegerOrInfinity (clamped to [0, len]); endsWith treats
+        // {@code position == undefined} as len.
+        stringPrototype.set("includes", nativeFn("includes", 2, (t, a, c) -> {
+            String s = thisStringCoerced(t, "includes");
+            rejectRegExpSearch(arg(a, 0), "includes");
+            String search = AbstractOps.toString(arg(a, 0));
+            int pos = stringMethodPos(arg(a, 1), s.length(), 0);
+            return s.indexOf(search, pos) >= 0;
+        }));
+        stringPrototype.set("startsWith", nativeFn("startsWith", 2, (t, a, c) -> {
+            String s = thisStringCoerced(t, "startsWith");
+            rejectRegExpSearch(arg(a, 0), "startsWith");
+            String search = AbstractOps.toString(arg(a, 0));
+            int pos = stringMethodPos(arg(a, 1), s.length(), 0);
+            return s.startsWith(search, pos);
+        }));
+        stringPrototype.set("endsWith", nativeFn("endsWith", 2, (t, a, c) -> {
+            String s = thisStringCoerced(t, "endsWith");
+            rejectRegExpSearch(arg(a, 0), "endsWith");
+            String search = AbstractOps.toString(arg(a, 0));
+            int endPos = arg(a, 1) == Undefined.VALUE
+                ? s.length()
+                : stringMethodPos(arg(a, 1), s.length(), s.length());
+            int startPos = endPos - search.length();
+            if (startPos < 0) return false;
+            return s.regionMatches(startPos, search, 0, search.length());
+        }));
         // AnnexB § B.2.3 — deprecated String.prototype HTML wrappers.
         // Each wraps the string in an HTML tag (sometimes with attribute).
         java.util.Map<String, String> htmlWrappers = new java.util.LinkedHashMap<>();
@@ -2086,6 +2260,7 @@ public final class Realm {
                 }
                 return sb.toString();
             }
+            String replString = repl0 instanceof JSFunction ? null : AbstractOps.toString(repl0);
             StringBuilder sb = new StringBuilder();
             int last = 0;
             int idx;
@@ -2096,7 +2271,7 @@ public final class Realm {
                         Interpreter.invokeFunction(repFn, Undefined.VALUE,
                             new Object[]{search, (double) idx, s}, c)));
                 } else {
-                    sb.append(AbstractOps.toString(repl0));
+                    sb.append(getSubstitution(search, s, idx, java.util.Collections.emptyList(), null, replString));
                 }
                 last = idx + search.length();
             }
@@ -5999,35 +6174,42 @@ public final class Realm {
             }
             return null;
         }));
-        // ECMA-262 § 20.1.2.6 .freeze, § 20.1.2.13 .isExtensible,
-        // § 20.1.2.16 .preventExtensions, § 20.1.2.17 .isFrozen,
-        // § 20.1.2.20 .seal, § 20.1.2.15 .isSealed.
-        // v1: no [[Extensible]] tracking, so isExtensible is true for all
-        // objects, preventExtensions is a no-op, isFrozen/isSealed return
-        // false. Tests that rely on real extensibility semantics will fail.
-        objectCtor.properties().put("freeze", nativeFn("freeze", 1, (t, a, c) -> arg(a, 0)));
+        // ECMA-262 § 20.1.2 — extensibility/integrity helpers. Implement
+        // SetIntegrityLevel for {sealed, frozen} across JSObject, JSArray,
+        // and JSFunction so freeze/seal actually flip the descriptor bits.
+        objectCtor.properties().put("freeze", nativeFn("freeze", 1, (t, a, c) -> {
+            Object v = arg(a, 0);
+            setIntegrityLevel(v, true);
+            return v;
+        }));
         objectCtor.properties().put("isExtensible", nativeFn("isExtensible", 1, (t, a, c) -> {
             Object v = arg(a, 0);
-            // § 20.1.2.13 step 1: if argument is not an Object, return false.
             if (v instanceof JSObject jo) return jo.isExtensible();
             if (v instanceof JSFunction fn) return fn.isExtensible();
-            return v instanceof JSArray;
+            if (v instanceof JSArray arr) return arr.isExtensible();
+            return false;
         }));
         objectCtor.properties().put("preventExtensions", nativeFn("preventExtensions", 1, (t, a, c) -> {
             Object v = arg(a, 0);
             if (v instanceof JSObject jo) jo.preventExtensions();
             else if (v instanceof JSFunction fn) fn.preventExtensions();
+            else if (v instanceof JSArray arr) arr.preventExtensions();
             return v;
         }));
         objectCtor.properties().put("isFrozen", nativeFn("isFrozen", 1, (t, a, c) -> {
             Object v = arg(a, 0);
-            // § 20.1.2.17 step 1: non-Object → return true (per spec).
-            return !(v instanceof JSObject || v instanceof JSArray || v instanceof JSFunction);
+            if (!(v instanceof JSObject || v instanceof JSArray || v instanceof JSFunction)) return true;
+            return testIntegrityLevel(v, true);
         }));
-        objectCtor.properties().put("seal", nativeFn("seal", 1, (t, a, c) -> arg(a, 0)));
+        objectCtor.properties().put("seal", nativeFn("seal", 1, (t, a, c) -> {
+            Object v = arg(a, 0);
+            setIntegrityLevel(v, false);
+            return v;
+        }));
         objectCtor.properties().put("isSealed", nativeFn("isSealed", 1, (t, a, c) -> {
             Object v = arg(a, 0);
-            return !(v instanceof JSObject || v instanceof JSArray || v instanceof JSFunction);
+            if (!(v instanceof JSObject || v instanceof JSArray || v instanceof JSFunction)) return true;
+            return testIntegrityLevel(v, false);
         }));
         // ECMA-262 § 20.1.2.4 Object.defineProperty(O, P, Attributes).
         // v1: respects {value, get, set} but ignores {writable, enumerable, configurable}.
@@ -6201,30 +6383,154 @@ public final class Realm {
                 }
                 targetObj.setAttributes(key, attrs);
             } else if (target instanceof JSArray targetArr) {
-                // Legacy: no spec-validation on array indexes for v1, just
-                // store. {@code length} is special — drive the sparse
-                // setter so truncation runs.
-                byte attrs = 0;
-                if (hasWritable ? descWritable : true) attrs |= JSObject.ATTR_WRITABLE;
-                if (hasEnumerable ? descEnumerable : false) attrs |= JSObject.ATTR_ENUMERABLE;
-                if (hasConfigurable ? descConfigurable : false) attrs |= JSObject.ATTR_CONFIGURABLE;
+                // ECMA-262 § 10.4.2.1 [[DefineOwnProperty]] for Array exotic
+                // objects: length / indexes get specialized handling, every
+                // other key falls back to ordinary [[DefineOwnProperty]] on
+                // the index-attribute side-table.
                 if ("length".equals(key)) {
+                    // § 10.4.2.4 ArraySetLength.
+                    if (descIsAccessor) {
+                        throw AbruptCompletion.typeError(
+                            "Cannot redefine Array.length as accessor");
+                    }
+                    byte curAttrs = targetArr.getIndexAttributes("length");
+                    boolean curWritable = (curAttrs & JSObject.ATTR_WRITABLE) != 0;
+                    int newLen = targetArr.length();
                     if (hasValue) {
                         double d = AbstractOps.toNumber(descValue);
                         if (Double.isNaN(d) || d < 0 || d != Math.floor(d) || d > 4294967295.0) {
                             throw AbruptCompletion.rangeError("Invalid array length");
                         }
-                        targetArr.setLength((int) Math.min((long) d, Integer.MAX_VALUE));
+                        newLen = (int) Math.min((long) d, Integer.MAX_VALUE);
                     }
+                    if (!curWritable) {
+                        // length is frozen — only no-op redefinitions or
+                        // enumerable/configurable matches are allowed.
+                        if (hasValue && newLen != targetArr.length()) {
+                            throw AbruptCompletion.typeError(
+                                "Cannot assign to read only property 'length'");
+                        }
+                        if (hasWritable && descWritable) {
+                            throw AbruptCompletion.typeError(
+                                "Cannot change writable attribute of non-configurable length");
+                        }
+                    }
+                    if (newLen < targetArr.length()) {
+                        // Check for non-configurable indexes >= newLen — spec
+                        // requires throwing TypeError BEFORE truncating.
+                        if (targetArr.hasIndexAttributes("")) { /* unreachable */ }
+                        // Walk both dense and sparse storage.
+                        for (int i = targetArr.length() - 1; i >= newLen; i--) {
+                            String k = Integer.toString(i);
+                            if (targetArr.hasIndexAttributes(k)) {
+                                byte ia = targetArr.getIndexAttributes(k);
+                                if ((ia & JSObject.ATTR_CONFIGURABLE) == 0) {
+                                    // Truncate to one past this index so as much
+                                    // gets removed as possible, then throw.
+                                    targetArr.setLength(i + 1);
+                                    targetArr.clearIndexAttributesAtOrAbove(i + 1);
+                                    throw AbruptCompletion.typeError(
+                                        "Cannot delete non-configurable property '"
+                                        + k + "' to shrink array length");
+                                }
+                            }
+                        }
+                        targetArr.setLength(newLen);
+                        targetArr.clearIndexAttributesAtOrAbove(newLen);
+                    } else if (newLen > targetArr.length()) {
+                        targetArr.setLength(newLen);
+                    }
+                    // Update length attribute byte.
+                    boolean newWritable = hasWritable ? descWritable : curWritable;
+                    byte newAttrs = (byte)(newWritable ? JSObject.ATTR_WRITABLE : 0);
+                    // length's enumerable/configurable are always false per spec.
+                    if (newAttrs != curAttrs) targetArr.setIndexAttributes("length", newAttrs);
                 } else {
                     int idx = parseIndex(key);
+                    boolean isIndex = idx >= 0;
+                    // Index validation: existing element's attribute checks.
+                    boolean lengthWritable = (targetArr.getIndexAttributes("length")
+                                              & JSObject.ATTR_WRITABLE) != 0;
+                    if (isIndex && idx >= targetArr.length() && !lengthWritable) {
+                        throw AbruptCompletion.typeError(
+                            "Cannot add property " + key + " past frozen length");
+                    }
+                    if (!targetArr.isExtensible() && !targetArr.hasIndexAttributes(key)
+                            && (isIndex ? idx >= targetArr.length() && !lengthWritable : true)) {
+                        // For extensibility: only block when truly adding new.
+                        // Spec is "if !extensible and current is undefined, throw".
+                    }
+                    // If element exists, run the same validation as JSObject
+                    // (4.a..4.e). hasOwn for arrays: index < length or sparse.
+                    byte curAttrs = targetArr.getIndexAttributes(key);
+                    boolean hasOwn = (isIndex && idx < targetArr.length() && !targetArr.isHole(idx))
+                                     || targetArr.hasExtraProperty(key)
+                                     || targetArr.hasIndexAttributes(key);
+                    if (hasOwn) {
+                        boolean curConfigurable = (curAttrs & JSObject.ATTR_CONFIGURABLE) != 0;
+                        boolean curEnumerable  = (curAttrs & JSObject.ATTR_ENUMERABLE)   != 0;
+                        boolean curWritable    = (curAttrs & JSObject.ATTR_WRITABLE)     != 0;
+                        if (!curConfigurable) {
+                            if (hasConfigurable && descConfigurable) {
+                                throw AbruptCompletion.typeError("Cannot redefine property: " + key);
+                            }
+                            if (hasEnumerable && descEnumerable != curEnumerable) {
+                                throw AbruptCompletion.typeError(
+                                    "Cannot change enumerable attribute of non-configurable property '" + key + "'");
+                            }
+                            if (!curWritable) {
+                                if (hasWritable && descWritable) {
+                                    throw AbruptCompletion.typeError(
+                                        "Cannot change writable attribute of non-configurable property '" + key + "'");
+                                }
+                                if (hasValue) {
+                                    Object cur = isIndex ? targetArr.get(idx) : targetArr.getExtraProperty(key);
+                                    if (!AbstractOps.strictlyEquals(descValue, cur)) {
+                                        throw AbruptCompletion.typeError(
+                                            "Cannot assign to read only property '" + key + "'");
+                                    }
+                                }
+                            }
+                        }
+                    } else if (!targetArr.isExtensible()) {
+                        throw AbruptCompletion.typeError(
+                            "Cannot define property " + key + ", object is not extensible");
+                    }
+                    // Apply.
                     Object value = descIsAccessor ? new Accessor(descGetter, descSetter) : descValue;
-                    if (idx >= 0) targetArr.set(idx, value);
-                    else targetArr.setExtraProperty(key, value);
+                    if (descIsData || descIsAccessor) {
+                        if (isIndex) targetArr.set(idx, value);
+                        else targetArr.setExtraProperty(key, value);
+                    } else if (!hasOwn) {
+                        // Generic descriptor on new property → undefined value.
+                        if (isIndex) targetArr.set(idx, Undefined.VALUE);
+                        else targetArr.setExtraProperty(key, Undefined.VALUE);
+                    }
+                    // Merge attribute byte.
+                    byte newAttrs;
+                    if (hasOwn) {
+                        boolean wAttr = hasWritable ? descWritable
+                                                    : (curAttrs & JSObject.ATTR_WRITABLE) != 0;
+                        boolean eAttr = hasEnumerable ? descEnumerable
+                                                      : (curAttrs & JSObject.ATTR_ENUMERABLE) != 0;
+                        boolean cAttr = hasConfigurable ? descConfigurable
+                                                        : (curAttrs & JSObject.ATTR_CONFIGURABLE) != 0;
+                        newAttrs = 0;
+                        if (wAttr) newAttrs |= JSObject.ATTR_WRITABLE;
+                        if (eAttr) newAttrs |= JSObject.ATTR_ENUMERABLE;
+                        if (cAttr) newAttrs |= JSObject.ATTR_CONFIGURABLE;
+                    } else {
+                        // New prop with no fields defaults to all-false per spec.
+                        newAttrs = 0;
+                        if (hasWritable && descWritable) newAttrs |= JSObject.ATTR_WRITABLE;
+                        if (hasEnumerable && descEnumerable) newAttrs |= JSObject.ATTR_ENUMERABLE;
+                        if (hasConfigurable && descConfigurable) newAttrs |= JSObject.ATTR_CONFIGURABLE;
+                    }
+                    // Only record when differing from the default.
+                    if (newAttrs != JSObject.ATTR_DEFAULT) {
+                        targetArr.setIndexAttributes(key, newAttrs);
+                    }
                 }
-                // Unused for arrays (no attribute slot per-element), but keep
-                // the var reference so javac doesn't complain in -Werror builds.
-                if (attrs == 0xFF) throw AbruptCompletion.typeError("unreachable");
             } else {
                 JSFunction targetFn = (JSFunction) target;
                 byte attrs = 0;
@@ -6313,18 +6619,41 @@ public final class Realm {
             }
             if (target instanceof JSArray arr) {
                 if ("length".equals(key)) {
+                    byte la = arr.getIndexAttributes("length");
                     desc.set("value", (double) arr.length());
-                    desc.set("writable", true);
+                    desc.set("writable", (la & JSObject.ATTR_WRITABLE) != 0);
                     desc.set("enumerable", false);
                     desc.set("configurable", false);
                     return desc;
                 }
                 int idx = parseIndex(key);
                 if (idx >= 0 && idx < arr.length()) {
-                    desc.set("value", arr.get(idx));
-                    desc.set("writable", true);
-                    desc.set("enumerable", true);
-                    desc.set("configurable", true);
+                    Object val = arr.get(idx);
+                    if (val instanceof Accessor acc) {
+                        desc.set("get", acc.getter() == null ? Undefined.VALUE : acc.getter());
+                        desc.set("set", acc.setter() == null ? Undefined.VALUE : acc.setter());
+                    } else {
+                        desc.set("value", val);
+                        byte ia = arr.getIndexAttributes(key);
+                        desc.set("writable", (ia & JSObject.ATTR_WRITABLE) != 0);
+                    }
+                    byte ia2 = arr.getIndexAttributes(key);
+                    desc.set("enumerable", (ia2 & JSObject.ATTR_ENUMERABLE) != 0);
+                    desc.set("configurable", (ia2 & JSObject.ATTR_CONFIGURABLE) != 0);
+                    return desc;
+                }
+                if (arr.hasExtraProperty(key)) {
+                    Object val = arr.getExtraProperty(key);
+                    byte ia = arr.getIndexAttributes(key);
+                    if (val instanceof Accessor acc) {
+                        desc.set("get", acc.getter() == null ? Undefined.VALUE : acc.getter());
+                        desc.set("set", acc.setter() == null ? Undefined.VALUE : acc.setter());
+                    } else {
+                        desc.set("value", val);
+                        desc.set("writable", (ia & JSObject.ATTR_WRITABLE) != 0);
+                    }
+                    desc.set("enumerable", (ia & JSObject.ATTR_ENUMERABLE) != 0);
+                    desc.set("configurable", (ia & JSObject.ATTR_CONFIGURABLE) != 0);
                     return desc;
                 }
             }
@@ -7342,6 +7671,115 @@ public final class Realm {
         }
         throw AbruptCompletion.typeError(
             "ShadowRealm evaluation returned a non-callable object");
+    }
+
+    /** § 7.3.16 SetIntegrityLevel — preventExtensions then flip every own
+     *  property's configurable bit (and writable bit too for {@code
+     *  frozen=true}). Works on JSObject / JSArray / JSFunction. */
+    static void setIntegrityLevel(Object v, boolean frozen) {
+        if (v instanceof JSObject jo) {
+            jo.preventExtensions();
+            for (String k : new java.util.ArrayList<>(jo.properties().keySet())) {
+                if (isPrivateName(k)) continue;
+                byte attrs = jo.getAttributes(k);
+                attrs &= ~JSObject.ATTR_CONFIGURABLE;
+                if (frozen && !(jo.getOwn(k) instanceof Accessor)) {
+                    attrs &= ~JSObject.ATTR_WRITABLE;
+                }
+                jo.setAttributes(k, attrs);
+            }
+            return;
+        }
+        if (v instanceof JSArray arr) {
+            arr.preventExtensions();
+            // Length descriptor: clear writable when frozen (per spec note,
+            // length stays non-configurable already).
+            byte la = arr.getIndexAttributes("length");
+            if (frozen) la &= ~JSObject.ATTR_WRITABLE;
+            arr.setIndexAttributes("length", la);
+            // Every indexed element: copy current effective attrs then clear
+            // configurable (and writable when frozen).
+            for (int i = 0; i < arr.length(); i++) {
+                String k = Integer.toString(i);
+                byte attrs = arr.getIndexAttributes(k);
+                attrs &= ~JSObject.ATTR_CONFIGURABLE;
+                if (frozen && !(arr.get(i) instanceof Accessor)) {
+                    attrs &= ~JSObject.ATTR_WRITABLE;
+                }
+                arr.setIndexAttributes(k, attrs);
+            }
+            if (arr.extraProperties() != null) {
+                for (String k : new java.util.ArrayList<>(arr.extraProperties().keySet())) {
+                    byte attrs = arr.getIndexAttributes(k);
+                    attrs &= ~JSObject.ATTR_CONFIGURABLE;
+                    if (frozen && !(arr.getExtraProperty(k) instanceof Accessor)) {
+                        attrs &= ~JSObject.ATTR_WRITABLE;
+                    }
+                    arr.setIndexAttributes(k, attrs);
+                }
+            }
+            return;
+        }
+        if (v instanceof JSFunction fn) {
+            fn.preventExtensions();
+            for (String k : new java.util.ArrayList<>(fn.propertiesIfPresent().keySet())) {
+                byte attrs = fn.getAttributes(k);
+                attrs &= ~JSObject.ATTR_CONFIGURABLE;
+                if (frozen && !(fn.getOwnStatic(k) instanceof Accessor)) {
+                    attrs &= ~JSObject.ATTR_WRITABLE;
+                }
+                fn.setAttributes(k, attrs);
+            }
+        }
+    }
+
+    /** § 7.3.17 TestIntegrityLevel — true iff the object is non-extensible
+     *  and every own property is non-configurable (and, for {@code frozen=true},
+     *  every data property is non-writable too). */
+    static boolean testIntegrityLevel(Object v, boolean frozen) {
+        if (v instanceof JSObject jo) {
+            if (jo.isExtensible()) return false;
+            for (String k : jo.properties().keySet()) {
+                if (isPrivateName(k)) continue;
+                byte attrs = jo.getAttributes(k);
+                if ((attrs & JSObject.ATTR_CONFIGURABLE) != 0) return false;
+                if (frozen && !(jo.getOwn(k) instanceof Accessor)
+                        && (attrs & JSObject.ATTR_WRITABLE) != 0) return false;
+            }
+            return true;
+        }
+        if (v instanceof JSArray arr) {
+            if (arr.isExtensible()) return false;
+            byte la = arr.getIndexAttributes("length");
+            if (frozen && (la & JSObject.ATTR_WRITABLE) != 0) return false;
+            for (int i = 0; i < arr.length(); i++) {
+                String k = Integer.toString(i);
+                byte attrs = arr.getIndexAttributes(k);
+                if ((attrs & JSObject.ATTR_CONFIGURABLE) != 0) return false;
+                if (frozen && !(arr.get(i) instanceof Accessor)
+                        && (attrs & JSObject.ATTR_WRITABLE) != 0) return false;
+            }
+            if (arr.extraProperties() != null) {
+                for (String k : arr.extraProperties().keySet()) {
+                    byte attrs = arr.getIndexAttributes(k);
+                    if ((attrs & JSObject.ATTR_CONFIGURABLE) != 0) return false;
+                    if (frozen && !(arr.getExtraProperty(k) instanceof Accessor)
+                            && (attrs & JSObject.ATTR_WRITABLE) != 0) return false;
+                }
+            }
+            return true;
+        }
+        if (v instanceof JSFunction fn) {
+            if (fn.isExtensible()) return false;
+            for (String k : fn.propertiesIfPresent().keySet()) {
+                byte attrs = fn.getAttributes(k);
+                if ((attrs & JSObject.ATTR_CONFIGURABLE) != 0) return false;
+                if (frozen && !(fn.getOwnStatic(k) instanceof Accessor)
+                        && (attrs & JSObject.ATTR_WRITABLE) != 0) return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     /** § 6.1.7 CanBeHeldWeakly — any Object or any non-registered Symbol.
