@@ -2497,6 +2497,10 @@ public sealed interface Op {
                         Realm.resolvePromise(p, result, ctx);
                     }
                     String state = (String) p.properties().get(Realm.PROM_STATE);
+                    if ("pending".equals(state)) {
+                        Realm.drainMicrotasks();
+                        state = (String) p.properties().get(Realm.PROM_STATE);
+                    }
                     Object inner = p.properties().get(Realm.PROM_RESULT);
                     if ("fulfilled".equals(state)) result = inner;
                     else if ("rejected".equals(state)) throw new AbruptCompletion(inner);
@@ -2525,6 +2529,10 @@ public sealed interface Op {
                     }
                     if (vp != null) {
                         String vs = (String) vp.properties().get(Realm.PROM_STATE);
+                        if ("pending".equals(vs)) {
+                            Realm.drainMicrotasks();
+                            vs = (String) vp.properties().get(Realm.PROM_STATE);
+                        }
                         Object vi = vp.properties().get(Realm.PROM_RESULT);
                         if ("fulfilled".equals(vs)) iterValue = vi;
                         else if ("rejected".equals(vs)) throw new AbruptCompletion(vi);
@@ -2565,15 +2573,17 @@ public sealed interface Op {
             if (isAsync && Realm.isPromise(yieldedValue)) {
                 JSObject p = (JSObject) yieldedValue;
                 String state = (String) p.properties().get(Realm.PROM_STATE);
+                if ("pending".equals(state)) {
+                    Realm.drainMicrotasks();
+                    state = (String) p.properties().get(Realm.PROM_STATE);
+                }
                 Object inner = p.properties().get(Realm.PROM_RESULT);
                 if ("fulfilled".equals(state)) {
                     yieldedValue = inner;
                 } else if ("rejected".equals(state)) {
                     throw new AbruptCompletion(inner);
                 }
-                // Pending: leave as-is; spec would defer but we have no
-                // microtask queue. Treating it as the resolved value
-                // would deadlock the unit test, so propagate the Promise.
+                // Still pending after drain: propagate the Promise itself.
             }
             ctx.setYieldedValue(yieldedValue);
             ctx.setYieldResumePc(pc + 1);
@@ -2622,6 +2632,16 @@ public sealed interface Op {
             if (Realm.isPromise(v)) {
                 JSObject p = (JSObject) v;
                 String state = (String) p.properties().get(Realm.PROM_STATE);
+                // v1 cooperative-pump: drain the microtask queue if the
+                // promise is still pending. This works because most pending
+                // promises are the result of a chain whose reaction is in
+                // the queue already (e.g. await of a Promise.resolve()).
+                // True await suspension (for promises that settle async
+                // via setTimeout / I/O) still hits the TypeError fallback.
+                if ("pending".equals(state)) {
+                    Realm.drainMicrotasks();
+                    state = (String) p.properties().get(Realm.PROM_STATE);
+                }
                 Object result = p.properties().get(Realm.PROM_RESULT);
                 if ("fulfilled".equals(state)) {
                     dst.store(ctx, result);
@@ -3092,6 +3112,10 @@ public sealed interface Op {
                 }
                 if (p != null) {
                     String state = (String) p.properties().get(Realm.PROM_STATE);
+                    if ("pending".equals(state)) {
+                        Realm.drainMicrotasks();
+                        state = (String) p.properties().get(Realm.PROM_STATE);
+                    }
                     Object inner = p.properties().get(Realm.PROM_RESULT);
                     if ("fulfilled".equals(state)) result = inner;
                     else if ("rejected".equals(state)) throw new AbruptCompletion(inner);
@@ -3109,6 +3133,10 @@ public sealed interface Op {
             if (isAwait && Realm.isPromise(value)) {
                 JSObject pv = (JSObject) value;
                 String state = (String) pv.properties().get(Realm.PROM_STATE);
+                if ("pending".equals(state)) {
+                    Realm.drainMicrotasks();
+                    state = (String) pv.properties().get(Realm.PROM_STATE);
+                }
                 Object inner = pv.properties().get(Realm.PROM_RESULT);
                 if ("fulfilled".equals(state)) value = inner;
                 else if ("rejected".equals(state)) throw new AbruptCompletion(inner);

@@ -424,7 +424,15 @@ public final class Interpreter {
         // top-level entry; nested calls reuse the existing TL value.
         if (InterpContext.current() == null) {
             InterpContext.setCurrent(ctx);
-            try { return runLoop(executable, ctx); }
+            try {
+                Object result = runLoop(executable, ctx);
+                // § 9.4.2 RunJobs — once the running execution context stack
+                // is empty, drain the microtask queue. Microtasks may enqueue
+                // more microtasks; the loop continues until idle. This is the
+                // only "job boundary" we model: top-level script return.
+                Realm.drainMicrotasks();
+                return result;
+            }
             finally { InterpContext.setCurrent(null); }
         }
         return runLoop(executable, ctx);

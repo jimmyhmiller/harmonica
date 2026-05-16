@@ -2685,6 +2685,35 @@ public final class Realm {
         return v instanceof JSObject jo && jo.properties().containsKey(PROM_STATE);
     }
 
+    /** § 9.4 Jobs and Job Queues — global microtask queue, drained at the
+     *  end of every top-level script execution and at the end of each
+     *  drained microtask (so chained {@code .then(...).then(...)} runs in
+     *  spec order). Per-thread because parallel tests run on different
+     *  threads of the test262 runner. */
+    private static final ThreadLocal<java.util.ArrayDeque<Runnable>> MICROTASK_QUEUE =
+        ThreadLocal.withInitial(java.util.ArrayDeque::new);
+
+    public static void enqueueMicrotask(Runnable r) {
+        MICROTASK_QUEUE.get().add(r);
+    }
+
+    /** Run microtasks until the queue is empty. New microtasks enqueued
+     *  during the loop are run in this same drain. */
+    public static void drainMicrotasks() {
+        var q = MICROTASK_QUEUE.get();
+        // Cap the loop to defend against runaway microtask storms that
+        // would otherwise hang the test runner. 100k is large enough for
+        // any spec algorithm but breaks pathological loops.
+        int budget = 100_000;
+        while (!q.isEmpty() && budget-- > 0) {
+            Runnable r = q.poll();
+            try { r.run(); }
+            catch (AbruptCompletion ignored) { /* unhandled rejection */ }
+            catch (Throwable ignored) { /* shouldn't escape — reaction wrapped */ }
+        }
+        if (budget <= 0) q.clear();
+    }
+
     static JSObject createPromise() {
         JSObject p = new JSObject(promisePrototype);
         p.properties().put(PROM_STATE, "pending");
@@ -2694,11 +2723,9 @@ public final class Realm {
         return p;
     }
 
-    /**
-     * § 27.2.1.4 FulfillPromise: transition pending→fulfilled with value
-     * and run the queued fulfill reactions. (We run them synchronously;
-     * spec dispatches them as microtasks.)
-     */
+    /** § 27.2.1.4 FulfillPromise: transition pending→fulfilled with value
+     *  and enqueue (as microtasks) every queued fulfill reaction. Spec
+     *  requires these run as PromiseReactionJob, NOT inline. */
     static void fulfillPromise(JSObject p, Object value) {
         if (!"pending".equals(p.properties().get(PROM_STATE))) return;
         p.properties().put(PROM_STATE, "fulfilled");
@@ -2707,12 +2734,10 @@ public final class Realm {
         java.util.List<Runnable> reactions = (java.util.List<Runnable>) p.properties().get(PROM_FULFILL);
         p.properties().put(PROM_FULFILL, java.util.Collections.<Runnable>emptyList());
         p.properties().put(PROM_REJECT, java.util.Collections.<Runnable>emptyList());
-        for (Runnable r : reactions) {
-            try { r.run(); } catch (Throwable ignored) { /* reactions swallow */ }
-        }
+        for (Runnable r : reactions) enqueueMicrotask(r);
     }
 
-    /** § 27.2.1.5 RejectPromise. */
+    /** § 27.2.1.5 RejectPromise — same shape, enqueues reject reactions. */
     static void rejectPromise(JSObject p, Object reason) {
         if (!"pending".equals(p.properties().get(PROM_STATE))) return;
         p.properties().put(PROM_STATE, "rejected");
@@ -2721,9 +2746,7 @@ public final class Realm {
         java.util.List<Runnable> reactions = (java.util.List<Runnable>) p.properties().get(PROM_REJECT);
         p.properties().put(PROM_FULFILL, java.util.Collections.<Runnable>emptyList());
         p.properties().put(PROM_REJECT, java.util.Collections.<Runnable>emptyList());
-        for (Runnable r : reactions) {
-            try { r.run(); } catch (Throwable ignored) { /* reactions swallow */ }
-        }
+        for (Runnable r : reactions) enqueueMicrotask(r);
     }
 
     /**
@@ -3339,6 +3362,247 @@ public final class Realm {
         }
     }
 
+    enum CombinatorKind { ALL, RACE, ALL_SETTLED, ANY }
+
+    /** § 27.2.1.1 PromiseCapability Record — promise + the resolve/reject
+     *  closures the spec algorithms use to settle it. For our default
+     *  Promise, resolve/reject are tiny wrappers around fulfill/reject; for
+     *  user subclasses they're whatever the subclass's constructor passed
+     *  to its executor. */
+    static final class PromiseCapability {
+        Object promise;
+        JSFunction resolve;
+        JSFunction reject;
+    }
+
+    /** § 27.2.1.5 NewPromiseCapability(C). */
+    static PromiseCapability newPromiseCapability(JSFunction C, InterpContext ctx) {
+        JSFunction[] resolveSlot = new JSFunction[1];
+        JSFunction[] rejectSlot = new JSFunction[1];
+        JSFunction executor = nativeFn("", 2, (t, a, c2) -> {
+            if (resolveSlot[0] != null || rejectSlot[0] != null) {
+                throw AbruptCompletion.typeError(
+                    "Promise executor called with resolve/reject more than once");
+            }
+            Object res = arg(a, 0);
+            Object rej = arg(a, 1);
+            if (!(res instanceof JSFunction rf)) {
+                throw AbruptCompletion.typeError("resolve must be a function");
+            }
+            if (!(rej instanceof JSFunction jf)) {
+                throw AbruptCompletion.typeError("reject must be a function");
+            }
+            resolveSlot[0] = rf;
+            rejectSlot[0] = jf;
+            return Undefined.VALUE;
+        });
+        JSObject receiver = new JSObject(C.prototypeObject() != null
+            ? C.prototypeObject() : promisePrototype);
+        Object promise = Interpreter.invokeFunctionAsConstructor(C, receiver,
+            new Object[]{executor}, ctx);
+        if (resolveSlot[0] == null || rejectSlot[0] == null) {
+            throw AbruptCompletion.typeError(
+                "Promise constructor did not call executor with resolve/reject");
+        }
+        PromiseCapability cap = new PromiseCapability();
+        cap.promise = promise;
+        cap.resolve = resolveSlot[0];
+        cap.reject = rejectSlot[0];
+        return cap;
+    }
+
+    /** § 27.2.4.{1,2,3,5} shared spine for Promise.all/allSettled/any/race.
+     *  Builds a capability via NewPromiseCapability(thisCtor) so subclasses
+     *  see their own constructor running and their custom resolve/reject
+     *  closures get called. */
+    static Object promiseCombinator(Object thisCtor, Object iterable,
+                                    InterpContext ctx, CombinatorKind kind) {
+        if (!(thisCtor instanceof JSFunction tf) || !tf.isConstructor()) {
+            throw AbruptCompletion.typeError("Promise." + kind.name().toLowerCase()
+                + " called on non-constructor");
+        }
+        PromiseCapability cap;
+        try {
+            cap = newPromiseCapability(tf, ctx);
+        } catch (AbruptCompletion ac) {
+            // NewPromiseCapability failures (constructor throws or executor
+            // mishandled) propagate.
+            throw ac;
+        }
+        // Promise.resolve from the ctor (inherited for subclasses).
+        Object resolveFn = AbstractOps.getProperty(tf, "resolve");
+        if (!(resolveFn instanceof JSFunction promiseResolve)) {
+            JSFunction reject = cap.reject;
+            Interpreter.invokeFunction(reject, Undefined.VALUE,
+                new Object[]{AbruptCompletion.typeError(
+                    tf.name() + ".resolve is not callable").value()}, ctx);
+            return cap.promise;
+        }
+
+        java.util.List<Object> items;
+        try {
+            items = iterableToList(iterable, ctx);
+        } catch (AbruptCompletion ac) {
+            Interpreter.invokeFunction(cap.reject, Undefined.VALUE,
+                new Object[]{ac.value()}, ctx);
+            return cap.promise;
+        }
+
+        int total = items.size();
+        if (total == 0) {
+            switch (kind) {
+                case ALL, ALL_SETTLED -> Interpreter.invokeFunction(cap.resolve,
+                    Undefined.VALUE, new Object[]{new JSArray()}, ctx);
+                case ANY -> Interpreter.invokeFunction(cap.reject, Undefined.VALUE,
+                    new Object[]{createAggregateError(new JSArray(),
+                        "All promises were rejected")}, ctx);
+                case RACE -> { /* stays pending forever per spec */ }
+            }
+            return cap.promise;
+        }
+
+        JSArray values = new JSArray();
+        for (int i = 0; i < total; i++) values.push(Undefined.VALUE);
+        int[] remaining = {total};
+        boolean[] settled = {false};
+        Object capPromise = cap.promise;
+        JSFunction capResolve = cap.resolve;
+        JSFunction capReject = cap.reject;
+
+        for (int i = 0; i < total; i++) {
+            final int idx = i;
+            boolean[] alreadyCalled = {false};   // § 27.2.4.1.2 step 1
+            Object item = items.get(i);
+            Object resolvedItem = Interpreter.invokeFunction(promiseResolve, tf,
+                new Object[]{item}, ctx);
+            Object thenFnVal = AbstractOps.getProperty(resolvedItem, "then");
+            if (!(thenFnVal instanceof JSFunction thenFn)) {
+                throw AbruptCompletion.typeError("Promise combinator: .then is not callable");
+            }
+            JSFunction onFulfill, onReject;
+            switch (kind) {
+                case ALL -> {
+                    onFulfill = nativeFn("", 1, (t2, a2, c2) -> {
+                        if (alreadyCalled[0]) return Undefined.VALUE;
+                        alreadyCalled[0] = true;
+                        values.set(idx, arg(a2, 0));
+                        if (--remaining[0] == 0) {
+                            Interpreter.invokeFunction(capResolve, Undefined.VALUE,
+                                new Object[]{values}, c2);
+                        }
+                        return Undefined.VALUE;
+                    });
+                    onReject = nativeFn("", 1, (t2, a2, c2) -> {
+                        if (settled[0]) return Undefined.VALUE;
+                        settled[0] = true;
+                        Interpreter.invokeFunction(capReject, Undefined.VALUE,
+                            new Object[]{arg(a2, 0)}, c2);
+                        return Undefined.VALUE;
+                    });
+                }
+                case RACE -> {
+                    onFulfill = nativeFn("", 1, (t2, a2, c2) -> {
+                        if (settled[0]) return Undefined.VALUE;
+                        settled[0] = true;
+                        Interpreter.invokeFunction(capResolve, Undefined.VALUE,
+                            new Object[]{arg(a2, 0)}, c2);
+                        return Undefined.VALUE;
+                    });
+                    onReject = nativeFn("", 1, (t2, a2, c2) -> {
+                        if (settled[0]) return Undefined.VALUE;
+                        settled[0] = true;
+                        Interpreter.invokeFunction(capReject, Undefined.VALUE,
+                            new Object[]{arg(a2, 0)}, c2);
+                        return Undefined.VALUE;
+                    });
+                }
+                case ALL_SETTLED -> {
+                    onFulfill = nativeFn("", 1, (t2, a2, c2) -> {
+                        if (alreadyCalled[0]) return Undefined.VALUE;
+                        alreadyCalled[0] = true;
+                        JSObject entry = new JSObject(objectPrototype);
+                        entry.set("status", "fulfilled");
+                        entry.set("value", arg(a2, 0));
+                        values.set(idx, entry);
+                        if (--remaining[0] == 0) {
+                            Interpreter.invokeFunction(capResolve, Undefined.VALUE,
+                                new Object[]{values}, c2);
+                        }
+                        return Undefined.VALUE;
+                    });
+                    onReject = nativeFn("", 1, (t2, a2, c2) -> {
+                        if (alreadyCalled[0]) return Undefined.VALUE;
+                        alreadyCalled[0] = true;
+                        JSObject entry = new JSObject(objectPrototype);
+                        entry.set("status", "rejected");
+                        entry.set("reason", arg(a2, 0));
+                        values.set(idx, entry);
+                        if (--remaining[0] == 0) {
+                            Interpreter.invokeFunction(capResolve, Undefined.VALUE,
+                                new Object[]{values}, c2);
+                        }
+                        return Undefined.VALUE;
+                    });
+                }
+                default /* ANY */ -> {
+                    onFulfill = nativeFn("", 1, (t2, a2, c2) -> {
+                        if (settled[0]) return Undefined.VALUE;
+                        settled[0] = true;
+                        Interpreter.invokeFunction(capResolve, Undefined.VALUE,
+                            new Object[]{arg(a2, 0)}, c2);
+                        return Undefined.VALUE;
+                    });
+                    onReject = nativeFn("", 1, (t2, a2, c2) -> {
+                        if (alreadyCalled[0]) return Undefined.VALUE;
+                        alreadyCalled[0] = true;
+                        values.set(idx, arg(a2, 0));
+                        if (--remaining[0] == 0 && !settled[0]) {
+                            settled[0] = true;
+                            Interpreter.invokeFunction(capReject, Undefined.VALUE,
+                                new Object[]{createAggregateError(values,
+                                    "All promises were rejected")}, c2);
+                        }
+                        return Undefined.VALUE;
+                    });
+                }
+            }
+            Interpreter.invokeFunction(thenFn, resolvedItem,
+                new Object[]{onFulfill, onReject}, ctx);
+        }
+        return capPromise;
+    }
+
+    /** § 7.4.10 IterableToList: read @@iterator, drain into a Java list.
+     *  Strings get char-by-char iteration via their iterator. */
+    static java.util.List<Object> iterableToList(Object iterable, InterpContext ctx) {
+        if (iterable == null || iterable == Undefined.VALUE) {
+            throw AbruptCompletion.typeError("iterable expected, got "
+                + (iterable == null ? "null" : "undefined"));
+        }
+        Object iterMethod = AbstractOps.getProperty(iterable, wellKnownIterator.asPropertyKey());
+        if (!(iterMethod instanceof JSFunction iterFn)) {
+            throw AbruptCompletion.typeError("iterable: @@iterator is not callable");
+        }
+        Object iter = Interpreter.invokeFunction(iterFn, iterable, new Object[0], ctx);
+        if (!(iter instanceof JSObject iterObj)) {
+            throw AbruptCompletion.typeError("iterator must be an object");
+        }
+        Object nextFn = AbstractOps.getProperty(iterObj, "next");
+        if (!(nextFn instanceof JSFunction nf)) {
+            throw AbruptCompletion.typeError("iterator: .next is not callable");
+        }
+        java.util.List<Object> out = new java.util.ArrayList<>();
+        for (int safety = 0; safety < 1_000_000; safety++) {
+            Object step = Interpreter.invokeFunction(nf, iterObj, new Object[0], ctx);
+            if (!(step instanceof JSObject stepObj)) {
+                throw AbruptCompletion.typeError("iterator step is not an object");
+            }
+            if (AbstractOps.toBoolean(AbstractOps.getProperty(stepObj, "done"))) break;
+            out.add(AbstractOps.getProperty(stepObj, "value"));
+        }
+        return out;
+    }
+
     /** Wrap {@code v} in a fulfilled Promise (for async generator results). */
     public static JSObject wrapInPromise(Object v, InterpContext ctx) {
         JSObject p = createPromise();
@@ -3399,9 +3663,9 @@ public final class Realm {
                 fr.add(fulfillReaction);
                 rr.add(rejectReaction);
             } else if ("fulfilled".equals(state)) {
-                fulfillReaction.run();
+                enqueueMicrotask(fulfillReaction);
             } else {
-                rejectReaction.run();
+                enqueueMicrotask(rejectReaction);
             }
             return result;
         }));
@@ -4075,166 +4339,19 @@ public final class Realm {
             rejectPromise(p, arg(a, 0));
             return p;
         }));
-        // § 27.2.4.1 Promise.all — sync version: iterates immediately.
-        promiseCtor.properties().put("all", nativeFn("all", 1, (t, a, c) -> {
-            // § 27.2.4.1 step 2 + § 27.2.1.5 NewPromiseCapability: this
-            // value must be a Constructor, else TypeError. eval is
-            // callable but not constructible.
-            if (!(t instanceof JSFunction tf) || !tf.isConstructor()) {
-                throw AbruptCompletion.typeError("Promise.all called on non-constructor");
-            }
-            Object iter = arg(a, 0);
-            if (!(iter instanceof JSArray arr)) {
-                JSObject rejected = createPromise();
-                rejectPromise(rejected, AbruptCompletion.typeError("Promise.all requires an array").value());
-                return rejected;
-            }
-            JSObject result = createPromise();
-            JSArray values = new JSArray();
-            int[] remaining = {arr.length()};
-            if (remaining[0] == 0) {
-                fulfillPromise(result, values);
-                return result;
-            }
-            for (int i = 0; i < arr.length(); i++) values.push(Undefined.VALUE);
-            for (int i = 0; i < arr.length(); i++) {
-                final int idx = i;
-                Object item = arr.get(i);
-                JSObject pi = isPromise(item) ? (JSObject) item : (JSObject) (
-                    Interpreter.invokeFunction((JSFunction) promiseCtor.properties().get("resolve"),
-                        promiseCtor, new Object[]{item}, c));
-                JSFunction thenFn = (JSFunction) AbstractOps.getProperty(pi, "then");
-                JSFunction onFulfill = new JSFunction("onFulfill", 1, (tt, aa, cc) -> {
-                    values.set(idx, arg(aa, 0));
-                    if (--remaining[0] == 0) fulfillPromise(result, values);
-                    return Undefined.VALUE;
-                });
-                JSFunction onReject = new JSFunction("onReject", 1, (tt, aa, cc) -> {
-                    rejectPromise(result, arg(aa, 0)); return Undefined.VALUE;
-                });
-                Interpreter.invokeFunction(thenFn, pi, new Object[]{onFulfill, onReject}, c);
-            }
-            return result;
-        }));
-        // § 27.2.4.5 Promise.race.
-        promiseCtor.properties().put("race", nativeFn("race", 1, (t, a, c) -> {
-            if (!(t instanceof JSFunction tf) || !tf.isConstructor()) {
-                throw AbruptCompletion.typeError("Promise.race called on non-constructor");
-            }
-            Object iter = arg(a, 0);
-            if (!(iter instanceof JSArray arr)) {
-                JSObject rejected = createPromise();
-                rejectPromise(rejected, AbruptCompletion.typeError("Promise.race requires an array").value());
-                return rejected;
-            }
-            JSObject result = createPromise();
-            for (int i = 0; i < arr.length(); i++) {
-                Object item = arr.get(i);
-                JSObject pi = isPromise(item) ? (JSObject) item : (JSObject) (
-                    Interpreter.invokeFunction((JSFunction) promiseCtor.properties().get("resolve"),
-                        promiseCtor, new Object[]{item}, c));
-                JSFunction thenFn = (JSFunction) AbstractOps.getProperty(pi, "then");
-                JSFunction onFulfill = new JSFunction("onFulfill", 1, (tt, aa, cc) -> {
-                    fulfillPromise(result, arg(aa, 0)); return Undefined.VALUE;
-                });
-                JSFunction onReject = new JSFunction("onReject", 1, (tt, aa, cc) -> {
-                    rejectPromise(result, arg(aa, 0)); return Undefined.VALUE;
-                });
-                Interpreter.invokeFunction(thenFn, pi, new Object[]{onFulfill, onReject}, c);
-            }
-            return result;
-        }));
-        // § 27.2.4.2 Promise.allSettled — never rejects; resolves to
-        // an array of {status: "fulfilled", value} | {status: "rejected", reason}.
-        promiseCtor.properties().put("allSettled", nativeFn("allSettled", 1, (t, a, c) -> {
-            if (!(t instanceof JSFunction tf) || !tf.isConstructor()) {
-                throw AbruptCompletion.typeError("Promise.allSettled called on non-constructor");
-            }
-            Object iter = arg(a, 0);
-            if (!(iter instanceof JSArray arr)) {
-                JSObject rejected = createPromise();
-                rejectPromise(rejected, AbruptCompletion.typeError("Promise.allSettled requires an array").value());
-                return rejected;
-            }
-            JSObject result = createPromise();
-            JSArray values = new JSArray();
-            int[] remaining = {arr.length()};
-            if (remaining[0] == 0) {
-                fulfillPromise(result, values);
-                return result;
-            }
-            for (int i = 0; i < arr.length(); i++) values.push(Undefined.VALUE);
-            for (int i = 0; i < arr.length(); i++) {
-                final int idx = i;
-                Object item = arr.get(i);
-                JSObject pi = isPromise(item) ? (JSObject) item : (JSObject) (
-                    Interpreter.invokeFunction((JSFunction) promiseCtor.properties().get("resolve"),
-                        promiseCtor, new Object[]{item}, c));
-                JSFunction thenFn = (JSFunction) AbstractOps.getProperty(pi, "then");
-                JSFunction onFulfill = new JSFunction("onFulfill", 1, (tt, aa, cc) -> {
-                    JSObject entry = new JSObject(objectPrototype);
-                    entry.set("status", "fulfilled");
-                    entry.set("value", arg(aa, 0));
-                    values.set(idx, entry);
-                    if (--remaining[0] == 0) fulfillPromise(result, values);
-                    return Undefined.VALUE;
-                });
-                JSFunction onReject = new JSFunction("onReject", 1, (tt, aa, cc) -> {
-                    JSObject entry = new JSObject(objectPrototype);
-                    entry.set("status", "rejected");
-                    entry.set("reason", arg(aa, 0));
-                    values.set(idx, entry);
-                    if (--remaining[0] == 0) fulfillPromise(result, values);
-                    return Undefined.VALUE;
-                });
-                Interpreter.invokeFunction(thenFn, pi, new Object[]{onFulfill, onReject}, c);
-            }
-            return result;
-        }));
-        // § 27.2.4.3 Promise.any — fulfills with first fulfilled value,
-        // rejects with AggregateError of all reasons if all reject.
-        promiseCtor.properties().put("any", nativeFn("any", 1, (t, a, c) -> {
-            if (!(t instanceof JSFunction tf) || !tf.isConstructor()) {
-                throw AbruptCompletion.typeError("Promise.any called on non-constructor");
-            }
-            Object iter = arg(a, 0);
-            if (!(iter instanceof JSArray arr)) {
-                JSObject rejected = createPromise();
-                rejectPromise(rejected, AbruptCompletion.typeError("Promise.any requires an array").value());
-                return rejected;
-            }
-            JSObject result = createPromise();
-            JSArray errors = new JSArray();
-            int[] remaining = {arr.length()};
-            if (remaining[0] == 0) {
-                JSObject ag = createAggregateError(errors, "All promises were rejected");
-                rejectPromise(result, ag);
-                return result;
-            }
-            for (int i = 0; i < arr.length(); i++) errors.push(Undefined.VALUE);
-            for (int i = 0; i < arr.length(); i++) {
-                final int idx = i;
-                Object item = arr.get(i);
-                JSObject pi = isPromise(item) ? (JSObject) item : (JSObject) (
-                    Interpreter.invokeFunction((JSFunction) promiseCtor.properties().get("resolve"),
-                        promiseCtor, new Object[]{item}, c));
-                JSFunction thenFn = (JSFunction) AbstractOps.getProperty(pi, "then");
-                JSFunction onFulfill = new JSFunction("onFulfill", 1, (tt, aa, cc) -> {
-                    fulfillPromise(result, arg(aa, 0));
-                    return Undefined.VALUE;
-                });
-                JSFunction onReject = new JSFunction("onReject", 1, (tt, aa, cc) -> {
-                    errors.set(idx, arg(aa, 0));
-                    if (--remaining[0] == 0) {
-                        JSObject ag = createAggregateError(errors, "All promises were rejected");
-                        rejectPromise(result, ag);
-                    }
-                    return Undefined.VALUE;
-                });
-                Interpreter.invokeFunction(thenFn, pi, new Object[]{onFulfill, onReject}, c);
-            }
-            return result;
-        }));
+        // § 27.2.4.1/.2/.3/.5 Promise.all/allSettled/any/race — combinators
+        // share a common shape: iterate the input via @@iterator, resolve
+        // each item through the {@code this}-constructor's
+        // {@code resolve}, hook .then with per-combinator reactions. Routed
+        // through {@link #promiseCombinator}.
+        promiseCtor.properties().put("all", nativeFn("all", 1, (t, a, c) ->
+            promiseCombinator(t, arg(a, 0), c, CombinatorKind.ALL)));
+        promiseCtor.properties().put("race", nativeFn("race", 1, (t, a, c) ->
+            promiseCombinator(t, arg(a, 0), c, CombinatorKind.RACE)));
+        promiseCtor.properties().put("allSettled", nativeFn("allSettled", 1, (t, a, c) ->
+            promiseCombinator(t, arg(a, 0), c, CombinatorKind.ALL_SETTLED)));
+        promiseCtor.properties().put("any", nativeFn("any", 1, (t, a, c) ->
+            promiseCombinator(t, arg(a, 0), c, CombinatorKind.ANY)));
         // Stage 4 (ES2024) Promise.withResolvers() — returns
         // {promise, resolve, reject} for cases where the caller needs
         // to hand resolve/reject to code outside the executor.
