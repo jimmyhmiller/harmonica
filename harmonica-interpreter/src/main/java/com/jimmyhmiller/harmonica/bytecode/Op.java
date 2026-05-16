@@ -3793,9 +3793,26 @@ public sealed interface Op {
             Object base = receiver.retrieve(ctx);
             Object v = value.retrieve(ctx);
             if (base instanceof JSArray arr) {
-                arr.push(v);
-                dst.store(ctx, AbstractOps.boxDouble(arr.length()));
-                return pc + 1;
+                // Fast path is only safe when the array has no Array.prototype
+                // setter at the would-be-pushed index and length is writable.
+                // Fall back to the generic push when either is true so spec
+                // semantics (frozen-length TypeError, proto-setter dispatch,
+                // 2^53-1 cap) are observed.
+                String idxKey = Integer.toString(arr.length());
+                byte la = arr.getIndexAttributes("length");
+                boolean lengthWritable = (la & JSObject.ATTR_WRITABLE) != 0;
+                boolean protoHasSetter = false;
+                if (Realm.arrayPrototype != null) {
+                    Object inh = Realm.arrayPrototype.getOwn(idxKey);
+                    if (inh instanceof Accessor acc && acc.setter() != null) {
+                        protoHasSetter = true;
+                    }
+                }
+                if (lengthWritable && !protoHasSetter) {
+                    arr.push(v);
+                    dst.store(ctx, AbstractOps.boxDouble(arr.length()));
+                    return pc + 1;
+                }
             }
             Object fn = AbstractOps.getProperty(base, "push");
             if (!(fn instanceof JSFunction f)) {

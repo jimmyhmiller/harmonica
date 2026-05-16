@@ -486,11 +486,17 @@ public final class Realm {
         return i < a.length ? a[i] : Undefined.VALUE;
     }
 
+    /** § 7.1.5 ToIntegerOrInfinity + slice-index clamping in one step.
+     *  Negative values count from the end; +Infinity caps at len; -Infinity
+     *  caps at 0. {@code dflt} is returned for {@code undefined}. */
     private static int sliceIndex(Object v, int len, int dflt) {
         if (v == Undefined.VALUE) return dflt;
-        int n = AbstractOps.toInt32(v);
-        if (n < 0) return Math.max(0, len + n);
-        return Math.min(len, n);
+        double n = AbstractOps.toNumber(v);
+        if (Double.isNaN(n)) return 0;
+        if (Double.isInfinite(n)) return n > 0 ? len : 0;
+        long i = (long) n;   // ToInteger truncation
+        if (i < 0) return (int) Math.max(0, len + i);
+        return (int) Math.min(len, i);
     }
 
     // ============================================================
@@ -690,7 +696,12 @@ public final class Realm {
             if (thisVal instanceof JSArray arr) {
                 if ("length".equals(key)) return true;
                 int idx = parseIndex(key);
-                return idx >= 0 && idx < arr.length();
+                if (idx >= 0) {
+                    if (idx < arr.elements().size() && !arr.isHole(idx)) return true;
+                    if (arr.hasExtraProperty(key)) return true;
+                    return false;
+                }
+                return arr.hasExtraProperty(key);
             }
             if (thisVal instanceof JSFunction fn) {
                 if ("name".equals(key))   return !fn.isNameDeleted();
@@ -1130,8 +1141,22 @@ public final class Realm {
             }
             return obj.has(Integer.toString(i));
         }
+        if (t instanceof JSFunction fn) {
+            String key = Integer.toString(i);
+            return fn.hasOwnStatic(key);
+        }
         if (t instanceof CharSequence cs) {
             return i >= 0 && i < cs.length();
+        }
+        // Primitive Boolean / Number / Symbol — walk their prototype.
+        if (t instanceof Boolean) {
+            return Realm.booleanPrototype != null && Realm.booleanPrototype.has(Integer.toString(i));
+        }
+        if (t instanceof Number) {
+            return Realm.numberPrototype != null && Realm.numberPrototype.has(Integer.toString(i));
+        }
+        if (t instanceof JSSymbol) {
+            return Realm.symbolPrototype != null && Realm.symbolPrototype.has(Integer.toString(i));
         }
         return false;
     }
@@ -1145,7 +1170,24 @@ public final class Realm {
         // they matter for perf (push/pop/shift/unshift/reverse/sort).
         arrayPrototype.set("push", nativeFn("push", 1, (t, a, c) -> {
             if (t instanceof JSArray arr) {
-                for (Object v : a) arr.push(v);
+                // 2^53-1 cap check first (observed before any writes).
+                double baseLen = arr.length();
+                if (baseLen + a.length > 9007199254740991.0) {
+                    throw AbruptCompletion.typeError(
+                        "Array.prototype.push: pushed length exceeds 2^53 - 1");
+                }
+                // Spec § 23.1.3.23 step 5: per-element Set(O, ToString(len), E, true).
+                // Use AbstractOps.setProperty so proto-chain setters fire and
+                // frozen length surfaces as TypeError per Set(..., Throw=true).
+                int idx = (int) baseLen;
+                for (Object v : a) {
+                    AbstractOps.setProperty(arr, Integer.toString(idx), v);
+                    idx++;
+                    if (arr.length() < idx) {
+                        throw AbruptCompletion.typeError(
+                            "Array.prototype.push: cannot extend frozen array");
+                    }
+                }
                 return (double) arr.length();
             }
             // ECMA-262 § 23.1.3.23 step 5: if len + argCount > 2^53 - 1,
@@ -1164,28 +1206,50 @@ public final class Realm {
             return newLenD;
         }));
         arrayPrototype.set("pop", nativeFn("pop", 0, (t, a, c) -> {
-            if (t instanceof JSArray arr) {
-                if (arr.length() == 0) return Undefined.VALUE;
-                return arr.elements().remove(arr.length() - 1);
-            }
+            // § 23.1.3.21 — generic: read length, read [length-1] (proto-
+            // aware via getIndexed), delete, set length, return value.
             int len = lengthOfArrayLike(t);
             if (len == 0) {
+                // Empty: set length=0 (validates frozen-length → TypeError),
+                // return undefined.
+                if (t instanceof JSArray arr) {
+                    byte la = arr.getIndexAttributes("length");
+                    if ((la & JSObject.ATTR_WRITABLE) == 0) {
+                        throw AbruptCompletion.typeError(
+                            "Array.prototype.pop: cannot set length on frozen array");
+                    }
+                }
                 AbstractOps.setProperty(t, "length", 0.0);
                 return Undefined.VALUE;
             }
             int newLen = len - 1;
             Object v = getIndexed(t, newLen);
-            if (t instanceof JSObject jo) jo.delete(Integer.toString(newLen));
-            AbstractOps.setProperty(t, "length", (double) newLen);
+            if (t instanceof JSArray arr) {
+                byte la = arr.getIndexAttributes("length");
+                if ((la & JSObject.ATTR_WRITABLE) == 0) {
+                    throw AbruptCompletion.typeError(
+                        "Array.prototype.pop: cannot set length on frozen array");
+                }
+                if (newLen < arr.elements().size()) {
+                    arr.elements().set(newLen, Op.HOLE);
+                }
+                arr.setLength(newLen);
+            } else if (t instanceof JSObject jo) {
+                jo.delete(Integer.toString(newLen));
+                AbstractOps.setProperty(t, "length", (double) newLen);
+            }
             return v;
         }));
         arrayPrototype.set("shift", nativeFn("shift", 0, (t, a, c) -> {
-            if (t instanceof JSArray arr) {
-                if (arr.length() == 0) return Undefined.VALUE;
-                return arr.elements().remove(0);
-            }
             int len = lengthOfArrayLike(t);
             if (len == 0) {
+                if (t instanceof JSArray arr) {
+                    byte la = arr.getIndexAttributes("length");
+                    if ((la & JSObject.ATTR_WRITABLE) == 0) {
+                        throw AbruptCompletion.typeError(
+                            "Array.prototype.shift: cannot set length on frozen array");
+                    }
+                }
                 AbstractOps.setProperty(t, "length", 0.0);
                 return Undefined.VALUE;
             }
@@ -1193,13 +1257,35 @@ public final class Realm {
             for (int i = 1; i < len; i++) {
                 if (hasIndexed(t, i)) setIndexed(t, i - 1, getIndexed(t, i));
                 else if (t instanceof JSObject jo) jo.delete(Integer.toString(i - 1));
+                else if (t instanceof JSArray arr2 && i - 1 < arr2.elements().size()) {
+                    arr2.elements().set(i - 1, Op.HOLE);
+                }
             }
-            if (t instanceof JSObject jo) jo.delete(Integer.toString(len - 1));
-            AbstractOps.setProperty(t, "length", (double) (len - 1));
+            if (t instanceof JSArray arr) {
+                if (arr.length() - 1 < arr.elements().size()) {
+                    arr.elements().set(arr.length() - 1, Op.HOLE);
+                }
+                arr.setLength(len - 1);
+            } else if (t instanceof JSObject jo) {
+                jo.delete(Integer.toString(len - 1));
+                AbstractOps.setProperty(t, "length", (double) (len - 1));
+            }
             return first;
         }));
         arrayPrototype.set("unshift", nativeFn("unshift", 1, (t, a, c) -> {
             if (t instanceof JSArray arr) {
+                byte la = arr.getIndexAttributes("length");
+                if ((la & JSObject.ATTR_WRITABLE) == 0) {
+                    if (a.length > 0) {
+                        throw AbruptCompletion.typeError(
+                            "Array.prototype.unshift: cannot set length on frozen array");
+                    }
+                    return (double) arr.length();
+                }
+                if ((double) arr.length() + a.length > 9007199254740991.0) {
+                    throw AbruptCompletion.typeError(
+                        "Array.prototype.unshift: combined length exceeds 2^53 - 1");
+                }
                 for (int i = 0; i < a.length; i++) arr.elements().add(i, a[i]);
                 return (double) arr.length();
             }
@@ -1293,8 +1379,18 @@ public final class Realm {
             // throwing valueOf on fromIndex isn't invoked on an empty array).
             if (len == 0) return -1.0;
             Object target = arg(a, 0);
-            int from = arg(a, 1) == Undefined.VALUE ? 0 : AbstractOps.toInt32(a[1]);
-            if (from < 0) from = Math.max(0, len + from);
+            int from;
+            if (a.length < 2) {
+                from = 0;
+            } else {
+                double n = AbstractOps.toNumber(a[1]);
+                if (Double.isNaN(n)) n = 0;
+                else if (Double.isInfinite(n) && n > 0) return -1.0;
+                else if (Double.isInfinite(n)) n = 0;
+                else n = (long) n;
+                if (n < 0) n = Math.max(0, len + n);
+                from = (int) Math.min(n, Integer.MAX_VALUE);
+            }
             for (int i = from; i < len; i++) {
                 if (hasIndexed(t, i) && AbstractOps.strictlyEquals(getIndexed(t, i), target)) return (double) i;
             }
@@ -1304,9 +1400,23 @@ public final class Realm {
             int len = lengthOfArrayLike(t);
             if (len == 0) return -1.0;
             Object target = arg(a, 0);
-            int from = arg(a, 1) == Undefined.VALUE ? len - 1 : AbstractOps.toInt32(a[1]);
-            if (from < 0) from = len + from;
-            from = Math.min(from, len - 1);
+            // § 23.1.3.15 step 4: "If fromIndex is present, ..." — based on
+            // argument count, not value. `lastIndexOf(x, undefined)` is the
+            // 2-arg form where ToInteger(undefined) = 0, so the scan only
+            // visits index 0.
+            int from;
+            if (a.length < 2) {
+                from = len - 1;
+            } else {
+                double n = AbstractOps.toNumber(a[1]);
+                if (Double.isNaN(n)) n = 0;
+                else if (Double.isInfinite(n) && n < 0) return -1.0;
+                else if (Double.isInfinite(n)) n = len - 1;
+                else n = (long) n;   // ToInteger truncation
+                if (n < 0) n = len + n;
+                if (n < 0) return -1.0;
+                from = (int) Math.min(n, len - 1);
+            }
             for (int i = from; i >= 0; i--) {
                 if (hasIndexed(t, i) && AbstractOps.strictlyEquals(getIndexed(t, i), target)) return (double) i;
             }
