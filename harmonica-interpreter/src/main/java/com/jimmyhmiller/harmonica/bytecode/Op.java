@@ -300,19 +300,24 @@ public sealed interface Op {
                 // ECMA-262 § 23.1.4.1: Array's {@code length} is
                 // non-configurable, so {@code delete a.length} returns
                 // false (or throws in strict mode). Indexed slots are
-                // configurable (set to a hole, but we just remove via
-                // {@code extraProperties} since our JSArray doesn't model
-                // holes); arbitrary non-index props live in
-                // {@code extraProperties}.
+                // configurable: dense slots become holes; sparse slots get
+                // removed from {@code extraProperties}.
                 if ("length".equals(property)) {
                     result = Boolean.FALSE;
                     if (ctx.executable() != null && ctx.executable().strictMode()) {
                         throw AbruptCompletion.typeError(
                             "Cannot delete property 'length' of " + b);
                     }
-                } else if (arr.hasExtraProperty(property)) {
-                    arr.extraProperties().remove(property);
-                    result = Boolean.TRUE;
+                } else {
+                    int idx = -1;
+                    try { idx = Integer.parseInt(property); } catch (NumberFormatException ignored) {}
+                    if (idx >= 0 && idx < arr.elements().size()) {
+                        arr.elements().set(idx, Op.HOLE);
+                        result = Boolean.TRUE;
+                    } else if (arr.hasExtraProperty(property)) {
+                        arr.extraProperties().remove(property);
+                        result = Boolean.TRUE;
+                    }
                 }
             }
             dst.store(ctx, result);
@@ -392,11 +397,12 @@ public sealed interface Op {
                 } else {
                     int idx = -1;
                     try { idx = Integer.parseInt(prop); } catch (NumberFormatException ignored) {}
-                    if (idx >= 0 && idx < arr.length()) {
-                        // Spec: set the slot to a hole. Our JSArray doesn't
-                        // model holes, so substitute {@code undefined} —
-                        // observably equivalent for {@code arr[i]} reads.
-                        arr.set(idx, Undefined.VALUE);
+                    if (idx >= 0 && idx < arr.elements().size()) {
+                        // Spec: set the slot to a hole — Op.HOLE makes
+                        // arr[i] reads, hasOwnProperty, and Array.prototype
+                        // proto-chain inheritance all observe the property
+                        // as absent.
+                        arr.elements().set(idx, Op.HOLE);
                         result = Boolean.TRUE;
                     } else if (arr.hasExtraProperty(prop)) {
                         arr.extraProperties().remove(prop);

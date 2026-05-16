@@ -653,6 +653,16 @@ public final class AbstractOps {
             : key instanceof JSSymbol sym ? sym.asPropertyKey()
             : toString(key);
         if (base instanceof JSObject obj) {
+            // ECMA-262 § 10.4.3 String exotic [[GetOwnProperty]]: a wrapped
+            // String returns its underlying chars + length virtually.
+            Object stringData = obj.properties().get(Realm.SLOT_STRING_DATA);
+            if (stringData instanceof CharSequence cs) {
+                if ("length".equals(prop)) return boxDouble(cs.length());
+                int idxs = parseIndex(prop);
+                if (idxs >= 0 && idxs < cs.length()) {
+                    return String.valueOf(cs.charAt(idxs));
+                }
+            }
             // ECMA-262 § 10.1.8.1 OrdinaryGet: when the located property is
             // an accessor, invoke its [[Get]] with the receiver as `this`.
             // Callers that need the raw Accessor cell (e.g. class-member

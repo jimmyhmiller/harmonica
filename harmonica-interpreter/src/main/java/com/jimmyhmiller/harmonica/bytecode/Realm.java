@@ -174,7 +174,7 @@ public final class Realm {
      */
     static final String SLOT_BOOLEAN_DATA = "##BooleanData##";
     static final String SLOT_NUMBER_DATA  = "##NumberData##";
-    static final String SLOT_STRING_DATA  = "##StringData##";
+    public static final String SLOT_STRING_DATA  = "##StringData##";
     static final String SLOT_BIGINT_DATA  = "##BigIntData##";
 
     /** Extract the underlying JSBigInt from a BigInt value or wrapper. */
@@ -1050,9 +1050,7 @@ public final class Realm {
     }
 
     /** § 23.1.3.2.2 ArraySpeciesCreate(originalArray, length) — produces
-     *  the result array for slice/concat/filter/map/etc. When the source
-     *  isn't an Array, or its constructor doesn't override @@species, the
-     *  result is a plain {@code new Array(length)}. */
+     *  the result array for slice/concat/filter/map/etc. */
     static Object arraySpeciesCreate(Object originalArray, int length) {
         if (!(originalArray instanceof JSArray)) {
             JSArray out = new JSArray();
@@ -1060,23 +1058,25 @@ public final class Realm {
             return out;
         }
         Object C = AbstractOps.getProperty(originalArray, "constructor");
-        if (C != null && C != Undefined.VALUE
-                && (C instanceof JSObject || C instanceof JSFunction)) {
-            // § 23.1.3.2.2 step 4 — read @@species off the constructor.
+        // Step 5: if C is an Object, read @@species off it (null → undefined).
+        if (C instanceof JSObject || C instanceof JSFunction) {
             if (wellKnownSpecies != null) {
                 Object S = AbstractOps.getProperty(C, wellKnownSpecies.asPropertyKey());
-                if (S == null || S == Undefined.VALUE) S = Undefined.VALUE;
-                if (S != Undefined.VALUE) C = S;
-                else C = Undefined.VALUE;
+                if (S == null || S == Undefined.VALUE) C = Undefined.VALUE;
+                else C = S;
+            } else {
+                C = Undefined.VALUE;
             }
-        } else {
-            C = Undefined.VALUE;
         }
+        // Step 6: if C is undefined, default to %Array%.
         if (C == Undefined.VALUE) {
             JSArray out = new JSArray();
             out.setLength(length);
             return out;
         }
+        // Step 7: anything else must be a Constructor — otherwise TypeError.
+        // Catches `a.constructor = null` (C=null), `a.constructor = 1` (C=1),
+        // string/boolean constructors, etc.
         if (!(C instanceof JSFunction cf) || !cf.isConstructor()) {
             throw AbruptCompletion.typeError(
                 "ArraySpeciesCreate: species constructor is not a constructor");
@@ -1120,7 +1120,18 @@ public final class Realm {
             return false;
         }
         if (t instanceof JSObject obj) {
+            // Wrapped String / TypedArray indexed elements aren't in the
+            // shape map but exist virtually up to the wrapped value's
+            // length. § 10.4.3 [[GetOwnProperty]] for String exotic;
+            // § 10.4.5 for TypedArray.
+            Object stringData = obj.properties().get(SLOT_STRING_DATA);
+            if (stringData instanceof CharSequence cs && i >= 0 && i < cs.length()) {
+                return true;
+            }
             return obj.has(Integer.toString(i));
+        }
+        if (t instanceof CharSequence cs) {
+            return i >= 0 && i < cs.length();
         }
         return false;
     }
@@ -1521,6 +1532,13 @@ public final class Realm {
         }));
         arrayPrototype.set("sort", nativeFn("sort", 1, (t, a, c) -> {
             Object cmpArg = arg(a, 0);
+            // § 23.1.3.30 step 1: comparefn must be undefined or callable;
+            // any other value (null, primitive, non-callable object) is a
+            // TypeError observed BEFORE this.length is touched.
+            if (cmpArg != Undefined.VALUE && !(cmpArg instanceof JSFunction)) {
+                throw AbruptCompletion.typeError(
+                    "Array.prototype.sort: comparefn must be a function or undefined");
+            }
             JSFunction cmp = (cmpArg instanceof JSFunction f) ? f : null;
             // ECMA-262 § 23.1.3.30 — sort is generic on array-likes.
             // The receiver may be any object with a length + indexed
@@ -1540,15 +1558,52 @@ public final class Realm {
                 if (y == Undefined.VALUE) return -1;
                 return AbstractOps.toString(x).compareTo(AbstractOps.toString(y));
             };
+            // § 23.1.3.30 / 23.1.3.30.1 SortIndexedProperties:
+            //   1. Collect items = own indexed properties that are NOT holes
+            //      AND NOT undefined.
+            //   2. Count undefined values separately.
+            //   3. Sort items with comparefn (undefined-aware fallback).
+            //   4. Write back: indices [0, items.length) = sorted items;
+            //      [items.length, items.length + undefinedCount) = undefined;
+            //      [items.length + undefinedCount, len) = hole (delete).
             if (t instanceof JSArray arr) {
-                arr.elements().sort(comparator);
+                int len = arr.length();
+                java.util.List<Object> items = new java.util.ArrayList<>(len);
+                int undefinedCount = 0;
+                for (int i = 0; i < len; i++) {
+                    if (arr.isHole(i)) continue;
+                    Object v = arr.get(i);
+                    if (v == Undefined.VALUE) undefinedCount++;
+                    else items.add(v);
+                }
+                items.sort(comparator);
+                int k = 0;
+                for (; k < items.size(); k++) arr.set(k, items.get(k));
+                for (int u = 0; u < undefinedCount; u++) arr.set(k++, Undefined.VALUE);
+                // Mark remaining trailing slots as holes (spec deletes them).
+                // .length stays the same; observing arr[i] for i >= k returns
+                // undefined via the hole sentinel.
+                for (int i = k; i < arr.elements().size(); i++) {
+                    arr.elements().set(i, Op.HOLE);
+                }
                 return arr;
             }
             int len = lengthOfArrayLike(t);
-            java.util.List<Object> bucket = new java.util.ArrayList<>(len);
-            for (int i = 0; i < len; i++) bucket.add(hasIndexed(t, i) ? getIndexed(t, i) : Undefined.VALUE);
-            bucket.sort(comparator);
-            for (int i = 0; i < len; i++) setIndexed(t, i, bucket.get(i));
+            java.util.List<Object> items = new java.util.ArrayList<>(len);
+            int undefinedCount = 0;
+            for (int i = 0; i < len; i++) {
+                if (!hasIndexed(t, i)) continue;
+                Object v = getIndexed(t, i);
+                if (v == Undefined.VALUE) undefinedCount++;
+                else items.add(v);
+            }
+            items.sort(comparator);
+            int k = 0;
+            for (; k < items.size(); k++) setIndexed(t, k, items.get(k));
+            for (int u = 0; u < undefinedCount; u++) setIndexed(t, k++, Undefined.VALUE);
+            for (int i = k; i < len; i++) {
+                if (t instanceof JSObject jo) jo.delete(Integer.toString(i));
+            }
             return t;
         }));
         arrayPrototype.set("flat", nativeFn("flat", 0, (t, a, c) -> {
@@ -1664,6 +1719,16 @@ public final class Realm {
             // Insert new elements.
             for (int i = 0; i < insertCount; i++) {
                 setIndexed(t, start + i, a[i + 2]);
+            }
+            // § 23.1.3.29 final Set(O, "length", finalLength, true) — when
+            // length is non-writable, surface as TypeError instead of
+            // silent fail.
+            if (t instanceof JSArray targetArr) {
+                byte la = targetArr.getIndexAttributes("length");
+                if ((la & JSObject.ATTR_WRITABLE) == 0 && newLen != targetArr.length()) {
+                    throw AbruptCompletion.typeError(
+                        "Array.prototype.splice: array length is not writable");
+                }
             }
             AbstractOps.setProperty(t, "length", (double) newLen);
             return removed;
@@ -7260,80 +7325,126 @@ public final class Realm {
         arrayCtor.properties().put("isArray", nativeFn("isArray", 1,
             (t, a, c) -> arg(a, 0) instanceof JSArray));
         arrayCtor.properties().put("of", nativeFn("of", 0, (t, a, c) -> {
-            JSArray arr = new JSArray();
-            for (Object e : a) arr.push(e);
-            return arr;
+            // § 23.1.2.2 Array.of — uses the called constructor C if it's
+            // a Constructor; else %Array%. Each item is set via
+            // CreateDataPropertyOrThrow, then length is set.
+            int len = a.length;
+            Object A;
+            if (t instanceof JSFunction tf && tf.isConstructor() && t != arrayCtor) {
+                JSObject receiver = new JSObject(tf.prototypeObject() != null
+                    ? tf.prototypeObject() : arrayPrototype);
+                Object built = Interpreter.invokeFunctionAsConstructor(tf, receiver,
+                    new Object[]{(double) len}, c);
+                A = (built instanceof JSArray || built instanceof JSObject) ? built : receiver;
+            } else {
+                JSArray arr = new JSArray();
+                arr.setLength(len);
+                A = arr;
+            }
+            for (int i = 0; i < len; i++) setIndexed(A, i, a[i]);
+            if (!(A instanceof JSArray)) {
+                AbstractOps.setProperty(A, "length", (double) len);
+            }
+            return A;
         }));
         arrayCtor.properties().put("from", nativeFn("from", 1, (t, a, c) -> {
+            // § 23.1.2.1 Array.from(items [, mapfn [, thisArg]]).
+            // 1. C = this value.
+            // 2. mapping: if mapfn undefined, no mapping; else mapfn must be
+            //    callable (TypeError otherwise — including Symbol per spec).
             Object src = arg(a, 0);
-            JSArray out = new JSArray();
-            JSFunction mapper = arg(a, 1) instanceof JSFunction f ? f : null;
+            Object mapfnArg = arg(a, 1);
+            if (mapfnArg != Undefined.VALUE && !(mapfnArg instanceof JSFunction)) {
+                throw AbruptCompletion.typeError("Array.from: mapfn must be callable");
+            }
+            JSFunction mapper = mapfnArg instanceof JSFunction f ? f : null;
             Object thisArg = arg(a, 2);
             if (src == null || src == Undefined.VALUE) {
                 throw AbruptCompletion.typeError("Array.from called on null/undefined");
             }
-            if (src instanceof JSArray arr) {
-                for (int i = 0; i < arr.length(); i++) {
-                    Object v = arr.get(i);
-                    if (mapper != null) {
-                        v = Interpreter.invokeFunction(mapper, thisArg,
-                            new Object[]{v, (double) i}, c);
-                    }
-                    out.push(v);
-                }
-                return out;
-            }
-            if (src instanceof String s) {
-                int i = 0;
-                int cp = 0;
-                for (int idx = 0; idx < s.length(); idx += Character.charCount(cp), i++) {
-                    cp = s.codePointAt(idx);
-                    Object v = new StringBuilder().appendCodePoint(cp).toString();
-                    if (mapper != null) {
-                        v = Interpreter.invokeFunction(mapper, thisArg,
-                            new Object[]{v, (double) i}, c);
-                    }
-                    out.push(v);
-                }
-                return out;
-            }
-            // Try @@iterator protocol.
+            // Allocator: when called as Constructor.from, use Constructor;
+            // else default to %Array%.
+            final boolean usingCustomCtor = t instanceof JSFunction tf
+                && tf.isConstructor() && t != arrayCtor;
+            final JSFunction tfFinal = usingCustomCtor ? (JSFunction) t : null;
+            // 5. Read @@iterator on the source. If callable, treat as iterable.
             Object iterFn = AbstractOps.getProperty(src, wellKnownIterator.asPropertyKey());
             if (iterFn instanceof JSFunction iter) {
                 Object iterator = Interpreter.invokeFunction(iter, src, new Object[0], c);
                 if (iterator instanceof JSObject itObj) {
                     Object nextFn = AbstractOps.getProperty(itObj, "next");
                     if (nextFn instanceof JSFunction nf) {
-                        int i = 0;
-                        while (true) {
-                            if ((i & 0x3FF) == 0 && Thread.interrupted()) {
-                                throw new Interpreter.InterpInterruptedError();
-                            }
-                            Object step = Interpreter.invokeFunction(nf, itObj, new Object[0], c);
-                            if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) break;
-                            Object v = AbstractOps.getProperty(step, "value");
-                            if (mapper != null) {
-                                v = Interpreter.invokeFunction(mapper, thisArg,
-                                    new Object[]{v, (double) i}, c);
-                            }
-                            out.push(v);
-                            i++;
+                        // Allocate the destination — for custom ctor, call
+                        // with no args (length unknown); for Array, fresh.
+                        Object A;
+                        if (usingCustomCtor) {
+                            JSObject receiver = new JSObject(tfFinal.prototypeObject() != null
+                                ? tfFinal.prototypeObject() : arrayPrototype);
+                            Object built = Interpreter.invokeFunctionAsConstructor(tfFinal, receiver,
+                                new Object[0], c);
+                            A = (built instanceof JSArray || built instanceof JSObject) ? built : receiver;
+                        } else {
+                            A = new JSArray();
                         }
-                        return out;
+                        int i = 0;
+                        try {
+                            while (true) {
+                                if ((i & 0x3FF) == 0 && Thread.interrupted()) {
+                                    throw new Interpreter.InterpInterruptedError();
+                                }
+                                Object step = Interpreter.invokeFunction(nf, itObj, new Object[0], c);
+                                if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) break;
+                                Object v = AbstractOps.getProperty(step, "value");
+                                if (mapper != null) {
+                                    v = Interpreter.invokeFunction(mapper, thisArg,
+                                        new Object[]{v, (double) i}, c);
+                                }
+                                setIndexed(A, i, v);
+                                i++;
+                            }
+                        } catch (AbruptCompletion ac) {
+                            // § 7.4.10 IteratorClose on abrupt completion.
+                            try {
+                                Object retFn = AbstractOps.getProperty(itObj, "return");
+                                if (retFn instanceof JSFunction rf) {
+                                    Interpreter.invokeFunction(rf, itObj, new Object[0], c);
+                                }
+                            } catch (AbruptCompletion ignored) {}
+                            throw ac;
+                        }
+                        if (!(A instanceof JSArray)) {
+                            AbstractOps.setProperty(A, "length", (double) i);
+                        }
+                        return A;
                     }
                 }
             }
             // Array-like fallback: length + indexed reads.
             int len = lengthOfArrayLike(src);
+            Object A;
+            if (usingCustomCtor) {
+                JSObject receiver = new JSObject(tfFinal.prototypeObject() != null
+                    ? tfFinal.prototypeObject() : arrayPrototype);
+                Object built = Interpreter.invokeFunctionAsConstructor(tfFinal, receiver,
+                    new Object[]{(double) len}, c);
+                A = (built instanceof JSArray || built instanceof JSObject) ? built : receiver;
+            } else {
+                JSArray arr = new JSArray();
+                arr.setLength(len);
+                A = arr;
+            }
             for (int i = 0; i < len; i++) {
                 Object v = getIndexed(src, i);
                 if (mapper != null) {
                     v = Interpreter.invokeFunction(mapper, thisArg,
                         new Object[]{v, (double) i}, c);
                 }
-                out.push(v);
+                setIndexed(A, i, v);
             }
-            return out;
+            if (!(A instanceof JSArray)) {
+                AbstractOps.setProperty(A, "length", (double) len);
+            }
+            return A;
         }));
         // Array.fromAsync — stub that returns a settled Promise of Array.from(...)
         arrayCtor.properties().put("fromAsync", nativeFn("fromAsync", 1, (t, a, c) -> {
