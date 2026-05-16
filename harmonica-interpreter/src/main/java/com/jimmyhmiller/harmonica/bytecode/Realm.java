@@ -1049,6 +1049,47 @@ public final class Realm {
         return out.toString();
     }
 
+    /** § 23.1.3.2.2 ArraySpeciesCreate(originalArray, length) — produces
+     *  the result array for slice/concat/filter/map/etc. When the source
+     *  isn't an Array, or its constructor doesn't override @@species, the
+     *  result is a plain {@code new Array(length)}. */
+    static Object arraySpeciesCreate(Object originalArray, int length) {
+        if (!(originalArray instanceof JSArray)) {
+            JSArray out = new JSArray();
+            out.setLength(length);
+            return out;
+        }
+        Object C = AbstractOps.getProperty(originalArray, "constructor");
+        if (C != null && C != Undefined.VALUE
+                && (C instanceof JSObject || C instanceof JSFunction)) {
+            // § 23.1.3.2.2 step 4 — read @@species off the constructor.
+            if (wellKnownSpecies != null) {
+                Object S = AbstractOps.getProperty(C, wellKnownSpecies.asPropertyKey());
+                if (S == null || S == Undefined.VALUE) S = Undefined.VALUE;
+                if (S != Undefined.VALUE) C = S;
+                else C = Undefined.VALUE;
+            }
+        } else {
+            C = Undefined.VALUE;
+        }
+        if (C == Undefined.VALUE) {
+            JSArray out = new JSArray();
+            out.setLength(length);
+            return out;
+        }
+        if (!(C instanceof JSFunction cf) || !cf.isConstructor()) {
+            throw AbruptCompletion.typeError(
+                "ArraySpeciesCreate: species constructor is not a constructor");
+        }
+        InterpContext ctx = InterpContext.current();
+        JSObject receiver = new JSObject(cf.prototypeObject() != null
+            ? cf.prototypeObject() : arrayPrototype);
+        Object built = Interpreter.invokeFunctionAsConstructor(cf, receiver,
+            new Object[]{(double) length}, ctx);
+        if (built instanceof JSArray || built instanceof JSObject) return built;
+        return receiver;
+    }
+
     /** § 23.1.3.2.1 IsConcatSpreadable — defer to @@isConcatSpreadable when
      *  set, otherwise IsArray. */
     static boolean isConcatSpreadable(Object v) {
@@ -1176,32 +1217,50 @@ public final class Realm {
             int start = sliceIndex(arg(a, 0), len, 0);
             int end = arg(a, 1) == Undefined.VALUE ? len : sliceIndex(a[1], len, len);
             if (end < start) end = start;
-            JSArray out = new JSArray();
+            int count = end - start;
+            Object out = arraySpeciesCreate(t, count);
+            int k = 0;
             for (int i = start; i < end; i++) {
-                if (hasIndexed(t, i)) out.push(getIndexed(t, i));
-                else out.push(Undefined.VALUE);
+                if (hasIndexed(t, i)) {
+                    setIndexed(out, k, getIndexed(t, i));
+                }
+                k++;
+            }
+            // For non-Array species result, ensure length is set.
+            if (!(out instanceof JSArray)) {
+                AbstractOps.setProperty(out, "length", (double) count);
             }
             return out;
         }));
         arrayPrototype.set("concat", nativeFn("concat", 1, (t, a, c) -> {
             // § 23.1.3.2: prepend `this` to the item list and walk each item
-            // through IsConcatSpreadable.
+            // through IsConcatSpreadable. Result is allocated via
+            // ArraySpeciesCreate(this, 0); items are appended as we go.
             Object self = toObject(t);
-            JSArray out = new JSArray();
+            Object out = arraySpeciesCreate(self, 0);
             Object[] items = new Object[a.length + 1];
             items[0] = self;
             System.arraycopy(a, 0, items, 1, a.length);
+            int outIdx = 0;
             for (Object e : items) {
                 boolean spread = isConcatSpreadable(e);
                 if (spread) {
                     int xl = lengthOfArrayLike(e);
                     for (int i = 0; i < xl; i++) {
-                        if (hasIndexed(e, i)) out.push(getIndexed(e, i));
-                        else out.push(Op.HOLE);
+                        if (hasIndexed(e, i)) {
+                            setIndexed(out, outIdx, getIndexed(e, i));
+                        } else if (out instanceof JSArray oa) {
+                            oa.push(Op.HOLE);
+                        }
+                        outIdx++;
                     }
                 } else {
-                    out.push(e);
+                    setIndexed(out, outIdx, e);
+                    outIdx++;
                 }
+            }
+            if (!(out instanceof JSArray)) {
+                AbstractOps.setProperty(out, "length", (double) outIdx);
             }
             return out;
         }));
@@ -1218,6 +1277,10 @@ public final class Realm {
         }));
         arrayPrototype.set("indexOf", nativeFn("indexOf", 1, (t, a, c) -> {
             int len = lengthOfArrayLike(t);
+            // § 23.1.3.13 step 3: short-circuit len==0 before coercing
+            // fromIndex (the spec is explicit about this ordering so a
+            // throwing valueOf on fromIndex isn't invoked on an empty array).
+            if (len == 0) return -1.0;
             Object target = arg(a, 0);
             int from = arg(a, 1) == Undefined.VALUE ? 0 : AbstractOps.toInt32(a[1]);
             if (from < 0) from = Math.max(0, len + from);
@@ -1228,6 +1291,7 @@ public final class Realm {
         }));
         arrayPrototype.set("lastIndexOf", nativeFn("lastIndexOf", 1, (t, a, c) -> {
             int len = lengthOfArrayLike(t);
+            if (len == 0) return -1.0;
             Object target = arg(a, 0);
             int from = arg(a, 1) == Undefined.VALUE ? len - 1 : AbstractOps.toInt32(a[1]);
             if (from < 0) from = len + from;
@@ -1239,6 +1303,7 @@ public final class Realm {
         }));
         arrayPrototype.set("includes", nativeFn("includes", 1, (t, a, c) -> {
             int len = lengthOfArrayLike(t);
+            if (len == 0) return false;
             Object target = arg(a, 0);
             int from = arg(a, 1) == Undefined.VALUE ? 0 : AbstractOps.toInt32(a[1]);
             if (from < 0) from = Math.max(0, len + from);
@@ -1285,14 +1350,15 @@ public final class Realm {
             int len = lengthOfArrayLike(O);
             JSFunction fn = asCallback(arg(a, 0), "map");
             Object thisArg = arg(a, 1);
-            JSArray out = new JSArray();
+            Object out = arraySpeciesCreate(O, len);
             for (int i = 0; i < len; i++) {
                 if (hasIndexed(O, i)) {
-                    out.set(i, Interpreter.invokeFunction(fn, thisArg,
+                    setIndexed(out, i, Interpreter.invokeFunction(fn, thisArg,
                         new Object[]{getIndexed(O, i), (double) i, O}, c));
-                } else {
-                    out.set(i, Undefined.VALUE);
                 }
+            }
+            if (!(out instanceof JSArray)) {
+                AbstractOps.setProperty(out, "length", (double) len);
             }
             return out;
         }));
@@ -1305,14 +1371,21 @@ public final class Realm {
             int len = lengthOfArrayLike(O);
             JSFunction fn = asCallback(arg(a, 0), "filter");
             Object thisArg = arg(a, 1);
-            JSArray out = new JSArray();
+            // § 23.1.3.6 step 4: A = ArraySpeciesCreate(O, 0); items are
+            // appended via CreateDataPropertyOrThrow so the result type
+            // honors the source's @@species.
+            Object out = arraySpeciesCreate(O, 0);
+            int k = 0;
             for (int i = 0; i < len; i++) {
                 if (!hasIndexed(O, i)) continue;
                 Object v = getIndexed(O, i);
                 if (AbstractOps.toBoolean(Interpreter.invokeFunction(fn, thisArg,
                         new Object[]{v, (double) i, O}, c))) {
-                    out.push(v);
+                    setIndexed(out, k++, v);
                 }
+            }
+            if (!(out instanceof JSArray)) {
+                AbstractOps.setProperty(out, "length", (double) k);
             }
             return out;
         }));
@@ -1556,10 +1629,15 @@ public final class Realm {
                 if (Double.isNaN(d) || d <= 0) actualDelete = 0;
                 else actualDelete = (int) Math.min(d, len - start);
             }
-            JSArray removed = new JSArray();
+            // § 23.1.3.29 step 9: removed = ArraySpeciesCreate(O, actualDelete).
+            Object removed = arraySpeciesCreate(t, actualDelete);
             for (int i = 0; i < actualDelete; i++) {
-                if (hasIndexed(t, start + i)) removed.push(getIndexed(t, start + i));
-                else removed.push(Undefined.VALUE);
+                if (hasIndexed(t, start + i)) {
+                    setIndexed(removed, i, getIndexed(t, start + i));
+                }
+            }
+            if (!(removed instanceof JSArray)) {
+                AbstractOps.setProperty(removed, "length", (double) actualDelete);
             }
             int newLen = len - actualDelete + insertCount;
             if (insertCount < actualDelete) {
@@ -3421,14 +3499,26 @@ public final class Realm {
             throw AbruptCompletion.typeError("Promise." + kind.name().toLowerCase()
                 + " called on non-constructor");
         }
-        PromiseCapability cap;
+        PromiseCapability cap = newPromiseCapability(tf, ctx);
         try {
-            cap = newPromiseCapability(tf, ctx);
+            return promiseCombinatorImpl(tf, iterable, ctx, kind, cap);
         } catch (AbruptCompletion ac) {
-            // NewPromiseCapability failures (constructor throws or executor
-            // mishandled) propagate.
-            throw ac;
+            // § 27.2.4.X step 6: IfAbruptRejectPromise — route any
+            // synchronous error during the algorithm body to the
+            // capability's reject. The result is still cap.promise.
+            try {
+                Interpreter.invokeFunction(cap.reject, Undefined.VALUE,
+                    new Object[]{ac.value()}, ctx);
+            } catch (AbruptCompletion ignored) { /* secondary reject errors swallow */ }
+            return cap.promise;
         }
+    }
+
+    /** Inner combinator body — split out so the wrapper above can catch any
+     *  abrupt completion and route to cap.reject (IfAbruptRejectPromise). */
+    private static Object promiseCombinatorImpl(JSFunction tf, Object iterable,
+                                                InterpContext ctx, CombinatorKind kind,
+                                                PromiseCapability cap) {
         // Promise.resolve from the ctor (inherited for subclasses).
         Object resolveFn = AbstractOps.getProperty(tf, "resolve");
         if (!(resolveFn instanceof JSFunction promiseResolve)) {
@@ -3624,21 +3714,50 @@ public final class Realm {
                 throw AbruptCompletion.typeError("Promise.prototype.then called on non-Promise");
             }
             JSObject p = (JSObject) thisVal;
-            JSObject result = createPromise();
+            // § 27.2.5.4 step 4: SpeciesConstructor(this, %Promise%), then
+            // NewPromiseCapability(C). Lets `class SubPromise extends
+            // Promise {}` chain correctly through .then().
+            Object C = AbstractOps.getProperty(p, "constructor");
+            JSFunction speciesCtor;
+            Object globalPromise = ctx == null ? null : ctx.globals().get("Promise");
+            if (C == null || C == Undefined.VALUE) {
+                speciesCtor = (JSFunction) globalPromise;
+            } else if (!(C instanceof JSObject || C instanceof JSFunction)) {
+                throw AbruptCompletion.typeError(
+                    "Promise.prototype.then: constructor is not an object");
+            } else {
+                Object S = wellKnownSpecies != null
+                    ? AbstractOps.getProperty(C, wellKnownSpecies.asPropertyKey())
+                    : Undefined.VALUE;
+                if (S == null || S == Undefined.VALUE) {
+                    speciesCtor = C instanceof JSFunction cf ? cf : (JSFunction) globalPromise;
+                } else if (S instanceof JSFunction sf && sf.isConstructor()) {
+                    speciesCtor = sf;
+                } else {
+                    throw AbruptCompletion.typeError(
+                        "Promise.prototype.then: species is not a constructor");
+                }
+            }
+            PromiseCapability cap = newPromiseCapability(speciesCtor, ctx);
             Object onFulfilled = arg(args, 0);
             Object onRejected = arg(args, 1);
+            JSFunction capResolve = cap.resolve;
+            JSFunction capReject = cap.reject;
             // § 27.2.5.4.1 PerformPromiseThen — build reactions.
             Runnable fulfillReaction = () -> {
                 Object res = p.properties().get(PROM_RESULT);
                 if (onFulfilled instanceof JSFunction f) {
                     try {
                         Object v = Interpreter.invokeFunction(f, Undefined.VALUE, new Object[]{res}, ctx);
-                        resolvePromise(result, v, ctx);
+                        Interpreter.invokeFunction(capResolve, Undefined.VALUE,
+                            new Object[]{v}, ctx);
                     } catch (AbruptCompletion ac) {
-                        rejectPromise(result, ac.value());
+                        Interpreter.invokeFunction(capReject, Undefined.VALUE,
+                            new Object[]{ac.value()}, ctx);
                     }
                 } else {
-                    fulfillPromise(result, res);
+                    Interpreter.invokeFunction(capResolve, Undefined.VALUE,
+                        new Object[]{res}, ctx);
                 }
             };
             Runnable rejectReaction = () -> {
@@ -3646,12 +3765,15 @@ public final class Realm {
                 if (onRejected instanceof JSFunction f) {
                     try {
                         Object v = Interpreter.invokeFunction(f, Undefined.VALUE, new Object[]{res}, ctx);
-                        resolvePromise(result, v, ctx);
+                        Interpreter.invokeFunction(capResolve, Undefined.VALUE,
+                            new Object[]{v}, ctx);
                     } catch (AbruptCompletion ac) {
-                        rejectPromise(result, ac.value());
+                        Interpreter.invokeFunction(capReject, Undefined.VALUE,
+                            new Object[]{ac.value()}, ctx);
                     }
                 } else {
-                    rejectPromise(result, res);
+                    Interpreter.invokeFunction(capReject, Undefined.VALUE,
+                        new Object[]{res}, ctx);
                 }
             };
             String state = (String) p.properties().get(PROM_STATE);
@@ -3667,7 +3789,7 @@ public final class Realm {
             } else {
                 enqueueMicrotask(rejectReaction);
             }
-            return result;
+            return cap.promise;
         }));
         // § 27.2.5.1 Promise.prototype.catch ( onRejected ) → this.then(undefined, onRejected).
         promisePrototype.set("catch", nativeFn("catch", 1, (thisVal, args, ctx) -> {
@@ -4324,6 +4446,14 @@ public final class Realm {
         });
         promiseCtor.setPrototypeObject(promisePrototype);
         promisePrototype.set("constructor", promiseCtor);
+        promisePrototype.setAttributes("constructor",
+            (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+        // § 27.2.5.5 Promise.prototype [ @@toStringTag ] = "Promise", configurable only.
+        if (wellKnownToStringTag != null) {
+            String key = wellKnownToStringTag.asPropertyKey();
+            promisePrototype.set(key, "Promise");
+            promisePrototype.setAttributes(key, JSObject.ATTR_CONFIGURABLE);
+        }
 
         // § 27.2.4.7 Promise.resolve.
         promiseCtor.properties().put("resolve", nativeFn("resolve", 1, (t, a, c) -> {
@@ -6828,8 +6958,8 @@ public final class Realm {
                     desc.set("configurable", true);
                     return desc;
                 }
-                if ("prototype".equals(key) && fn.prototypeObject() != null) {
-                    desc.set("value", fn.prototypeObject());
+                if ("prototype".equals(key) && fn.prototypeUser() != null) {
+                    desc.set("value", fn.prototypeUser());
                     // Built-in constructors have non-writable .prototype
                     // (§ 21.1.2.4, § 22.1.2.4, etc.); user-defined
                     // functions have writable .prototype.

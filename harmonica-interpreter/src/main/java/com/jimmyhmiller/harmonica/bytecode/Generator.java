@@ -8472,7 +8472,7 @@ public final class Generator {
                     argOperands[k] = lowerExpression(call.arguments().get(k));
                 }
                 emit(new Op.Call(dst, superFn, thisVal0, argOperands, null,
-                    new com.jimmyhmiller.harmonica.bytecode.cache.CallSite()));
+                    new com.jimmyhmiller.harmonica.bytecode.cache.CallSite(), /* isSuperCall */ true));
                 for (Operand a : argOperands) release(a);
             } else {
                 Variable.Register argsArr = allocRegister();

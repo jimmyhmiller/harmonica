@@ -748,6 +748,11 @@ public final class AbstractOps {
             // functions don't auto-create one; user functions do (so
             // `Foo.prototype.method = ...` just works without `class`).
             if ("prototype".equals(prop)) {
+                // If the user explicitly assigned a non-JSObject (JSArray /
+                // primitive / etc.), return that raw value — don't replace
+                // it with the construct-time wrapper.
+                Object user = fn.prototypeUser();
+                if (user != null) return user;
                 if (fn.prototypeObject() == null && !fn.isNative()) {
                     // § 27.6.1: an async generator function's .prototype
                     // chains through %AsyncGeneratorPrototype%.
@@ -1049,8 +1054,13 @@ public final class AbstractOps {
             // `Foo.prototype = obj` is special — it routes to the function's
             // own [[Construct]] prototype slot, not to the static-properties map.
             if ("prototype".equals(prop)) {
-                if (value instanceof JSObject p) fn.setPrototypeObject(p);
-                else if (value == null || value == Undefined.VALUE) fn.setPrototypeObject(null);
+                // Per § 10.2.4.3 [[Set]] on a function — any value is
+                // accepted as fn.prototype (the user can store an Array,
+                // primitive, etc.). Non-objects don't participate in
+                // `new fn()` proto chains (spec falls back to
+                // Object.prototype), but they're still readable via
+                // fn.prototype.
+                fn.setPrototypeUser(value);
                 return;
             }
             // ECMA-262 § 10.2.10: the virtual {@code name} and {@code length}

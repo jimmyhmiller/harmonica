@@ -3565,8 +3565,13 @@ public sealed interface Op {
         Operand thisValue,
         Operand[] args,
         String expressionString,
-        CallSite cache
+        CallSite cache,
+        boolean isSuperCall   // emitted true by super(...) lowering — § 13.3.7.1.1
     ) implements Op {
+        public Call(Variable dst, Operand callee, Operand thisValue, Operand[] args,
+                    String expressionString, CallSite cache) {
+            this(dst, callee, thisValue, args, expressionString, cache, false);
+        }
         @Override public Operation operation() { return Operation.CALL; }
 
         // Records auto-generate equals/hashCode that include arrays; we don't
@@ -3584,7 +3589,18 @@ public sealed interface Op {
             Object[] argValues = Interpreter.acquireArgs(args.length);
             for (int k = 0; k < args.length; k++) argValues[k] = args[k].retrieve(ctx);
             try {
-                dst.store(ctx, Interpreter.invokeFunction(fn, thisVal, argValues, ctx));
+                Object result;
+                if (isSuperCall) {
+                    // § 13.3.7.1.1 SuperCall step 5: Construct(func, argList,
+                    // newTarget) where newTarget is the *outer* new.target,
+                    // not the parent class. Reuses the existing receiver so
+                    // SuperBindThis sees the same JSObject the derived
+                    // constructor's prologue already initialized.
+                    result = Interpreter.invokeFunctionAsConstructor(fn, thisVal, argValues, ctx);
+                } else {
+                    result = Interpreter.invokeFunction(fn, thisVal, argValues, ctx);
+                }
+                dst.store(ctx, result);
             } finally {
                 Interpreter.releaseArgs(argValues);
             }

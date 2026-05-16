@@ -105,8 +105,54 @@ public final class JSFunction {
      * generator sets it after the function value is materialized.
      */
     private JSObject prototypeObject;
+    /**
+     * User-facing {@code fn.prototype} value. Tracks what the user
+     * <em>wrote</em>, even when that's not a JSObject (e.g. a JSArray or a
+     * primitive — both legal in JS). When non-null and not a JSObject,
+     * {@link #prototypeObject} holds a mirror-wrapper used for the
+     * {@code new fn()} proto-chain.
+     */
+    private Object prototypeUser;
     public JSObject prototypeObject() { return prototypeObject; }
-    public void setPrototypeObject(JSObject p) { this.prototypeObject = p; }
+    public void setPrototypeObject(JSObject p) {
+        this.prototypeObject = p;
+        this.prototypeUser = p;
+    }
+    /** Returns whatever {@code fn.prototype} would yield to user code —
+     *  the raw user value if set, otherwise the constructor's prototype
+     *  object. Used by {@code AbstractOps.getProperty(fn, "prototype")}. */
+    public Object prototypeUser() {
+        return prototypeUser != null ? prototypeUser : prototypeObject;
+    }
+    /** Assign the user-visible {@code fn.prototype}. When {@code v} isn't a
+     *  JSObject we still need <em>some</em> JSObject as the construct-time
+     *  proto so {@code new fn()} works; mirror common cases (JSArray,
+     *  JSFunction) into a fresh wrapper JSObject whose proto is the
+     *  matching built-in prototype. Primitives blank out
+     *  {@link #prototypeObject} so {@code new fn()} falls back to
+     *  {@code Object.prototype}. */
+    public void setPrototypeUser(Object v) {
+        this.prototypeUser = v;
+        if (v instanceof JSObject jo) {
+            this.prototypeObject = jo;
+        } else if (v instanceof JSArray ja) {
+            JSObject wrapper = new JSObject(Realm.arrayPrototype);
+            int len = ja.length();
+            for (int i = 0; i < len; i++) {
+                if (!ja.isHole(i)) wrapper.set(Integer.toString(i), ja.get(i));
+            }
+            wrapper.set("length", (double) len);
+            this.prototypeObject = wrapper;
+        } else if (v instanceof JSFunction jf) {
+            JSObject wrapper = new JSObject(Realm.functionPrototype);
+            this.prototypeObject = wrapper;
+        } else {
+            // Primitive (number / string / boolean / symbol / undefined /
+            // null) — `new fn()` defaults to %Object.prototype% per spec
+            // (GetPrototypeFromConstructor falls back).
+            this.prototypeObject = null;
+        }
+    }
 
     /**
      * Super-constructor — set by {@link Op.NewClass#interpret} on a derived
