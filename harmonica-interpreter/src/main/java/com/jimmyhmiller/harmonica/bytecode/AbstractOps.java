@@ -628,16 +628,20 @@ public final class AbstractOps {
         if (base instanceof JSObject jsoEarly) {
             TypedArrayState taState = TypedArrays.stateOf(jsoEarly);
             if (taState != null) {
+                // § 10.4.5.4 [[Get]]: any canonical numeric index string —
+                // valid, invalid, or out of bounds — short-circuits the
+                // proto-chain walk. Only non-canonical keys reach OrdinaryGet.
                 if (key instanceof Number nn) {
                     long idx = TypedArrays.integerIndexFromNumber(nn.doubleValue(), taState.length());
-                    if (idx == TypedArrays.IDX_OUT_OF_RANGE) return Undefined.VALUE;
                     if (idx >= 0) return TypedArrays.loadElement(taState, idx);
-                    // fall through to normal property access (named props,
-                    // prototype methods like fill/slice/etc.)
+                    return Undefined.VALUE;
                 } else if (key instanceof String sk) {
-                    long idx = TypedArrays.integerIndexFromString(sk, taState.length());
-                    if (idx == TypedArrays.IDX_OUT_OF_RANGE) return Undefined.VALUE;
-                    if (idx >= 0) return TypedArrays.loadElement(taState, idx);
+                    double canonical = TypedArrays.canonicalNumericIndexString(sk);
+                    if (!Double.isNaN(canonical)) {
+                        long idx = TypedArrays.integerIndexFromNumber(canonical, taState.length());
+                        if (idx >= 0) return TypedArrays.loadElement(taState, idx);
+                        return Undefined.VALUE;
+                    }
                 }
             }
         }
@@ -855,15 +859,24 @@ public final class AbstractOps {
         if (base instanceof JSObject jsoEarly) {
             TypedArrayState taState = TypedArrays.stateOf(jsoEarly);
             if (taState != null) {
+                // § 10.4.5.5 IntegerIndexedExoticObject [[Set]]: canonical
+                // numeric index strings — even invalid ones (NaN, -0, 1.1,
+                // out-of-bounds) — never reach the underlying property map.
+                // They silent-fail.
                 if (key instanceof Number nn) {
                     long idx = TypedArrays.integerIndexFromNumber(nn.doubleValue(), taState.length());
-                    if (idx == TypedArrays.IDX_OUT_OF_RANGE) return;   // silent
-                    if (idx >= 0) { TypedArrays.storeElement(taState, idx, value); return; }
-                    // not integer-indexed → fall through to normal set
-                } else if (key instanceof String sk) {
-                    long idx = TypedArrays.integerIndexFromString(sk, taState.length());
-                    if (idx == TypedArrays.IDX_OUT_OF_RANGE) return;
-                    if (idx >= 0) { TypedArrays.storeElement(taState, idx, value); return; }
+                    if (idx >= 0) TypedArrays.storeElement(taState, idx, value);
+                    return;   // canonical numeric: always handled or silent
+                }
+                if (key instanceof String sk) {
+                    double canonical = TypedArrays.canonicalNumericIndexString(sk);
+                    if (!Double.isNaN(canonical)) {
+                        long idx = TypedArrays.integerIndexFromNumber(canonical, taState.length());
+                        if (idx >= 0) TypedArrays.storeElement(taState, idx, value);
+                        return;
+                    }
+                    // Non-canonical key (e.g. "foo") → ordinary set on the
+                    // underlying property map.
                 }
             }
         }

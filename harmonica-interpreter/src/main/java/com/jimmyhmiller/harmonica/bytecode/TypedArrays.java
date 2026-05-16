@@ -967,24 +967,49 @@ public final class TypedArrays {
             int start = sliceIdx(arg(a, 0), len, 0);
             int end   = arg(a, 1) == Undefined.VALUE ? len : sliceIdx(arg(a, 1), len, len);
             int count = Math.max(0, end - start);
-            JSObject out = createTypedArrayFromKind(s.kind, count);
-            TypedArrayState os = stateOf(out);
-            for (int i = 0; i < count; i++) {
-                storeElement(os, i, loadElement(s, start + i));
+            // § 23.2.3.24 step 9: TypedArraySpeciesCreate(O, « count »).
+            JSObject out = typedArraySpeciesCreate((JSObject) t,
+                new Object[]{(double) count}, c);
+            // Step 10-11: if count > 0, re-check the source buffer for
+            // detach (the species ctor may have detached it).
+            if (count > 0) {
+                if (s.outOfBounds()) {
+                    throw AbruptCompletion.typeError(
+                        "TypedArray.prototype.slice: source buffer was detached by species constructor");
+                }
+                TypedArrayState os = stateOf(out);
+                if (os.kind == s.kind) {
+                    // Same kind: byte-level copy is fine.
+                    for (int i = 0; i < count; i++) {
+                        storeElement(os, i, loadElement(s, start + i));
+                    }
+                } else {
+                    // Different kind: element-by-element via JS values
+                    // (handles Number ↔ BigInt coercion implicitly — but
+                    // mismatch throws via storeElement).
+                    for (int i = 0; i < count; i++) {
+                        storeElement(os, i, loadElement(s, start + i));
+                    }
+                }
             }
             return out;
         }));
 
         p.set("subarray", nativeFn("subarray", 2, (t, a, c) -> {
-            TypedArrayState s = requireTypedArray(t, "subarray");
-            int len = s.length();
+            // § 23.2.3.30 subarray — explicitly does NOT call
+            // ValidateTypedArray, so a detached source is fine.
+            TypedArrayState s = requireTypedArrayBase(t, "subarray");
+            int len = s.outOfBounds() ? 0 : s.length();
             int start = sliceIdx(arg(a, 0), len, 0);
             int end   = arg(a, 1) == Undefined.VALUE ? len : sliceIdx(arg(a, 1), len, len);
             int newLen = Math.max(0, end - start);
             int newOffset = s.byteOffset + start * s.kind.elementSize;
-            JSObject out = new JSObject(kindPrototypes.get(s.kind));
-            out.set(SLOT_TYPED_ARRAY_STATE, new TypedArrayState(s.kind, s.buffer, newOffset, newLen * s.kind.elementSize, newLen));
-            out.setAttributes(SLOT_TYPED_ARRAY_STATE, (byte) 0);
+            // § 23.2.3.30 step 17: TypedArraySpeciesCreate(O, « buffer,
+            // beginByteOffset, newLength »). The species ctor must accept
+            // the (buffer, offset, length) 3-arg signature.
+            Object srcBuffer = s.buffer;
+            JSObject out = typedArraySpeciesCreate((JSObject) t,
+                new Object[]{srcBuffer, (double) newOffset, (double) newLen}, c);
             return out;
         }));
 
@@ -1143,7 +1168,8 @@ public final class TypedArrays {
             JSFunction fn = asFn(arg(a, 0), "map");
             Object thisArg = arg(a, 1);
             int len = s.length();
-            JSObject out = createTypedArrayFromKind(s.kind, len);
+            JSObject out = typedArraySpeciesCreate((JSObject) t,
+                new Object[]{(double) len}, c);
             TypedArrayState os = stateOf(out);
             for (int i = 0; i < len; i++) {
                 Object v = Interpreter.invokeFunction(fn, thisArg, new Object[]{loadElement(s, i), (double) i, t}, c);
@@ -1164,7 +1190,8 @@ public final class TypedArrays {
                     keep.add(v);
                 }
             }
-            JSObject out = createTypedArrayFromKind(s.kind, keep.size());
+            JSObject out = typedArraySpeciesCreate((JSObject) t,
+                new Object[]{(double) keep.size()}, c);
             TypedArrayState os = stateOf(out);
             for (int i = 0; i < keep.size(); i++) storeElement(os, i, keep.get(i));
             return out;
@@ -1816,6 +1843,68 @@ public final class TypedArrays {
 
     private static void installSpecies(JSFunction ctor) {
         installSpeciesPublic(ctor);
+    }
+
+    /** § 23.2.4.2 TypedArraySpeciesCreate(exemplar, argumentList).
+     *  Goes through SpeciesConstructor then verifies the returned object is
+     *  a TypedArray with matching content type. The post-construct detach
+     *  check is the caller's responsibility — many spec algorithms do
+     *  additional buffer-validity checks after this. */
+    public static JSObject typedArraySpeciesCreate(JSObject exemplar, Object[] argList, InterpContext ctx) {
+        TypedArrayState state = stateOf(exemplar);
+        TypedArrayKind defaultKind = state == null ? TypedArrayKind.UINT8 : state.kind;
+        JSFunction defaultCtor = kindConstructors.get(defaultKind);
+        JSFunction ctor = speciesConstructor(exemplar, defaultCtor, ctx);
+        JSObject result = typedArrayCreate(ctor, argList, ctx);
+        TypedArrayState rs = stateOf(result);
+        if (rs == null) {
+            throw AbruptCompletion.typeError(
+                "Species constructor did not return a TypedArray");
+        }
+        // ContentType: BigInt vs Number — must match the exemplar.
+        if (rs.kind.bigInt != defaultKind.bigInt) {
+            throw AbruptCompletion.typeError(
+                "Species constructor returned wrong content-type TypedArray");
+        }
+        return result;
+    }
+
+    /** § 7.3.23 SpeciesConstructor(O, defaultConstructor). */
+    static JSFunction speciesConstructor(JSObject O, JSFunction defaultCtor, InterpContext ctx) {
+        Object C = AbstractOps.getProperty(O, "constructor");
+        if (C == Undefined.VALUE) return defaultCtor;
+        if (!(C instanceof JSObject || C instanceof JSFunction)) {
+            throw AbruptCompletion.typeError("constructor must be an object");
+        }
+        Object S = AbstractOps.getProperty(C, Realm.wellKnownSpecies.asPropertyKey());
+        if (S == null || S == Undefined.VALUE) return defaultCtor;
+        if (S instanceof JSFunction sf && sf.isConstructor()) return sf;
+        throw AbruptCompletion.typeError("Species @@species is not a constructor");
+    }
+
+    /** § 23.2.4.1 TypedArrayCreate(constructor, argumentList) — Construct
+     *  then validate (throw on detached, throw when given a length but
+     *  resulting array is shorter). */
+    static JSObject typedArrayCreate(JSFunction ctor, Object[] args, InterpContext ctx) {
+        JSObject receiver = new JSObject(ctor.prototypeObject());
+        Object built = Interpreter.invokeFunctionAsConstructor(ctor, receiver, args, ctx);
+        JSObject result = built instanceof JSObject jo ? jo : receiver;
+        TypedArrayState st = stateOf(result);
+        if (st == null) {
+            throw AbruptCompletion.typeError(
+                "TypedArrayCreate: constructor did not return a TypedArray");
+        }
+        if (st.outOfBounds()) {
+            throw AbruptCompletion.typeError(
+                "TypedArrayCreate: constructed TypedArray is out of bounds");
+        }
+        if (args.length == 1 && args[0] instanceof Number n) {
+            if (st.length() < n.intValue()) {
+                throw AbruptCompletion.typeError(
+                    "TypedArrayCreate: constructed array is shorter than requested length");
+            }
+        }
+        return result;
     }
 
     /** Public helper for installing the default {@code @@species}

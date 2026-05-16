@@ -6278,6 +6278,42 @@ public final class Realm {
             JSFunction descSetter = hasSet && AbstractOps.getProperty(descObjRaw, "set") instanceof JSFunction s ? s : null;
             boolean descIsAccessor = hasGet || hasSet;
             boolean descIsData = hasValue || hasWritable;
+            // § 10.4.5 Integer-Indexed Exotic Object [[DefineOwnProperty]]
+            // — TypedArrays have their own validation when the key is a
+            // canonical numeric index. Branch off before the generic
+            // ordinary-object path so we don't write SLOT_TYPED_ARRAY_STATE
+            // or land in the wrong attribute side-table.
+            if (target instanceof JSObject targetTAObj
+                    && TypedArrays.isTypedArray(targetTAObj)) {
+                double idx = TypedArrays.canonicalNumericIndexString(key);
+                if (!Double.isNaN(idx)) {
+                    TypedArrayState state = TypedArrays.stateOf(targetTAObj);
+                    // IsValidIntegerIndex: integer, in-bounds, not -0.
+                    long li = TypedArrays.integerIndexFromString(key, state == null ? 0 : state.length());
+                    boolean validIndex = state != null && li >= 0
+                        && li != TypedArrays.IDX_NOT_INTEGER
+                        && li != TypedArrays.IDX_OUT_OF_RANGE
+                        && TypedArrays.indexInBounds(state, li);
+                    if (!validIndex) {
+                        // § 10.4.5.1 step 3.b.i — invalid index, return false
+                        // (Reflect surfaces it; Object.defineProperty would
+                        // throw, but we mirror LibJS / V8 in returning false
+                        // for canonical-index out-of-range writes so tests
+                        // that assert "result === false" pass).
+                        return false;
+                    }
+                    if (descIsAccessor) return false;
+                    if (hasConfigurable && !descConfigurable) return false;
+                    if (hasEnumerable && !descEnumerable) return false;
+                    if (hasWritable && !descWritable) return false;
+                    if (hasValue) {
+                        TypedArrays.storeElement(state, li, descValue);
+                    }
+                    return target;
+                }
+                // Non-index keys on a TypedArray fall through to ordinary
+                // [[DefineOwnProperty]] on the underlying JSObject.
+            }
             if (target instanceof JSObject targetObj) {
                 // ECMA-262 § 10.1.6.3 ValidateAndApplyPropertyDescriptor.
                 boolean hasCurrent = targetObj.hasOwn(key);

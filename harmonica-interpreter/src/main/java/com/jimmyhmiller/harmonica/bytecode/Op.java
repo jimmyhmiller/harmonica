@@ -239,6 +239,31 @@ public sealed interface Op {
             }
             Object result = Boolean.TRUE;
             if (b instanceof JSObject jo) {
+                // § 10.4.5.6 IntegerIndexedExoticObject [[Delete]]: a
+                // canonical numeric index on a valid in-bounds slot returns
+                // false (indexed elements aren't configurable); out-of-bounds
+                // or non-integer-index strings return true.
+                var taState = com.jimmyhmiller.harmonica.bytecode.TypedArrays.stateOf(jo);
+                if (taState != null) {
+                    double canonical = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                        .canonicalNumericIndexString(property);
+                    if (!Double.isNaN(canonical)) {
+                        long idx = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                            .integerIndexFromNumber(canonical, taState.length());
+                        if (idx >= 0) {
+                            // Valid in-bounds index — not configurable.
+                            if (ctx.executable() != null && ctx.executable().strictMode()) {
+                                throw AbruptCompletion.typeError(
+                                    "Cannot delete property '" + property + "' of " + b);
+                            }
+                            dst.store(ctx, Boolean.FALSE);
+                            return pc + 1;
+                        }
+                        // Invalid canonical index — never present, return true.
+                        dst.store(ctx, Boolean.TRUE);
+                        return pc + 1;
+                    }
+                }
                 result = jo.delete(property);
                 if (result == Boolean.FALSE && ctx.executable() != null
                     && ctx.executable().strictMode()) {
@@ -312,6 +337,26 @@ public sealed interface Op {
                 : AbstractOps.toString(key);
             Object result = Boolean.TRUE;
             if (b instanceof JSObject jo) {
+                // § 10.4.5.6 — same integer-index delete rule as DeleteById.
+                var taState = com.jimmyhmiller.harmonica.bytecode.TypedArrays.stateOf(jo);
+                if (taState != null) {
+                    double canonical = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                        .canonicalNumericIndexString(prop);
+                    if (!Double.isNaN(canonical)) {
+                        long idx = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                            .integerIndexFromNumber(canonical, taState.length());
+                        if (idx >= 0) {
+                            if (ctx.executable() != null && ctx.executable().strictMode()) {
+                                throw AbruptCompletion.typeError(
+                                    "Cannot delete property '" + prop + "' of " + b);
+                            }
+                            dst.store(ctx, Boolean.FALSE);
+                            return pc + 1;
+                        }
+                        dst.store(ctx, Boolean.TRUE);
+                        return pc + 1;
+                    }
+                }
                 result = jo.delete(prop);
                 if (result == Boolean.FALSE && ctx.executable() != null
                     && ctx.executable().strictMode()) {
@@ -1016,6 +1061,26 @@ public sealed interface Op {
                 Object trapResult = AbstractOps.getProperty(b, property);
                 dst.store(ctx, trapResult);
                 return pc + 1;
+            }
+            // TypedArray short-circuit (mirrors GetByValue): canonical
+            // numeric index strings bypass OrdinaryGet entirely so accessors
+            // installed on TypedArray.prototype["1.1"] etc. aren't called.
+            if (b instanceof JSObject taObj
+                    && com.jimmyhmiller.harmonica.bytecode.TypedArrays.isTypedArray(taObj)) {
+                double canonical = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                    .canonicalNumericIndexString(property);
+                if (!Double.isNaN(canonical)) {
+                    var state = com.jimmyhmiller.harmonica.bytecode.TypedArrays.stateOf(taObj);
+                    long idx = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                        .integerIndexFromNumber(canonical, state == null ? 0 : state.length());
+                    if (idx >= 0) {
+                        dst.store(ctx, com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                            .loadElement(state, idx));
+                    } else {
+                        dst.store(ctx, Undefined.VALUE);
+                    }
+                    return pc + 1;
+                }
             }
             // Shape-keyed inline cache: on hit, the property's storage offset
             // is known and the read is a single indexed load — the V8/LibJS
@@ -3206,6 +3271,29 @@ public sealed interface Op {
                 int idx = (int) d;
                 if (idx == d && idx >= 0 && idx < s.length()) {
                     dst.store(ctx, String.valueOf(s.charAt(idx)));
+                    return pc + 1;
+                }
+            }
+            // TypedArray short-circuit: § 10.4.5.4 [[Get]] — any canonical
+            // numeric index string is handled by IntegerIndexedElementGet
+            // and never falls back to OrdinaryGet (no proto-chain walk).
+            // The fast path below would otherwise call obj.get() which DOES
+            // walk the chain.
+            if (b instanceof JSObject taObj
+                    && com.jimmyhmiller.harmonica.bytecode.TypedArrays.isTypedArray(taObj)
+                    && key instanceof String tk) {
+                double canonical = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                    .canonicalNumericIndexString(tk);
+                if (!Double.isNaN(canonical)) {
+                    var state = com.jimmyhmiller.harmonica.bytecode.TypedArrays.stateOf(taObj);
+                    long idx = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                        .integerIndexFromNumber(canonical, state == null ? 0 : state.length());
+                    if (idx >= 0) {
+                        dst.store(ctx, com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                            .loadElement(state, idx));
+                    } else {
+                        dst.store(ctx, Undefined.VALUE);
+                    }
                     return pc + 1;
                 }
             }

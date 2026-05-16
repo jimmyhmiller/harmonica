@@ -64,7 +64,11 @@ public final class ReflectBuiltin {
                 ? f.getOwnStatic("defineProperty") : null;
             if (!(defineFn instanceof JSFunction df)) return false;
             try {
-                Interpreter.invokeFunction(df, objectCtor, a, c);
+                Object result = Interpreter.invokeFunction(df, objectCtor, a, c);
+                // Object.defineProperty returns the target on success or
+                // {@code false} when an integer-indexed exotic refuses the
+                // descriptor (see Realm.java's TypedArray fast path).
+                if (result == Boolean.FALSE) return false;
                 return true;
             } catch (AbruptCompletion ac) {
                 return false;
@@ -75,6 +79,17 @@ public final class ReflectBuiltin {
             Object target = requireObject(Realm.arg(a, 0), "Reflect.deleteProperty");
             String key = toPropertyKey(Realm.arg(a, 1));
             if (target instanceof JSObject jo) {
+                // TypedArray: valid integer index → false; invalid → true.
+                if (com.jimmyhmiller.harmonica.bytecode.TypedArrays.isTypedArray(jo)) {
+                    double canonical = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                        .canonicalNumericIndexString(key);
+                    if (!Double.isNaN(canonical)) {
+                        var state = com.jimmyhmiller.harmonica.bytecode.TypedArrays.stateOf(jo);
+                        long idx = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                            .integerIndexFromNumber(canonical, state == null ? 0 : state.length());
+                        return idx < 0;   // out-of-bounds is "deletable"
+                    }
+                }
                 Object r = jo.delete(key);
                 return r == Boolean.TRUE;
             }
@@ -116,7 +131,20 @@ public final class ReflectBuiltin {
             Object target = requireObject(Realm.arg(a, 0), "Reflect.has");
             String key = toPropertyKey(Realm.arg(a, 1));
             if (key.startsWith("#")) return false;   // private names invisible to Reflect
-            if (target instanceof JSObject jo) return jo.has(key);
+            if (target instanceof JSObject jo) {
+                // TypedArray: canonical numeric index → in-bounds-or-not.
+                if (com.jimmyhmiller.harmonica.bytecode.TypedArrays.isTypedArray(jo)) {
+                    double canonical = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                        .canonicalNumericIndexString(key);
+                    if (!Double.isNaN(canonical)) {
+                        var state = com.jimmyhmiller.harmonica.bytecode.TypedArrays.stateOf(jo);
+                        long idx = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                            .integerIndexFromNumber(canonical, state == null ? 0 : state.length());
+                        return idx >= 0;
+                    }
+                }
+                return jo.has(key);
+            }
             return false;
         }));
 
@@ -154,9 +182,29 @@ public final class ReflectBuiltin {
 
         reflect.set("set", method("set", 3, (a, c) -> {
             Object target = requireObject(Realm.arg(a, 0), "Reflect.set");
-            toPropertyKey(Realm.arg(a, 1));   // coerce + validate
+            Object rawKey = Realm.arg(a, 1);
+            String key = toPropertyKey(rawKey);
+            // § 10.4.5.5 IntegerIndexedExotic [[Set]]: canonical numeric
+            // index strings — whether in-bounds, out-of-bounds, fractional,
+            // negative, or NaN — always return true (silent success). The
+            // ordinary [[Set]] path is taken only for non-canonical keys.
+            if (target instanceof JSObject jo
+                    && com.jimmyhmiller.harmonica.bytecode.TypedArrays.isTypedArray(jo)) {
+                double canonical = com.jimmyhmiller.harmonica.bytecode.TypedArrays
+                    .canonicalNumericIndexString(key);
+                if (!Double.isNaN(canonical)) {
+                    try {
+                        AbstractOps.setProperty(target, rawKey, Realm.arg(a, 2));
+                    } catch (AbruptCompletion ignored) {
+                        // BigInt vs Number mismatch throws via storeElement —
+                        // surface to caller (matches V8).
+                        throw ignored;
+                    }
+                    return true;
+                }
+            }
             try {
-                AbstractOps.setProperty(target, Realm.arg(a, 1), Realm.arg(a, 2));
+                AbstractOps.setProperty(target, rawKey, Realm.arg(a, 2));
                 return true;
             } catch (AbruptCompletion ac) {
                 return false;
