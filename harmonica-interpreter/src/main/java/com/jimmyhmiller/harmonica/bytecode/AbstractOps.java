@@ -596,7 +596,11 @@ public final class AbstractOps {
         if (base instanceof JSArray arr && key instanceof Number n) {
             double d = n.doubleValue();
             int idx = (int) d;
-            if (idx == d && idx >= 0 && idx < arr.length()) return arr.get(idx);
+            // Holes fall through so the proto chain is consulted (Array
+            // .prototype["N"] inheritance).
+            if (idx == d && idx >= 0 && idx < arr.length() && !arr.isHole(idx)) {
+                return arr.get(idx);
+            }
         }
         // ECMA-262 § 28.2.7.4 [[Get]] on a Proxy — invoke handler.get trap if
         // present; otherwise fall through to the target's [[Get]].
@@ -688,7 +692,7 @@ public final class AbstractOps {
         if (base instanceof JSArray arr) {
             if ("length".equals(prop)) return boxDouble(arr.length());
             int idx = parseIndex(prop);
-            if (idx >= 0 && idx < arr.length()) {
+            if (idx >= 0 && idx < arr.length() && !arr.isHole(idx)) {
                 Object v = arr.get(idx);
                 if (v instanceof Accessor acc) {
                     if (acc.getter() == null) return Undefined.VALUE;

@@ -3288,13 +3288,15 @@ public sealed interface Op {
             if (b instanceof JSArray arr && key instanceof Number n) {
                 double d = n.doubleValue();
                 int idx = (int) d;
-                if (idx == d && idx >= 0 && idx < arr.length()) {
+                if (idx == d && idx >= 0 && idx < arr.length() && !arr.isHole(idx)) {
                     Object v = arr.get(idx);
                     if (!(v instanceof Accessor)) {
                         dst.store(ctx, v);
                         return pc + 1;
                     }
                 }
+                // Hole or out-of-bounds: fall through to AbstractOps.getProperty
+                // which walks Array.prototype.
             }
             // Fast path: String base + integer-valued numeric key, e.g.
             // `s[i]` in a char-by-char scanner (acorn's lexer reads chars

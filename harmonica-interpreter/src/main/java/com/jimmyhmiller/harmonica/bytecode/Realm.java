@@ -1093,8 +1093,16 @@ public final class Realm {
                 "ArraySpeciesCreate: species constructor is not a constructor");
         }
         InterpContext ctx = InterpContext.current();
-        JSObject receiver = new JSObject(cf.prototypeObject() != null
-            ? cf.prototypeObject() : arrayPrototype);
+        // Lazily materialize Ctor.prototype the way Op.CallConstruct does,
+        // so the constructed receiver has the right [[Prototype]].
+        JSObject ctorProto = cf.prototypeObject();
+        if (ctorProto == null && !cf.isNative()) {
+            ctorProto = new JSObject();
+            ctorProto.set("constructor", cf);
+            cf.setPrototypeObject(ctorProto);
+        }
+        if (ctorProto == null) ctorProto = arrayPrototype;
+        JSObject receiver = new JSObject(ctorProto);
         Object built = Interpreter.invokeFunctionAsConstructor(cf, receiver,
             new Object[]{(double) length}, ctx);
         if (built instanceof JSArray || built instanceof JSObject) return built;
@@ -1649,6 +1657,10 @@ public final class Realm {
                 throw AbruptCompletion.typeError(
                     "Array.prototype.sort: comparefn must be a function or undefined");
             }
+            // § 23.1.3.30 step 2: obj = ToObject(this). Primitive receivers
+            // get auto-boxed and the wrapper is returned (e.g.
+            // [].sort.call(false) returns a Boolean wrapper, len=0).
+            t = toObject(t);
             JSFunction cmp = (cmpArg instanceof JSFunction f) ? f : null;
             // ECMA-262 § 23.1.3.30 — sort is generic on array-likes.
             // The receiver may be any object with a length + indexed
@@ -1717,28 +1729,46 @@ public final class Realm {
             return t;
         }));
         arrayPrototype.set("flat", nativeFn("flat", 0, (t, a, c) -> {
-            int len = lengthOfArrayLike(t);
-            int depth = arg(a, 0) == Undefined.VALUE ? 1 : AbstractOps.toInt32(a[0]);
-            JSArray out = new JSArray();
+            Object O = toObject(t);
+            int len = lengthOfArrayLike(O);
+            double depthD = arg(a, 0) == Undefined.VALUE ? 1.0 : AbstractOps.toNumber(a[0]);
+            if (Double.isNaN(depthD) || depthD < 0) depthD = 0;
+            int depth = Double.isInfinite(depthD) ? Integer.MAX_VALUE : (int) depthD;
+            Object out = arraySpeciesCreate(O, 0);
+            int outIdx = 0;
             for (int i = 0; i < len; i++) {
-                if (!hasIndexed(t, i)) continue;
-                Object e = getIndexed(t, i);
-                if (e instanceof JSArray inner && depth > 0) flattenInto(inner, out, depth - 1);
-                else out.push(e);
+                if (!hasIndexed(O, i)) continue;
+                Object e = getIndexed(O, i);
+                if (e instanceof JSArray inner && depth > 0) {
+                    outIdx = flattenIntoSpec(out, inner, outIdx, depth - 1);
+                } else {
+                    setIndexed(out, outIdx++, e);
+                }
+            }
+            if (!(out instanceof JSArray)) {
+                AbstractOps.setProperty(out, "length", (double) outIdx);
             }
             return out;
         }));
         arrayPrototype.set("flatMap", nativeFn("flatMap", 1, (t, a, c) -> {
-            int len = lengthOfArrayLike(t);
+            Object O = toObject(t);
+            int len = lengthOfArrayLike(O);
             JSFunction fn = asCallback(arg(a, 0), "flatMap");
             Object thisArg = arg(a, 1);
-            JSArray out = new JSArray();
+            Object out = arraySpeciesCreate(O, 0);
+            int outIdx = 0;
             for (int i = 0; i < len; i++) {
-                if (!hasIndexed(t, i)) continue;
+                if (!hasIndexed(O, i)) continue;
                 Object v = Interpreter.invokeFunction(fn, thisArg,
-                    new Object[]{getIndexed(t, i), (double) i, t}, c);
-                if (v instanceof JSArray inner) for (Object e : inner.elements()) out.push(e);
-                else out.push(v);
+                    new Object[]{getIndexed(O, i), (double) i, O}, c);
+                if (v instanceof JSArray inner) {
+                    outIdx = flattenIntoSpec(out, inner, outIdx, 0);
+                } else {
+                    setIndexed(out, outIdx++, v);
+                }
+            }
+            if (!(out instanceof JSArray)) {
+                AbstractOps.setProperty(out, "length", (double) outIdx);
             }
             return out;
         }));
@@ -2155,6 +2185,22 @@ public final class Realm {
             .ArrayIteratorPrototypeBuiltin.create(arr,
                 com.jimmyhmiller.harmonica.bytecode.builtins
                     .ArrayIteratorPrototypeBuiltin.kindFor(kind));
+    }
+
+    /** § 23.1.3.10.1 FlattenIntoArray — spec version that respects holes,
+     *  uses setIndexed (so species-result objects are handled), and returns
+     *  the next outIdx. */
+    private static int flattenIntoSpec(Object out, JSArray src, int outIdx, int depth) {
+        for (int i = 0; i < src.length(); i++) {
+            if (!hasIndexed(src, i)) continue;
+            Object e = getIndexed(src, i);
+            if (e instanceof JSArray inner && depth > 0) {
+                outIdx = flattenIntoSpec(out, inner, outIdx, depth - 1);
+            } else {
+                setIndexed(out, outIdx++, e);
+            }
+        }
+        return outIdx;
     }
 
     private static void flattenInto(JSArray src, JSArray dst, int depth) {
