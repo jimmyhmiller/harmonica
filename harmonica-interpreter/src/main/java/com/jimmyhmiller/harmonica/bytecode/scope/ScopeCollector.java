@@ -200,6 +200,12 @@ final class ScopeCollector {
             case "var" -> BindingKind.Var;
             case "let" -> BindingKind.Let;
             case "const" -> BindingKind.Const;
+            // Explicit Resource Management (Stage 4): `using` and `await using`
+            // are block-scoped like let/const for binding-resolution purposes.
+            // We don't model their disposal semantics here — that's the
+            // runtime's job — but the binding kind matters for scope analysis.
+            case "using" -> BindingKind.Let;
+            case "await using" -> BindingKind.Let;
             default -> throw new IllegalStateException(
                 "ScopeCollector: unknown VariableDeclaration.kind '" + vd.kind() + "'");
         };

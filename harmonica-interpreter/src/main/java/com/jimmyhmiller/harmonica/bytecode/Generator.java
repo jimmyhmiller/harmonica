@@ -101,13 +101,17 @@ public final class Generator {
 
     /**
      * Function declarations whose enclosing scope is a non-function block
-     * (switch case, plain block) — these get Annex-B "block-scoped function
-     * declaration" treatment: hoisted to the enclosing function/script's
-     * lex env via CreateMutableBinding/InitializeLexicalBinding, then
-     * re-bound at the declaration site via GetBinding + SetVariableBinding.
-     * Filled by {@link #collectAnnexBFunctionDecls} during the script-level
-     * pre-pass; consulted by {@link #lowerFunctionDeclaration} to switch to
-     * the Annex-B emission shape.
+     * (switch case) — these get Annex-B "block-scoped function declaration"
+     * treatment: hoisted to the enclosing function/script's lex env via
+     * CreateMutableBinding / InitializeLexicalBinding, then re-bound at the
+     * declaration site via GetBinding + SetVariableBinding.
+     *
+     * <p>Populated by {@link #collectAnnexBFunctionDecls} during the
+     * script-level pre-pass in {@link #lowerProgram}; consulted by
+     * {@link #lowerFunctionDeclaration} to switch to the Annex-B emission
+     * shape. {@link com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis}
+     * computes a broader, spec-faithful version of this set that will
+     * replace the AST walker once the emission shape is fixed.
      */
     private final java.util.Set<FunctionDeclaration> annexBFunctionDecls = new java.util.HashSet<>();
 
@@ -1793,11 +1797,17 @@ public final class Generator {
             }
         }
 
-        // Pre-pass: collect function declarations inside switch cases / nested
-        // blocks (Annex-B "block-scoped function declarations"). When present,
-        // the script gets a special prologue: a fresh lex env, mutable
-        // bindings + initialization for each fn, plus a SetLexicalEnvironment
-        // teardown before End.
+        // Pre-pass: run scope analysis. Available for downstream consumers
+        // (Annex-B widening + emission fixes land in a follow-up commit).
+        // For now the Annex-B set still comes from the historical AST walker
+        // — the analyzer's spec-faithful output is a SUPERSET that exposes
+        // latent prologue bugs (e.g. async-flag dropped when materializing
+        // hoisted FDs) that need to be fixed in lockstep with the widened
+        // tagging.
+        @SuppressWarnings("unused")
+        com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis scopeAnalysis =
+            com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis.analyze(
+                program, /* scriptStrict */ moduleMode);
         collectAnnexBFunctionDecls(program.body());
         boolean hasAnnexBFns = !annexBFunctionDecls.isEmpty();
 
@@ -2836,6 +2846,15 @@ public final class Generator {
      * Collect FunctionDeclarations inside switch cases at the program level
      * (Annex-B function-declaration-in-block scoping). Adds each to
      * {@link #annexBFunctionDecls}.
+     *
+     * <p>This is the narrow legacy walker that only tags switch-case FDs.
+     * {@link com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis} computes
+     * the spec-faithful superset (covering all block-FDs at any nesting,
+     * with conflict checks), but switching the {@link #annexBFunctionDecls}
+     * source to the analyzer also requires fixing latent prologue bugs
+     * (e.g. async-flag dropped at line 1881) that the broader tagging
+     * exposes. Hence the legacy walker stays as the source until those
+     * fixes land.
      */
     private void collectAnnexBFunctionDecls(java.util.List<Statement> stmts) {
         for (Statement s : stmts) {
