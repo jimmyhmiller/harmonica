@@ -1974,6 +1974,12 @@ public final class Generator {
                 hoistedVarNames.add(synth.name());
             }
         }
+        // Legacy walker — tags switch-case FDs only. Switch isn't a
+        // BlockStatement, so the dual-binding rework's blockFnSlots
+        // mechanism doesn't cover it. Until lowerSwitch grows proper
+        // block enter/exit shadowing, the legacy round-trip emission
+        // path remains the way switch-case Annex-B preserves
+        // value-preservation for let-conflicted bindings.
         collectAnnexBFunctionDecls(program.body());
         boolean hasAnnexBFns = !annexBFunctionDecls.isEmpty();
 
