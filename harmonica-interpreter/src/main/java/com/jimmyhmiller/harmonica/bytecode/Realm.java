@@ -5226,6 +5226,24 @@ public final class Realm {
         // @@iterator on Iterator.prototype returns this.
         iteratorPrototype.set(wellKnownIterator.asPropertyKey(),
             nativeFn("[Symbol.iterator]", 0, (t, a, c) -> t));
+        // § 27.1.3.5 %IteratorPrototype% [@@dispose]: invoke return() then
+        // return undefined. Used by `using` declarations + explicit-resource
+        // -management to clean up iterators.
+        if (wellKnownDispose != null) {
+            String disposeKey = wellKnownDispose.asPropertyKey();
+            iteratorPrototype.set(disposeKey, nativeFn("[Symbol.dispose]", 0, (t, a, c) -> {
+                if (t instanceof JSObject jo) closeIterator(jo, c);
+                return Undefined.VALUE;
+            }));
+            iteratorPrototype.setAttributes(disposeKey,
+                (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+        }
+        // § 27.1.3.6 [@@toStringTag] = "Iterator", configurable only.
+        if (wellKnownToStringTag != null) {
+            String tagKey = wellKnownToStringTag.asPropertyKey();
+            iteratorPrototype.set(tagKey, "Iterator");
+            iteratorPrototype.setAttributes(tagKey, JSObject.ATTR_CONFIGURABLE);
+        }
         // Iterator.prototype.toArray
         iteratorPrototype.set("toArray", nativeFn("toArray", 0, (t, a, c) -> {
             if (!(t instanceof JSObject obj)) throw AbruptCompletion.typeError("toArray: this is not an iterator");
@@ -5350,16 +5368,33 @@ public final class Realm {
         final JSObject finalIteratorPrototype = iteratorPrototype;
         iteratorPrototype.set("map", nativeFn("map", 1, (t, a, c) -> {
             if (!(t instanceof JSObject src)) throw AbruptCompletion.typeError("this is not an iterator");
-            JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
-            if (fn == null) { closeIterator(src, c); throw AbruptCompletion.typeError("map: argument is not a function"); }
+            // § 27.1.4.4 step 2: mapper must be callable; throw before
+            // touching the source iterator.
+            Object mapperArg = arg(a, 0);
+            if (!(mapperArg instanceof JSFunction fn)) {
+                throw AbruptCompletion.typeError("map: argument is not a function");
+            }
+            // Step 5: iterated = GetIteratorDirect(O) — capture nextMethod
+            // ONCE; the validation that nextMethod is callable happens at
+            // each iteration (Call would throw) not at map() time.
+            Object capturedNextRaw = AbstractOps.getProperty(src, "next");
             JSObject result = new JSObject(finalIteratorPrototype);
             int[] idx = {0};
+            boolean[] done = {false};
             result.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
-                Object nextFn = AbstractOps.getProperty(src, "next");
-                if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("source has no .next()");
-                Object step = Interpreter.invokeFunction(nf, src, new Object[0], cc);
                 JSObject out = new JSObject();
+                if (done[0]) { out.set("value", Undefined.VALUE); out.set("done", true); return out; }
+                if (!(capturedNextRaw instanceof JSFunction capturedNext)) {
+                    done[0] = true;
+                    throw AbruptCompletion.typeError("source has no callable .next() method");
+                }
+                Object step = Interpreter.invokeFunction(capturedNext, src, new Object[0], cc);
+                if (!(step instanceof JSObject)) {
+                    done[0] = true;
+                    throw AbruptCompletion.typeError("iterator.next did not return an object");
+                }
                 if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) {
+                    done[0] = true;
                     out.set("value", Undefined.VALUE); out.set("done", true); return out;
                 }
                 Object v;
@@ -5367,15 +5402,15 @@ public final class Realm {
                     v = Interpreter.invokeFunction(fn, Undefined.VALUE,
                         new Object[]{AbstractOps.getProperty(step, "value"), (double) idx[0]}, cc);
                 } catch (AbruptCompletion ac) {
+                    done[0] = true;
                     closeIterator(src, cc);
                     throw ac;
                 }
                 idx[0]++;
                 out.set("value", v); out.set("done", false); return out;
             }));
-            // Forward return() to close the underlying source.
             result.set("return", nativeFn("return", 1, (tt, aa, cc) -> {
-                closeIterator(src, cc);
+                if (!done[0]) { done[0] = true; closeIterator(src, cc); }
                 JSObject r = new JSObject();
                 r.set("value", arg(aa, 0));
                 r.set("done", true);
@@ -5385,18 +5420,30 @@ public final class Realm {
         }));
         iteratorPrototype.set("filter", nativeFn("filter", 1, (t, a, c) -> {
             if (!(t instanceof JSObject src)) throw AbruptCompletion.typeError("this is not an iterator");
-            JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
-            if (fn == null) { closeIterator(src, c); throw AbruptCompletion.typeError("filter: argument is not a function"); }
+            Object predArg = arg(a, 0);
+            if (!(predArg instanceof JSFunction fn)) {
+                throw AbruptCompletion.typeError("filter: argument is not a function");
+            }
+            Object capturedNextRaw = AbstractOps.getProperty(src, "next");
             JSObject result = new JSObject(finalIteratorPrototype);
             int[] idx = {0};
+            boolean[] done = {false};
             result.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
-                Object nextFn = AbstractOps.getProperty(src, "next");
-                if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("source has no .next()");
+                JSObject out = new JSObject();
+                if (done[0]) { out.set("value", Undefined.VALUE); out.set("done", true); return out; }
+                if (!(capturedNextRaw instanceof JSFunction capturedNext)) {
+                    done[0] = true;
+                    throw AbruptCompletion.typeError("source has no callable .next() method");
+                }
                 while (true) {
                     checkInterruptTick(idx[0]);
-                    Object step = Interpreter.invokeFunction(nf, src, new Object[0], cc);
-                    JSObject out = new JSObject();
+                    Object step = Interpreter.invokeFunction(capturedNext, src, new Object[0], cc);
+                    if (!(step instanceof JSObject)) {
+                        done[0] = true;
+                        throw AbruptCompletion.typeError("iterator.next did not return an object");
+                    }
                     if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) {
+                        done[0] = true;
                         out.set("value", Undefined.VALUE); out.set("done", true); return out;
                     }
                     Object v = AbstractOps.getProperty(step, "value");
@@ -5405,6 +5452,7 @@ public final class Realm {
                         keep = AbstractOps.toBoolean(Interpreter.invokeFunction(fn, Undefined.VALUE,
                             new Object[]{v, (double) idx[0]}, cc));
                     } catch (AbruptCompletion ac) {
+                        done[0] = true;
                         closeIterator(src, cc);
                         throw ac;
                     }
@@ -5416,7 +5464,7 @@ public final class Realm {
                 }
             }));
             result.set("return", nativeFn("return", 1, (tt, aa, cc) -> {
-                closeIterator(src, cc);
+                if (!done[0]) { done[0] = true; closeIterator(src, cc); }
                 JSObject r = new JSObject();
                 r.set("value", arg(aa, 0));
                 r.set("done", true);
@@ -5426,27 +5474,61 @@ public final class Realm {
         }));
         iteratorPrototype.set("take", nativeFn("take", 1, (t, a, c) -> {
             if (!(t instanceof JSObject src)) throw AbruptCompletion.typeError("this is not an iterator");
+            // § 27.1.4.1 take, step 3: numLimit = ? ToNumber(limit). When
+            // this throws, iteratorClose must run before propagation.
             double dn;
             try {
                 dn = AbstractOps.toNumber(arg(a, 0));
             } catch (AbruptCompletion ac) { closeIterator(src, c); throw ac; }
-            if (Double.isNaN(dn) || dn < 0) { closeIterator(src, c); throw AbruptCompletion.rangeError("take: limit must be a non-negative number"); }
-            long limit = (long) Math.min(dn, Long.MAX_VALUE);
+            if (Double.isNaN(dn)) {
+                closeIterator(src, c);
+                throw AbruptCompletion.rangeError("take: limit must not be NaN");
+            }
+            long integerLimit = Double.isInfinite(dn)
+                ? (dn > 0 ? Long.MAX_VALUE : Long.MIN_VALUE)
+                : (long) dn;
+            if (integerLimit < 0) {
+                closeIterator(src, c);
+                throw AbruptCompletion.rangeError("take: limit must be non-negative");
+            }
+            // § 27.1.4.1 step 7: iterated = GetIteratorDirect(O) — captures
+            // (iterator, nextMethod) ONCE. The callability check is lazy:
+            // each iter.next() validates capturedNext is a function. This
+            // matches the spec's Call(nextMethod, iterator) behavior.
+            Object capturedNextRaw = AbstractOps.getProperty(src, "next");
             JSObject result = new JSObject(finalIteratorPrototype);
-            long[] remaining = {limit};
+            long[] remaining = {integerLimit};
+            boolean[] done = {false};
             result.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
                 JSObject out = new JSObject();
+                if (done[0]) {
+                    out.set("value", Undefined.VALUE); out.set("done", true); return out;
+                }
                 if (remaining[0] <= 0) {
+                    done[0] = true;
                     closeIterator(src, cc);
                     out.set("value", Undefined.VALUE); out.set("done", true); return out;
                 }
+                if (!(capturedNextRaw instanceof JSFunction capturedNext)) {
+                    done[0] = true;
+                    throw AbruptCompletion.typeError("source has no callable .next() method");
+                }
                 remaining[0]--;
-                Object nextFn = AbstractOps.getProperty(src, "next");
-                if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("source has no .next()");
-                return Interpreter.invokeFunction(nf, src, new Object[0], cc);
+                Object step = Interpreter.invokeFunction(capturedNext, src, new Object[0], cc);
+                if (!(step instanceof JSObject)) {
+                    done[0] = true;
+                    throw AbruptCompletion.typeError("iterator.next did not return an object");
+                }
+                if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) {
+                    done[0] = true;
+                }
+                return step;
             }));
             result.set("return", nativeFn("return", 1, (tt, aa, cc) -> {
-                closeIterator(src, cc);
+                if (!done[0]) {
+                    done[0] = true;
+                    closeIterator(src, cc);
+                }
                 JSObject r = new JSObject();
                 r.set("value", arg(aa, 0));
                 r.set("done", true);
@@ -5460,26 +5542,56 @@ public final class Realm {
             try {
                 dn = AbstractOps.toNumber(arg(a, 0));
             } catch (AbruptCompletion ac) { closeIterator(src, c); throw ac; }
-            if (Double.isNaN(dn) || dn < 0) { closeIterator(src, c); throw AbruptCompletion.rangeError("drop: count must be a non-negative number"); }
-            long count = (long) Math.min(dn, Long.MAX_VALUE);
+            if (Double.isNaN(dn)) {
+                closeIterator(src, c);
+                throw AbruptCompletion.rangeError("drop: count must not be NaN");
+            }
+            long integerCount = Double.isInfinite(dn)
+                ? (dn > 0 ? Long.MAX_VALUE : Long.MIN_VALUE)
+                : (long) dn;
+            if (integerCount < 0) {
+                closeIterator(src, c);
+                throw AbruptCompletion.rangeError("drop: count must be non-negative");
+            }
+            Object capturedNextRaw = AbstractOps.getProperty(src, "next");
             JSObject result = new JSObject(finalIteratorPrototype);
-            long[] toSkip = {count};
+            long[] toSkip = {integerCount};
+            boolean[] done = {false};
             result.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
-                Object nextFn = AbstractOps.getProperty(src, "next");
-                if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("source has no .next()");
+                JSObject out = new JSObject();
+                if (done[0]) {
+                    out.set("value", Undefined.VALUE); out.set("done", true); return out;
+                }
+                if (!(capturedNextRaw instanceof JSFunction capturedNext)) {
+                    done[0] = true;
+                    throw AbruptCompletion.typeError("source has no callable .next() method");
+                }
                 while (toSkip[0] > 0) {
-                    checkInterruptTick((int) toSkip[0]);
-                    Object step = Interpreter.invokeFunction(nf, src, new Object[0], cc);
+                    checkInterruptTick((int) Math.min(toSkip[0], Integer.MAX_VALUE));
+                    Object step = Interpreter.invokeFunction(capturedNext, src, new Object[0], cc);
+                    if (!(step instanceof JSObject)) {
+                        done[0] = true;
+                        throw AbruptCompletion.typeError("iterator.next did not return an object");
+                    }
                     if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) {
-                        JSObject out = new JSObject();
+                        done[0] = true;
                         out.set("value", Undefined.VALUE); out.set("done", true); return out;
                     }
                     toSkip[0]--;
                 }
-                return Interpreter.invokeFunction(nf, src, new Object[0], cc);
+                Object step = Interpreter.invokeFunction(capturedNext, src, new Object[0], cc);
+                if (!(step instanceof JSObject)) {
+                    done[0] = true;
+                    throw AbruptCompletion.typeError("iterator.next did not return an object");
+                }
+                if (AbstractOps.toBoolean(AbstractOps.getProperty(step, "done"))) done[0] = true;
+                return step;
             }));
             result.set("return", nativeFn("return", 1, (tt, aa, cc) -> {
-                closeIterator(src, cc);
+                if (!done[0]) {
+                    done[0] = true;
+                    closeIterator(src, cc);
+                }
                 JSObject r = new JSObject();
                 r.set("value", arg(aa, 0));
                 r.set("done", true);
@@ -5489,49 +5601,112 @@ public final class Realm {
         }));
         iteratorPrototype.set("flatMap", nativeFn("flatMap", 1, (t, a, c) -> {
             if (!(t instanceof JSObject src)) throw AbruptCompletion.typeError("this is not an iterator");
-            JSFunction fn = arg(a, 0) instanceof JSFunction f ? f : null;
-            if (fn == null) throw AbruptCompletion.typeError("flatMap: argument is not a function");
+            Object mapperArg = arg(a, 0);
+            if (!(mapperArg instanceof JSFunction fn)) {
+                throw AbruptCompletion.typeError("flatMap: argument is not a function");
+            }
+            Object capturedNextRaw = AbstractOps.getProperty(src, "next");
             JSObject result = new JSObject(finalIteratorPrototype);
             int[] idx = {0};
             JSObject[] innerIter = {null};
+            JSFunction[] innerNext = {null};
+            boolean[] done = {false};
             result.set("next", nativeFn("next", 0, (tt, aa, cc) -> {
-                Object nextFn = AbstractOps.getProperty(src, "next");
-                if (!(nextFn instanceof JSFunction nf)) throw AbruptCompletion.typeError("source has no .next()");
+                JSObject out = new JSObject();
+                if (done[0]) { out.set("value", Undefined.VALUE); out.set("done", true); return out; }
+                if (!(capturedNextRaw instanceof JSFunction capturedNext)) {
+                    done[0] = true;
+                    throw AbruptCompletion.typeError("source has no callable .next() method");
+                }
                 while (true) {
                     checkInterruptTick(idx[0]);
-                    if (innerIter[0] != null) {
-                        Object innerNext = AbstractOps.getProperty(innerIter[0], "next");
-                        if (innerNext instanceof JSFunction inf) {
-                            Object innerStep = Interpreter.invokeFunction(inf, innerIter[0], new Object[0], cc);
-                            if (!AbstractOps.toBoolean(AbstractOps.getProperty(innerStep, "done"))) {
-                                return innerStep;
-                            }
+                    if (innerIter[0] != null && innerNext[0] != null) {
+                        Object innerStep = Interpreter.invokeFunction(innerNext[0], innerIter[0], new Object[0], cc);
+                        if (!(innerStep instanceof JSObject)) {
+                            done[0] = true;
+                            throw AbruptCompletion.typeError("inner iterator.next did not return an object");
+                        }
+                        if (!AbstractOps.toBoolean(AbstractOps.getProperty(innerStep, "done"))) {
+                            return innerStep;
                         }
                         innerIter[0] = null;
+                        innerNext[0] = null;
                     }
-                    Object outerStep = Interpreter.invokeFunction(nf, src, new Object[0], cc);
-                    JSObject out = new JSObject();
+                    Object outerStep = Interpreter.invokeFunction(capturedNext, src, new Object[0], cc);
+                    if (!(outerStep instanceof JSObject)) {
+                        done[0] = true;
+                        throw AbruptCompletion.typeError("iterator.next did not return an object");
+                    }
                     if (AbstractOps.toBoolean(AbstractOps.getProperty(outerStep, "done"))) {
+                        done[0] = true;
                         out.set("value", Undefined.VALUE); out.set("done", true); return out;
                     }
                     Object v = AbstractOps.getProperty(outerStep, "value");
-                    Object mapped = Interpreter.invokeFunction(fn, Undefined.VALUE,
-                        new Object[]{v, (double) idx[0]}, cc);
-                    idx[0]++;
-                    // Get an iterator from the mapped value.
-                    Object atIter = AbstractOps.getProperty(mapped, wellKnownIterator.asPropertyKey());
-                    if (atIter instanceof JSFunction itFn) {
-                        Object newInner = Interpreter.invokeFunction(itFn, mapped, new Object[0], cc);
-                        if (newInner instanceof JSObject inner) {
-                            innerIter[0] = inner;
-                            continue;
-                        }
+                    Object mapped;
+                    try {
+                        mapped = Interpreter.invokeFunction(fn, Undefined.VALUE,
+                            new Object[]{v, (double) idx[0]}, cc);
+                    } catch (AbruptCompletion ac) {
+                        done[0] = true;
+                        closeIterator(src, cc);
+                        throw ac;
                     }
-                    if (mapped instanceof JSObject mo) {
-                        innerIter[0] = mo;
+                    idx[0]++;
+                    // § 7.4.4 GetIteratorFlattenable(mapped):
+                    //   1. If mapped is not Object, throw TypeError (primitives
+                    //      aren't iterators).
+                    //   2. method = Get(mapped, @@iterator).
+                    //   3. If method is undefined, inner = mapped (use directly
+                    //      via its .next method).
+                    //   4. Else inner = Call(method, mapped); must be Object.
+                    //   5. Return GetIteratorDirect(inner).
+                    if (!(mapped instanceof JSObject || mapped instanceof JSFunction
+                            || mapped instanceof JSArray)) {
+                        done[0] = true;
+                        closeIterator(src, cc);
+                        throw AbruptCompletion.typeError("flatMap: mapped value is not an object");
+                    }
+                    Object atIter = AbstractOps.getProperty(mapped, wellKnownIterator.asPropertyKey());
+                    Object inner;
+                    if (atIter == Undefined.VALUE) {
+                        inner = mapped;
+                    } else if (atIter instanceof JSFunction itFn) {
+                        inner = Interpreter.invokeFunction(itFn, mapped, new Object[0], cc);
+                        if (!(inner instanceof JSObject)) {
+                            done[0] = true;
+                            closeIterator(src, cc);
+                            throw AbruptCompletion.typeError("flatMap: iterator method did not return an object");
+                        }
+                    } else {
+                        done[0] = true;
+                        closeIterator(src, cc);
+                        throw AbruptCompletion.typeError("flatMap: @@iterator is not callable");
+                    }
+                    Object innerNxt = AbstractOps.getProperty(inner, "next");
+                    if (!(innerNxt instanceof JSFunction innerNf)) {
+                        done[0] = true;
+                        closeIterator(src, cc);
+                        throw AbruptCompletion.typeError("flatMap: inner iterator has no .next() method");
+                    }
+                    innerIter[0] = inner instanceof JSObject jo ? jo : null;
+                    innerNext[0] = innerNf;
+                    if (innerIter[0] == null) {
+                        // Inner is non-JSObject but we got next somehow —
+                        // treat as exhausted to be safe.
                         continue;
                     }
                 }
+            }));
+            result.set("return", nativeFn("return", 1, (tt, aa, cc) -> {
+                if (!done[0]) {
+                    done[0] = true;
+                    if (innerIter[0] != null) closeIterator(innerIter[0], cc);
+                    closeIterator(src, cc);
+                }
+                JSObject r = new JSObject();
+                r.set("value", arg(aa, 0));
+                r.set("done", true);
+                return r;
             }));
             return result;
         }));
