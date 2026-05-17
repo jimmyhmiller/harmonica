@@ -20,10 +20,10 @@ import static org.junit.jupiter.api.Assertions.fail;
  * test262 paths that currently pass and re-runs each one — any test in the
  * baseline that no longer passes makes the build fail.
  *
- * <p>Runs by default in {@code mvn test}. Re-verifying the full baseline
- * takes ~7s on Java 25 (one Future.get-bound interpret per test, no real
- * parallelism); fast enough that paying it on every run is the right
- * trade for catching regressions immediately.
+ * <p>Runs by default in {@code mvn test}. The baseline covers the whole
+ * {@code test262/test} tree (language + built-ins + annexB + intl402 +
+ * staging), so verification re-runs every test we currently pass — slower
+ * than language-only but the regression coverage is worth it.
  *
  * <h3>Updating the baseline</h3>
  * After intentionally fixing or breaking tests, regenerate via:
@@ -54,8 +54,10 @@ class Test262SnapshotTest {
     private static final Path BASELINE_FILE_FALLBACK =
         Paths.get("harmonica-interpreter/src/test/resources/test262-passing-baseline.txt");
 
-    private static final Path TEST262_LANGUAGE = Paths.get("test-oracles/test262/test/language");
-    private static final Path FALLBACK_LANGUAGE = Paths.get("../test-oracles/test262/test/language");
+    // Snapshot now covers the entire test262 corpus (language + built-ins +
+    // annexB + intl402 + staging). Baseline paths are relative to test/.
+    private static final Path TEST262_ROOT = Paths.get("test-oracles/test262/test");
+    private static final Path FALLBACK_ROOT = Paths.get("../test-oracles/test262/test");
     private static final Path HARNESS_DIR = Paths.get("test-oracles/test262/harness");
     private static final Path FALLBACK_HARNESS = Paths.get("../test-oracles/test262/harness");
 
@@ -75,7 +77,7 @@ class Test262SnapshotTest {
      */
     private void verifyBaseline() throws Exception {
         List<String> baseline = loadBaseline();
-        Path languageRoot = resolveLanguageRoot();
+        Path testRoot = resolveTestRoot();
         Path harnessRoot = resolveHarnessRoot();
         String harnessAssert = Files.readString(harnessRoot.resolve("assert.js"));
         String harnessSta = Files.readString(harnessRoot.resolve("sta.js"));
@@ -85,7 +87,7 @@ class Test262SnapshotTest {
         long t0 = System.nanoTime();
 
         for (String rel : baseline) {
-            Path file = languageRoot.resolve(rel);
+            Path file = testRoot.resolve(rel);
             if (!Files.exists(file)) {
                 regressions.add(rel + " | MISSING from test262 corpus on disk");
                 continue;
@@ -137,7 +139,7 @@ class Test262SnapshotTest {
      * {@link Test262ExecTest} so the two stay in sync.
      */
     private void updateBaseline() throws Exception {
-        Path languageRoot = resolveLanguageRoot();
+        Path testRoot = resolveTestRoot();
         Path harnessRoot = resolveHarnessRoot();
         String harnessAssert = Files.readString(harnessRoot.resolve("assert.js"));
         String harnessSta = Files.readString(harnessRoot.resolve("sta.js"));
@@ -146,7 +148,7 @@ class Test262SnapshotTest {
         int scanned = 0;
         long t0 = System.nanoTime();
 
-        try (var stream = Files.walk(languageRoot)) {
+        try (var stream = Files.walk(testRoot)) {
             var it = stream
                 .filter(p -> p.toString().endsWith(".js") && !p.toString().contains("FIXTURE"))
                 .sorted()
@@ -170,7 +172,7 @@ class Test262SnapshotTest {
                 Test262ExecRunner.TestResult result = Test262ExecRunner.runOne(
                     file, source, fm, harnessAssert, harnessSta, harnessRoot);
                 if (result.outcome() == Test262ExecRunner.Outcome.PASS) {
-                    passing.add(rel(file, languageRoot));
+                    passing.add(rel(file, testRoot));
                 }
             }
         }
@@ -217,10 +219,10 @@ class Test262SnapshotTest {
         return s.length() > n ? s.substring(0, n) + "…" : s;
     }
 
-    private static Path resolveLanguageRoot() {
-        if (Files.isDirectory(TEST262_LANGUAGE)) return TEST262_LANGUAGE;
-        if (Files.isDirectory(FALLBACK_LANGUAGE)) return FALLBACK_LANGUAGE;
-        throw new IllegalStateException("test262/test/language not found");
+    private static Path resolveTestRoot() {
+        if (Files.isDirectory(TEST262_ROOT)) return TEST262_ROOT;
+        if (Files.isDirectory(FALLBACK_ROOT)) return FALLBACK_ROOT;
+        throw new IllegalStateException("test262/test not found");
     }
 
     private static Path resolveHarnessRoot() {
