@@ -4235,6 +4235,12 @@ public final class Realm {
         return p;
     }
 
+    public static JSObject wrapInResolvedPromise(Object value) {
+        JSObject p = createPromise();
+        resolvePromise(p, value, InterpContext.current());
+        return p;
+    }
+
     private static void installPromisePrototype() {
         // § 27.2.5.4 Promise.prototype.then.
         promisePrototype.set("then", nativeFn("then", 2, (thisVal, args, ctx) -> {
@@ -5365,21 +5371,13 @@ public final class Realm {
         markMethodsNonEnumerable(bigIntPrototype);
         globals.putIfAbsent("BigInt", bigIntCtor);
 
-        // ECMA-262 § 25.4 Atomics — namespace object. Operations require
-        // SharedArrayBuffer which we have a basic shim of; the operations
-        // themselves are stubs that throw TypeError. Defining the namespace
-        // lets `typeof Atomics === "object"` succeed and many capability
-        // tests pass.
+        // ECMA-262 § 25.4 Atomics — atomic read-modify-write ops on
+        // integer TypedArrays backed by (Shared)ArrayBuffer. Since we have
+        // no real threads visible to user code, atomicity is naturally
+        // single-threaded — every op runs to completion before any other
+        // JS executes. Behaviour matches a serialized agent.
         JSObject atomics = new JSObject();
-        for (String op : new String[]{"add", "and", "compareExchange", "exchange",
-                                       "isLockFree", "load", "notify", "or",
-                                       "store", "sub", "wait", "waitAsync",
-                                       "xor", "pause"}) {
-            String finalOp = op;
-            atomics.set(op, nativeFn(op, 0, (t, a, c) -> {
-                throw AbruptCompletion.typeError("Atomics." + finalOp + " is not implemented");
-            }));
-        }
+        com.jimmyhmiller.harmonica.bytecode.builtins.AtomicsBuiltin.install(atomics);
         atomics.set(wellKnownToStringTag.asPropertyKey(), "Atomics");
         atomics.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
         globals.putIfAbsent("Atomics", atomics);
@@ -6441,7 +6439,26 @@ public final class Realm {
             }
             return Undefined.VALUE;
         }));
-        t262.set("agent", new JSObject());   // stub, no real agent
+        // $262.agent — single-threaded harness. Tests use it to spin up
+        // worker agents that interact via SharedArrayBuffer; we don't
+        // actually fork, but we can at least surface the API so tests that
+        // only do .start()/.broadcast()/.receiveBroadcast() bindings get
+        // through their setup phase. Multi-agent observable behaviour
+        // (wait/notify across threads) is not modeled.
+        JSObject agent = new JSObject();
+        agent.set("start", nativeFn("start", 1, (t, a, c) -> Undefined.VALUE));
+        agent.set("broadcast", nativeFn("broadcast", 2, (t, a, c) -> Undefined.VALUE));
+        agent.set("receiveBroadcast", nativeFn("receiveBroadcast", 1, (t, a, c) -> Undefined.VALUE));
+        agent.set("getReport", nativeFn("getReport", 0, (t, a, c) -> null));
+        agent.set("report", nativeFn("report", 1, (t, a, c) -> Undefined.VALUE));
+        agent.set("sleep", nativeFn("sleep", 1, (t, a, c) -> {
+            try { Thread.sleep((long) AbstractOps.toIntegerOrInfinity(arg(a, 0))); }
+            catch (InterruptedException ignored) {}
+            return Undefined.VALUE;
+        }));
+        agent.set("leaving", nativeFn("leaving", 0, (t, a, c) -> Undefined.VALUE));
+        agent.set("monotonicNow", nativeFn("monotonicNow", 0, (t, a, c) -> (double) System.nanoTime() / 1e6));
+        t262.set("agent", agent);
         // $262.createRealm — would normally return a fresh Realm wrapper. v1
         // returns a stub `{ global: globalThis, eval: globalThis.eval }`
         // sharing OUR realm. Tests that observe cross-realm semantics
