@@ -1068,6 +1068,9 @@ public final class AbstractOps {
             // `Foo.prototype = obj` is special — it routes to the function's
             // own [[Construct]] prototype slot, not to the static-properties map.
             if ("prototype".equals(prop)) {
+                // Native ctors have non-writable .prototype (§ 21.1.2.4,
+                // etc.) — drop the write to match the descriptor.
+                if (fn.isNative()) return;
                 // Per § 10.2.4.3 [[Set]] on a function — any value is
                 // accepted as fn.prototype (the user can store an Array,
                 // primitive, etc.). Non-objects don't participate in

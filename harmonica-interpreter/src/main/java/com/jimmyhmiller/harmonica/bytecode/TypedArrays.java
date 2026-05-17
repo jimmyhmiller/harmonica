@@ -38,7 +38,9 @@ public final class TypedArrays {
     // ---------------------------------------------------------------
 
     public static volatile JSObject arrayBufferPrototype;
+    public static volatile JSFunction arrayBufferConstructor;
     public static volatile JSObject sharedArrayBufferPrototype;
+    public static volatile JSFunction sharedArrayBufferConstructor;
     public static volatile JSObject dataViewPrototype;
     /** %TypedArray%.prototype — shared between all view types. */
     public static volatile JSObject typedArrayPrototype;
@@ -371,6 +373,16 @@ public final class TypedArrays {
         return new JSFunction(name, arity, body);
     }
 
+    /** Install a prototype method with spec attrs (W+C, not enumerable, not
+     *  constructable). Use for prototype methods that LibJS marks with
+     *  Attribute::Writable | Attribute::Configurable. */
+    private static void installMethod(JSObject proto, String name, int arity, NativeBody body) {
+        JSFunction fn = nativeFn(name, arity, body);
+        fn.setNonConstructor(true);
+        proto.set(name, fn);
+        proto.setAttributes(name, (byte) (JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
+    }
+
     private static TypedArrayState requireTypedArray(Object t, String method) {
         TypedArrayState s = stateOf(t);
         if (s == null) {
@@ -495,68 +507,120 @@ public final class TypedArrays {
         defineGetter(arrayBufferPrototype, "resizable", "get resizable", (t, a, c) -> {
             JSObject self = requireArrayBuffer(t, "get resizable");
             ArrayBufferData d = bufferDataOf(self);
-            return d != null && !d.shared && d.isResizable();
+            if (d == null) throw AbruptCompletion.typeError("Not an ArrayBuffer");
+            if (d.shared) throw AbruptCompletion.typeError("`this` cannot be a SharedArrayBuffer");
+            return d.isResizable();
         });
         defineGetter(arrayBufferPrototype, "detached", "get detached", (t, a, c) -> {
             JSObject self = requireArrayBuffer(t, "get detached");
             ArrayBufferData d = bufferDataOf(self);
-            return d != null && !d.shared && d.isDetached();
+            if (d == null) throw AbruptCompletion.typeError("Not an ArrayBuffer");
+            if (d.shared) throw AbruptCompletion.typeError("`this` cannot be a SharedArrayBuffer");
+            return d.isDetached();
         });
 
         // Methods
-        arrayBufferPrototype.set("slice", nativeFn("slice", 2, (t, a, c) -> {
+        installMethod(arrayBufferPrototype, "slice", 2, (t, a, c) -> {
             JSObject self = requireArrayBuffer(t, "slice");
             ArrayBufferData d = bufferDataOf(self);
             if (d == null) throw AbruptCompletion.typeError("Not an ArrayBuffer");
+            if (d.shared) throw AbruptCompletion.typeError("`this` cannot be a SharedArrayBuffer");
             if (d.isDetached()) throw AbruptCompletion.typeError("Cannot slice detached ArrayBuffer");
             int len = d.byteLength();
             int start = clampToIndex(toIntegerOrInfinity(arg(a, 0)), len);
             int end   = arg(a, 1) == Undefined.VALUE ? len
                        : clampToIndex(toIntegerOrInfinity(arg(a, 1)), len);
             int newLen = Math.max(0, end - start);
-            JSObject out = new JSObject(arrayBufferPrototype);
-            ArrayBufferData copy = new ArrayBufferData(newLen, false, -1);
-            System.arraycopy(d.data, start, copy.data, 0, newLen);
-            out.set(SLOT_ARRAY_BUFFER_DATA, copy);
-            out.setAttributes(SLOT_ARRAY_BUFFER_DATA, (byte) 0);
+
+            // Species constructor.
+            JSFunction ctorFn = speciesConstructor(self, arrayBufferConstructor, c);
+            JSObject out;
+            if (ctorFn == arrayBufferConstructor) {
+                out = new JSObject(arrayBufferPrototype);
+                out.set(SLOT_ARRAY_BUFFER_DATA, new ArrayBufferData(newLen, false, -1));
+                out.setAttributes(SLOT_ARRAY_BUFFER_DATA, (byte) 0);
+            } else {
+                JSObject receiver = new JSObject(ctorFn.prototypeObject());
+                Object built = Interpreter.invokeFunctionAsConstructor(
+                    ctorFn, receiver, new Object[]{ (double) newLen }, c);
+                if (!(built instanceof JSObject jo)) {
+                    throw AbruptCompletion.typeError(
+                        "ArrayBuffer.prototype.slice species constructor did not return an ArrayBuffer");
+                }
+                ArrayBufferData nd = bufferDataOf(jo);
+                if (nd == null) {
+                    throw AbruptCompletion.typeError(
+                        "ArrayBuffer.prototype.slice species constructor did not return an ArrayBuffer");
+                }
+                if (nd.shared) {
+                    throw AbruptCompletion.typeError(
+                        "ArrayBuffer.prototype.slice species constructor returned a SharedArrayBuffer");
+                }
+                if (nd.isDetached()) {
+                    throw AbruptCompletion.typeError(
+                        "ArrayBuffer.prototype.slice species constructor returned a detached ArrayBuffer");
+                }
+                if (jo == self) {
+                    throw AbruptCompletion.typeError(
+                        "ArrayBuffer.prototype.slice species constructor returned the same ArrayBuffer");
+                }
+                if (nd.byteLength() < newLen) {
+                    throw AbruptCompletion.typeError(
+                        "ArrayBuffer.prototype.slice species constructor returned an ArrayBuffer smaller than requested");
+                }
+                out = jo;
+            }
+
+            // Side-effects of Construct may have detached/resized O.
+            if (d.isDetached()) {
+                throw AbruptCompletion.typeError("Cannot slice detached ArrayBuffer");
+            }
+            int currentLen = d.byteLength();
+            if (start < currentLen) {
+                int count = Math.min(newLen, currentLen - start);
+                ArrayBufferData destData = bufferDataOf(out);
+                System.arraycopy(d.data, start, destData.data, 0, count);
+            }
             return out;
-        }));
-        arrayBufferPrototype.set("resize", nativeFn("resize", 1, (t, a, c) -> {
+        });
+        installMethod(arrayBufferPrototype, "resize", 1, (t, a, c) -> {
             JSObject self = requireArrayBuffer(t, "resize");
             ArrayBufferData d = bufferDataOf(self);
             if (d == null || d.shared) throw AbruptCompletion.typeError("Not an ArrayBuffer");
             if (!d.isResizable()) throw AbruptCompletion.typeError("ArrayBuffer is not resizable");
-            if (d.isDetached()) throw AbruptCompletion.typeError("Cannot resize detached ArrayBuffer");
+            // ToIndex may detach (e.g. valueOf that calls detach hook).
             long newLen = toIndex(arg(a, 0));
+            if (d.isDetached()) throw AbruptCompletion.typeError("Cannot resize detached ArrayBuffer");
             if (newLen > d.maxByteLength) {
                 throw AbruptCompletion.rangeError("newLength > maxByteLength");
             }
             d.resize((int) newLen);
             return Undefined.VALUE;
-        }));
-        arrayBufferPrototype.set("transfer", nativeFn("transfer", 0, (t, a, c) -> {
+        });
+        installMethod(arrayBufferPrototype, "transfer", 0, (t, a, c) -> {
             JSObject self = requireArrayBuffer(t, "transfer");
             ArrayBufferData d = bufferDataOf(self);
             if (d == null || d.shared) throw AbruptCompletion.typeError("Not an ArrayBuffer");
-            if (d.isDetached()) throw AbruptCompletion.typeError("Cannot transfer detached ArrayBuffer");
+            // ToIndex may detach via valueOf.
             long newLen = arg(a, 0) == Undefined.VALUE ? d.byteLength() : toIndex(arg(a, 0));
+            if (d.isDetached()) throw AbruptCompletion.typeError("Cannot transfer detached ArrayBuffer");
             if (newLen > Integer.MAX_VALUE) throw AbruptCompletion.rangeError("newLength too large");
+            int max = d.isResizable() ? d.maxByteLength : -1;
             byte[] old = d.takeData();
             byte[] next = new byte[(int) newLen];
             System.arraycopy(old, 0, next, 0, Math.min(old.length, next.length));
-            int max = d.isResizable() ? d.maxByteLength : -1;
             ArrayBufferData newD = new ArrayBufferData(next, false, max);
             JSObject out = new JSObject(arrayBufferPrototype);
             out.set(SLOT_ARRAY_BUFFER_DATA, newD);
             out.setAttributes(SLOT_ARRAY_BUFFER_DATA, (byte) 0);
             return out;
-        }));
-        arrayBufferPrototype.set("transferToFixedLength", nativeFn("transferToFixedLength", 0, (t, a, c) -> {
+        });
+        installMethod(arrayBufferPrototype, "transferToFixedLength", 0, (t, a, c) -> {
             JSObject self = requireArrayBuffer(t, "transferToFixedLength");
             ArrayBufferData d = bufferDataOf(self);
             if (d == null || d.shared) throw AbruptCompletion.typeError("Not an ArrayBuffer");
-            if (d.isDetached()) throw AbruptCompletion.typeError("Cannot transfer detached ArrayBuffer");
             long newLen = arg(a, 0) == Undefined.VALUE ? d.byteLength() : toIndex(arg(a, 0));
+            if (d.isDetached()) throw AbruptCompletion.typeError("Cannot transfer detached ArrayBuffer");
             if (newLen > Integer.MAX_VALUE) throw AbruptCompletion.rangeError("newLength too large");
             byte[] old = d.takeData();
             byte[] next = new byte[(int) newLen];
@@ -566,11 +630,14 @@ public final class TypedArrays {
             out.set(SLOT_ARRAY_BUFFER_DATA, newD);
             out.setAttributes(SLOT_ARRAY_BUFFER_DATA, (byte) 0);
             return out;
-        }));
+        });
 
         // Symbol.toStringTag = "ArrayBuffer".
         setToStringTag(arrayBufferPrototype, "ArrayBuffer");
 
+        // ECMA: ctor.prototype is { writable:false, enumerable:false, configurable:false }.
+        ctor.setAttributes("prototype", (byte) 0);
+        arrayBufferConstructor = ctor;
         globals.putIfAbsent("ArrayBuffer", ctor);
     }
 
@@ -586,12 +653,24 @@ public final class TypedArrays {
             }
             JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(sharedArrayBufferPrototype);
             long byteLength = toIndex(arg(a, 0));
+            // Parse { maxByteLength }.
             int maxByteLength = -1;
             Object opts = arg(a, 1);
             if (opts instanceof JSObject optsObj) {
                 Object m = optsObj.get("maxByteLength");
-                if (m != Undefined.VALUE) maxByteLength = (int) toIndex(m);
+                if (m != Undefined.VALUE) {
+                    long mv = toIndex(m);
+                    if (mv < byteLength) {
+                        throw AbruptCompletion.rangeError("maxByteLength < byteLength");
+                    }
+                    if (mv > Integer.MAX_VALUE) {
+                        throw AbruptCompletion.rangeError("maxByteLength too large");
+                    }
+                    maxByteLength = (int) mv;
+                }
             }
+            // Per spec GetArrayBufferMaxByteLengthOption: a non-Object options
+            // value is silently ignored (no throw, no maxByteLength).
             if (byteLength > Integer.MAX_VALUE) {
                 throw AbruptCompletion.rangeError("byteLength too large");
             }
@@ -605,30 +684,100 @@ public final class TypedArrays {
 
         defineGetter(sharedArrayBufferPrototype, "byteLength", "get byteLength", (t, a, c) -> {
             ArrayBufferData d = bufferDataOf(t);
-            if (d == null || !d.shared) {
+            if (d == null) {
                 throw AbruptCompletion.typeError("get byteLength called on non-SharedArrayBuffer");
+            }
+            if (!d.shared) {
+                throw AbruptCompletion.typeError("`this` is not a SharedArrayBuffer");
             }
             return (double) d.byteLength();
         });
-        sharedArrayBufferPrototype.set("slice", nativeFn("slice", 2, (t, a, c) -> {
-            if (!(t instanceof JSObject self) || bufferDataOf(self) == null || !bufferDataOf(self).shared) {
-                throw AbruptCompletion.typeError("slice called on non-SharedArrayBuffer");
+        defineGetter(sharedArrayBufferPrototype, "maxByteLength", "get maxByteLength", (t, a, c) -> {
+            ArrayBufferData d = bufferDataOf(t);
+            if (d == null) {
+                throw AbruptCompletion.typeError("get maxByteLength called on non-SharedArrayBuffer");
             }
-            ArrayBufferData d = bufferDataOf(self);
+            if (!d.shared) {
+                throw AbruptCompletion.typeError("`this` is not a SharedArrayBuffer");
+            }
+            return (double) (d.isResizable() ? d.maxByteLength : d.byteLength());
+        });
+        defineGetter(sharedArrayBufferPrototype, "growable", "get growable", (t, a, c) -> {
+            ArrayBufferData d = bufferDataOf(t);
+            if (d == null) {
+                throw AbruptCompletion.typeError("get growable called on non-SharedArrayBuffer");
+            }
+            if (!d.shared) {
+                throw AbruptCompletion.typeError("`this` is not a SharedArrayBuffer");
+            }
+            return d.isResizable();
+        });
+        installMethod(sharedArrayBufferPrototype, "grow", 1, (t, a, c) -> {
+            ArrayBufferData d = bufferDataOf(t);
+            if (d == null) throw AbruptCompletion.typeError("grow called on non-SharedArrayBuffer");
+            if (!d.isResizable()) throw AbruptCompletion.typeError("SharedArrayBuffer is not growable");
+            if (!d.shared) throw AbruptCompletion.typeError("`this` is not a SharedArrayBuffer");
+            long newLen = toIndex(arg(a, 0));
+            int current = d.byteLength();
+            if (newLen == current) return Undefined.VALUE;
+            if (newLen < current) {
+                throw AbruptCompletion.rangeError("newLength < currentLength");
+            }
+            if (newLen > d.maxByteLength) {
+                throw AbruptCompletion.rangeError("newLength > maxByteLength");
+            }
+            d.resize((int) newLen);
+            return Undefined.VALUE;
+        });
+        installMethod(sharedArrayBufferPrototype, "slice", 2, (t, a, c) -> {
+            ArrayBufferData d = bufferDataOf(t);
+            if (d == null) throw AbruptCompletion.typeError("slice called on non-SharedArrayBuffer");
+            if (!d.shared) throw AbruptCompletion.typeError("`this` is not a SharedArrayBuffer");
+            JSObject self = (JSObject) t;
             int len = d.byteLength();
             int start = clampToIndex(toIntegerOrInfinity(arg(a, 0)), len);
             int end   = arg(a, 1) == Undefined.VALUE ? len
                        : clampToIndex(toIntegerOrInfinity(arg(a, 1)), len);
             int newLen = Math.max(0, end - start);
-            JSObject out = new JSObject(sharedArrayBufferPrototype);
-            ArrayBufferData copy = new ArrayBufferData(newLen, true, -1);
-            System.arraycopy(d.data, start, copy.data, 0, newLen);
-            out.set(SLOT_ARRAY_BUFFER_DATA, copy);
-            out.setAttributes(SLOT_ARRAY_BUFFER_DATA, (byte) 0);
+
+            JSFunction ctorFn = speciesConstructor(self, sharedArrayBufferConstructor, c);
+            JSObject out;
+            if (ctorFn == sharedArrayBufferConstructor) {
+                out = new JSObject(sharedArrayBufferPrototype);
+                out.set(SLOT_ARRAY_BUFFER_DATA, new ArrayBufferData(newLen, true, -1));
+                out.setAttributes(SLOT_ARRAY_BUFFER_DATA, (byte) 0);
+            } else {
+                JSObject receiver = new JSObject(ctorFn.prototypeObject());
+                Object built = Interpreter.invokeFunctionAsConstructor(
+                    ctorFn, receiver, new Object[]{ (double) newLen }, c);
+                if (!(built instanceof JSObject jo)) {
+                    throw AbruptCompletion.typeError(
+                        "SharedArrayBuffer.prototype.slice species constructor did not return a SharedArrayBuffer");
+                }
+                ArrayBufferData nd = bufferDataOf(jo);
+                if (nd == null || !nd.shared) {
+                    throw AbruptCompletion.typeError(
+                        "SharedArrayBuffer.prototype.slice species constructor did not return a SharedArrayBuffer");
+                }
+                if (jo == self) {
+                    throw AbruptCompletion.typeError(
+                        "SharedArrayBuffer.prototype.slice species constructor returned same SharedArrayBuffer");
+                }
+                if (nd.byteLength() < newLen) {
+                    throw AbruptCompletion.typeError(
+                        "SharedArrayBuffer.prototype.slice species constructor returned smaller buffer");
+                }
+                out = jo;
+            }
+            ArrayBufferData destData = bufferDataOf(out);
+            System.arraycopy(d.data, start, destData.data, 0, newLen);
             return out;
-        }));
+        });
         setToStringTag(sharedArrayBufferPrototype, "SharedArrayBuffer");
         installSpecies(ctor);
+        // ECMA: ctor.prototype is { writable:false, enumerable:false, configurable:false }.
+        ctor.setAttributes("prototype", (byte) 0);
+        sharedArrayBufferConstructor = ctor;
         globals.putIfAbsent("SharedArrayBuffer", ctor);
     }
 
