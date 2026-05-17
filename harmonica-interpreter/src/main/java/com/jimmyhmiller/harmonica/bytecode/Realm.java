@@ -6361,43 +6361,45 @@ public final class Realm {
         markMethodsNonEnumerable(temporal);
         globals.putIfAbsent("Temporal", temporal);
 
-        // ECMA-402 Intl — define the namespace with stub classes so tests
-        // that check `typeof Intl === "object"` succeed.
+        // ECMA-402 Intl — backed by java.text where possible. See
+        // builtins/IntlBuiltin.java for the full set of constructors and
+        // prototype methods.
         JSObject intl = new JSObject(objectPrototype);
-        String[] intlClasses = {
-            "Collator", "DateTimeFormat", "DisplayNames", "DurationFormat",
-            "ListFormat", "Locale", "NumberFormat", "PluralRules",
-            "RelativeTimeFormat", "Segmenter"
-        };
-        for (String cls : intlClasses) {
-            String finalCls = cls;
-            JSObject intlProto = new JSObject(objectPrototype);
-            JSFunction intlCtor = nativeFn(cls, 0, (t, a, c) -> {
-                if (!Interpreter.isNewCall() && !(t instanceof JSObject)) {
-                    throw AbruptCompletion.typeError("Intl." + finalCls + " constructor requires 'new'");
-                }
-                JSObject self = (t instanceof JSObject jo) ? jo : new JSObject(intlProto);
-                return self;
-            });
-            intlCtor.setPrototypeObject(intlProto);
-            intlProto.set("constructor", intlCtor);
-            intlCtor.properties().put("supportedLocalesOf", nativeFn("supportedLocalesOf", 1, (t, a, c) -> {
-                if (Interpreter.isNewCall()) throw AbruptCompletion.typeError("supportedLocalesOf is not a constructor");
-                return new JSArray();
-            }));
-            intlProto.set(wellKnownToStringTag.asPropertyKey(), "Intl." + cls);
-            intlProto.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
-            markMethodsNonEnumerable(intlProto);
-            intl.set(cls, intlCtor);
-        }
+        com.jimmyhmiller.harmonica.bytecode.builtins.IntlBuiltin.install(intl);
         intl.set("getCanonicalLocales", nativeFn("getCanonicalLocales", 1, (t, a, c) -> {
+            return com.jimmyhmiller.harmonica.bytecode.builtins.IntlBuiltin
+                .canonicalizeLocaleList(arg(a, 0));
+        }));
+        intl.set("supportedValuesOf", nativeFn("supportedValuesOf", 1, (t, a, c) -> {
+            String key = AbstractOps.toString(arg(a, 0));
             JSArray out = new JSArray();
-            Object arg = arg(a, 0);
-            if (arg instanceof JSArray src) for (Object e : src.elements()) out.push(AbstractOps.toString(e));
-            else if (arg != Undefined.VALUE) out.push(AbstractOps.toString(arg));
+            switch (key) {
+                case "calendar":   out.push("gregory"); break;
+                case "collation":  out.push("default"); break;
+                case "currency":
+                    for (java.util.Currency cur : java.util.Currency.getAvailableCurrencies()) {
+                        out.push(cur.getCurrencyCode());
+                    }
+                    break;
+                case "numberingSystem": out.push("latn"); break;
+                case "timeZone":
+                    for (String tz : java.util.TimeZone.getAvailableIDs()) out.push(tz);
+                    break;
+                case "unit":
+                    for (String u : new String[]{
+                        "acre","bit","byte","celsius","centimeter","day","degree","fahrenheit",
+                        "fluid-ounce","foot","gallon","gigabit","gigabyte","gram","hectare",
+                        "hour","inch","kilobit","kilobyte","kilogram","kilometer","liter",
+                        "megabit","megabyte","meter","mile","mile-scandinavian","milliliter",
+                        "millimeter","millisecond","minute","month","ounce","percent","petabyte",
+                        "pound","second","stone","terabit","terabyte","week","yard","year"
+                    }) out.push(u);
+                    break;
+                default:
+                    throw AbruptCompletion.rangeError("Invalid key: " + key);
+            }
             return out;
         }));
-        intl.set("supportedValuesOf", nativeFn("supportedValuesOf", 1, (t, a, c) -> new JSArray()));
         intl.set(wellKnownToStringTag.asPropertyKey(), "Intl");
         intl.setAttributes(wellKnownToStringTag.asPropertyKey(), JSObject.ATTR_CONFIGURABLE);
         markMethodsNonEnumerable(intl);
