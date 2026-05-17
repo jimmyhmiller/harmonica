@@ -73,6 +73,7 @@ public final class AbstractOps {
 
     public static Object sub(Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl - dr);
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
         if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) return new JSBigInt(lb.value.subtract(rb.value));
         if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
             throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
@@ -81,6 +82,7 @@ public final class AbstractOps {
     }
     public static Object mul(Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl * dr);
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
         if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) return new JSBigInt(lb.value.multiply(rb.value));
         if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
             throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
@@ -89,6 +91,7 @@ public final class AbstractOps {
     }
     public static Object div(Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl / dr);
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
         if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) {
             if (rb.value.signum() == 0) throw AbruptCompletion.rangeError("Division by zero");
             return new JSBigInt(lb.value.divide(rb.value));
@@ -100,6 +103,7 @@ public final class AbstractOps {
     }
     public static Object mod(Object lhs, Object rhs) {
         if (lhs instanceof Double dl && rhs instanceof Double dr) return boxDouble(dl % dr);
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
         if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) {
             if (rb.value.signum() == 0) throw AbruptCompletion.rangeError("Division by zero");
             return new JSBigInt(lb.value.remainder(rb.value));
@@ -110,6 +114,7 @@ public final class AbstractOps {
         return boxDouble(toNumber(lhs) % toNumber(rhs));
     }
     public static Object exp(Object lhs, Object rhs) {
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
         if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) {
             if (rb.value.signum() < 0) throw AbruptCompletion.rangeError("Exponent must be non-negative");
             return new JSBigInt(lb.value.pow(rb.value.intValueExact()));
@@ -120,7 +125,24 @@ public final class AbstractOps {
         return boxDouble(Math.pow(toNumber(lhs), toNumber(rhs)));
     }
 
+    /** § 7.1.4 ToNumeric — ToPrimitive(value, "number"), then if the result
+     *  is a BigInt return it, otherwise ToNumber. The binary numeric ops
+     *  (bitwise, shift, arithmetic) call this on both sides before the
+     *  same-type check so a {@code [Symbol.toPrimitive]} hook that returns
+     *  a BigInt makes the operation pick the BigInt branch. */
+    public static Object toNumeric(Object v) {
+        if (v instanceof JSBigInt) return v;
+        if (v instanceof Number || v instanceof Boolean) return v;
+        if (v instanceof JSObject || v instanceof JSArray || v instanceof JSFunction) {
+            Object prim = toPrimitive(v, "number");
+            if (prim instanceof JSBigInt) return prim;
+            return toNumber(prim);
+        }
+        return toNumber(v);
+    }
+
     public static Object bitwiseAnd(Object lhs, Object rhs) {
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
         if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) return new JSBigInt(lb.value.and(rb.value));
         if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
             throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
@@ -128,6 +150,7 @@ public final class AbstractOps {
         return boxDouble(toInt32(lhs) & toInt32(rhs));
     }
     public static Object bitwiseOr (Object lhs, Object rhs) {
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
         if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) return new JSBigInt(lb.value.or(rb.value));
         if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
             throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
@@ -135,6 +158,7 @@ public final class AbstractOps {
         return boxDouble(toInt32(lhs) | toInt32(rhs));
     }
     public static Object bitwiseXor(Object lhs, Object rhs) {
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
         if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) return new JSBigInt(lb.value.xor(rb.value));
         if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
             throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
@@ -144,14 +168,37 @@ public final class AbstractOps {
 
     /** ECMAScript {@code <<} — shift count masked to 5 bits. */
     public static Object leftShift(Object lhs, Object rhs) {
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) {
+            // BigInt left-shift: clamp the shift count to int. Negative
+            // counts perform an arithmetic right-shift per spec.
+            int n = rb.value.intValueExact();
+            return new JSBigInt(lb.value.shiftLeft(n));
+        }
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
+        }
         return boxDouble(toInt32(lhs) << (toInt32(rhs) & 0x1F));
     }
     /** ECMAScript {@code >>} — arithmetic right shift. */
     public static Object rightShift(Object lhs, Object rhs) {
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
+        if (lhs instanceof JSBigInt lb && rhs instanceof JSBigInt rb) {
+            int n = rb.value.intValueExact();
+            return new JSBigInt(lb.value.shiftRight(n));
+        }
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError("Cannot mix BigInt and other types, use explicit conversions");
+        }
         return boxDouble(toInt32(lhs) >> (toInt32(rhs) & 0x1F));
     }
     /** ECMAScript {@code >>>} — logical/unsigned right shift, result is uint32 promoted to Number. */
     public static Object unsignedRightShift(Object lhs, Object rhs) {
+        lhs = toNumeric(lhs); rhs = toNumeric(rhs);
+        if (lhs instanceof JSBigInt || rhs instanceof JSBigInt) {
+            throw AbruptCompletion.typeError(
+                "BigInts have no unsigned right shift, use >> instead");
+        }
         long u = ((long) toInt32(lhs) & 0xFFFFFFFFL) >>> (toInt32(rhs) & 0x1F);
         return boxDouble(u);
     }
@@ -556,6 +603,7 @@ public final class AbstractOps {
             || v instanceof Boolean
             || v instanceof Number
             || v instanceof CharSequence
+            || v instanceof JSBigInt
             || v instanceof JSSymbol;
     }
 
