@@ -1684,11 +1684,16 @@ public final class Generator {
                 preAllocateLetSlotsRecurse(ts.finalizer());
             }
         } else if (s instanceof SwitchStatement ss) {
+            // ECMA-262 § 14.12 — the SwitchStatement body is a single
+            // lexical block: all case consequents share one block scope.
+            // Allocate that scope here (keyed by the SwitchStatement itself)
+            // so any block-FDs in the cases land in blockFnSlots[ss] and
+            // get the same enter/exit shadowing as BlockStatement.
+            java.util.List<Statement> allCaseStmts = new java.util.ArrayList<>();
             for (com.jimmyhmiller.harmonica.ast.SwitchCase c : ss.cases()) {
-                for (Statement cs : c.consequent()) {
-                    preAllocateLetSlotsRecurse(cs);
-                }
+                allCaseStmts.addAll(c.consequent());
             }
+            preAllocateLetSlotsForBlock(ss, allCaseStmts, /* collectFds */ true);
         } else if (s instanceof LabeledStatement ls) {
             preAllocateLetSlotsRecurse(ls.body());
         } else if (s instanceof WithStatement ws) {
@@ -6993,96 +6998,141 @@ public final class Generator {
         // immediately. Otherwise it follows the Mov.
         startNewBlock();
 
+        // ECMA-262 § 14.12 — the SwitchStatement body is a single lexical
+        // block. Install the pre-allocated block-let + block-FD slots
+        // (from preAllocateLetSlotsForBlock(ss, ...)) into `locals` for
+        // the duration of the switch and restore at every exit. Mirrors
+        // the BlockStatement lowering's enter/exit pattern. Block-FD
+        // slots are primed to undefined here (per § B.3.2.4 step 1.a).
+        java.util.LinkedHashMap<String, Integer> myLetSlots = blockLetSlots.get(ss);
+        java.util.LinkedHashMap<String, Integer> myFnSlots = blockFnSlots.get(ss);
+        java.util.Map<String, Integer> savedShadowed = new java.util.HashMap<>();
+        java.util.Set<String> introducedHere = new java.util.HashSet<>();
+        if (myLetSlots != null && !myLetSlots.isEmpty()) {
+            for (java.util.Map.Entry<String, Integer> e : myLetSlots.entrySet()) {
+                introducedHere.add(e.getKey());
+                Integer prior = locals.get(e.getKey());
+                if (prior != null) savedShadowed.put(e.getKey(), prior);
+                locals.put(e.getKey(), e.getValue());
+            }
+        }
+        if (myFnSlots != null && !myFnSlots.isEmpty()) {
+            Operand undef = constant(Undefined.VALUE);
+            for (java.util.Map.Entry<String, Integer> e : myFnSlots.entrySet()) {
+                emit(new Op.Mov(new Variable.Local(e.getValue()), undef));
+                introducedHere.add(e.getKey());
+                Integer prior = locals.get(e.getKey());
+                if (prior != null && !savedShadowed.containsKey(e.getKey())) {
+                    savedShadowed.put(e.getKey(), prior);
+                }
+                locals.put(e.getKey(), e.getValue());
+            }
+        }
+
         // Use the loop-break mechanism for `break` inside case bodies.
         LoopContext breakCtx = new LoopContext();
         loopStack.push(breakCtx);
 
-        // Phase 1: emit comparison cascade. Each case's test is a `case X:`
-        // strict-eq check that jumps to the case body if it matches.
-        // Default (if present) is a fallback after all explicit tests fail.
-        int[] caseBodyJumps = new int[ss.cases().size()];   // placeholders pointing into Phase 2
-        int defaultIdx = -1;
-        for (int i = 0; i < ss.cases().size(); i++) {
-            SwitchCase c = ss.cases().get(i);
-            if (c.test() == null) {
-                defaultIdx = i;
-                caseBodyJumps[i] = -1;   // patched after Phase 2 lays out bodies
-                continue;
+        try {
+            // Phase 1: emit comparison cascade. Each case's test is a `case X:`
+            // strict-eq check that jumps to the case body if it matches.
+            // Default (if present) is a fallback after all explicit tests fail.
+            int[] caseBodyJumps = new int[ss.cases().size()];   // placeholders pointing into Phase 2
+            int defaultIdx = -1;
+            for (int i = 0; i < ss.cases().size(); i++) {
+                SwitchCase c = ss.cases().get(i);
+                if (c.test() == null) {
+                    defaultIdx = i;
+                    caseBodyJumps[i] = -1;   // patched after Phase 2 lays out bodies
+                    continue;
+                }
+                Operand testVal = lowerExpression(c.test());
+                // Fused JumpStrictlyEquals matches LibJS's switch-case dispatch.
+                // The fall-through (false-target) goes to the next test (or
+                // default/jumpOver); we record the placeholder to patch after
+                // emitting the next instruction.
+                caseBodyJumps[i] = emit(new Op.JumpStrictlyEquals(
+                    discOp, testVal, /* trueTarget */ -1, /* falseTarget */ -1));
+                // Patch the false_target to fall through to the immediately-next
+                // instruction (next test, or jumpOver/jumpToDefault). The
+                // start-of-next-block marker is set so the disassembler renders
+                // the false-target as a separate block — matches LibJS layout.
+                startNewBlock();
+                Op.JumpStrictlyEquals jse = (Op.JumpStrictlyEquals) ops.get(caseBodyJumps[i]);
+                ops.set(caseBodyJumps[i], new Op.JumpStrictlyEquals(
+                    jse.lhs(), jse.rhs(), jse.trueTargetPc(), currentPc()));
+                release(testVal);
             }
-            Operand testVal = lowerExpression(c.test());
-            // Fused JumpStrictlyEquals matches LibJS's switch-case dispatch.
-            // The fall-through (false-target) goes to the next test (or
-            // default/jumpOver); we record the placeholder to patch after
-            // emitting the next instruction.
-            caseBodyJumps[i] = emit(new Op.JumpStrictlyEquals(
-                discOp, testVal, /* trueTarget */ -1, /* falseTarget */ -1));
-            // Patch the false_target to fall through to the immediately-next
-            // instruction (next test, or jumpOver/jumpToDefault). The
-            // start-of-next-block marker is set so the disassembler renders
-            // the false-target as a separate block — matches LibJS layout.
+            // If no test matched and there's a default, jump to it. Skip the
+            // Jump when no real cases were emitted — the default body is the
+            // immediately-following block in PC order, so fall-through suffices
+            // (LibJS does the same).
+            int jumpToDefault = -1;
+            boolean anyRealCase = false;
+            for (int i = 0; i < ss.cases().size(); i++) {
+                if (ss.cases().get(i).test() != null) { anyRealCase = true; break; }
+            }
+            if (defaultIdx >= 0 && anyRealCase) {
+                jumpToDefault = emit(new Op.Jump(/* placeholder */ -1));
+            }
+            // Otherwise, jump past the switch entirely.
+            int jumpOverEverything = (defaultIdx < 0) ? emit(new Op.Jump(-1)) : -1;
+
+            // Phase 2: emit case bodies in order; each falls through to the next.
             startNewBlock();
-            Op.JumpStrictlyEquals jse = (Op.JumpStrictlyEquals) ops.get(caseBodyJumps[i]);
-            ops.set(caseBodyJumps[i], new Op.JumpStrictlyEquals(
-                jse.lhs(), jse.rhs(), jse.trueTargetPc(), currentPc()));
-            release(testVal);
-        }
-        // If no test matched and there's a default, jump to it. Skip the
-        // Jump when no real cases were emitted — the default body is the
-        // immediately-following block in PC order, so fall-through suffices
-        // (LibJS does the same).
-        int jumpToDefault = -1;
-        boolean anyRealCase = false;
-        for (int i = 0; i < ss.cases().size(); i++) {
-            if (ss.cases().get(i).test() != null) { anyRealCase = true; break; }
-        }
-        if (defaultIdx >= 0 && anyRealCase) {
-            jumpToDefault = emit(new Op.Jump(/* placeholder */ -1));
-        }
-        // Otherwise, jump past the switch entirely.
-        int jumpOverEverything = (defaultIdx < 0) ? emit(new Op.Jump(-1)) : -1;
+            int[] caseBodyStarts = new int[ss.cases().size()];
+            for (int i = 0; i < ss.cases().size(); i++) {
+                SwitchCase c = ss.cases().get(i);
+                caseBodyStarts[i] = currentPc();
+                for (Statement s : c.consequent()) lowerStatement(s);
+            }
 
-        // Phase 2: emit case bodies in order; each falls through to the next.
-        startNewBlock();
-        int[] caseBodyStarts = new int[ss.cases().size()];
-        for (int i = 0; i < ss.cases().size(); i++) {
-            SwitchCase c = ss.cases().get(i);
-            caseBodyStarts[i] = currentPc();
-            for (Statement s : c.consequent()) lowerStatement(s);
-        }
+            // After all bodies — this is the post-switch position.
+            startNewBlock();
+            int afterPc = currentPc();
 
-        // After all bodies — this is the post-switch position.
-        startNewBlock();
-        int afterPc = currentPc();
-
-        // Patch jumps from Phase 1 to their corresponding case-body starts.
-        // For fused JumpStrictlyEquals, the trueTarget is patched (the case
-        // body). The falseTarget was already set inline to the next test's
-        // PC during Phase 1.
-        for (int i = 0; i < caseBodyJumps.length; i++) {
-            if (caseBodyJumps[i] >= 0) {
-                Op op = ops.get(caseBodyJumps[i]);
-                if (op instanceof Op.JumpStrictlyEquals jse) {
-                    int target = caseBodyStarts[i];
-                    if (!blockStartPcs.contains(target)) {
-                        int insertAt = 0;
-                        while (insertAt < blockStartPcs.size() && blockStartPcs.get(insertAt) < target) insertAt++;
-                        blockStartPcs.add(insertAt, target);
+            // Patch jumps from Phase 1 to their corresponding case-body starts.
+            // For fused JumpStrictlyEquals, the trueTarget is patched (the case
+            // body). The falseTarget was already set inline to the next test's
+            // PC during Phase 1.
+            for (int i = 0; i < caseBodyJumps.length; i++) {
+                if (caseBodyJumps[i] >= 0) {
+                    Op op = ops.get(caseBodyJumps[i]);
+                    if (op instanceof Op.JumpStrictlyEquals jse) {
+                        int target = caseBodyStarts[i];
+                        if (!blockStartPcs.contains(target)) {
+                            int insertAt = 0;
+                            while (insertAt < blockStartPcs.size() && blockStartPcs.get(insertAt) < target) insertAt++;
+                            blockStartPcs.add(insertAt, target);
+                        }
+                        ops.set(caseBodyJumps[i], new Op.JumpStrictlyEquals(
+                            jse.lhs(), jse.rhs(), target, jse.falseTargetPc()));
+                    } else {
+                        patchJumpTarget(caseBodyJumps[i], caseBodyStarts[i]);
                     }
-                    ops.set(caseBodyJumps[i], new Op.JumpStrictlyEquals(
-                        jse.lhs(), jse.rhs(), target, jse.falseTargetPc()));
-                } else {
-                    patchJumpTarget(caseBodyJumps[i], caseBodyStarts[i]);
                 }
             }
-        }
-        if (jumpToDefault >= 0) patchJumpTarget(jumpToDefault, caseBodyStarts[defaultIdx]);
-        if (jumpOverEverything >= 0) patchJumpTarget(jumpOverEverything, afterPc);
+            if (jumpToDefault >= 0) patchJumpTarget(jumpToDefault, caseBodyStarts[defaultIdx]);
+            if (jumpOverEverything >= 0) patchJumpTarget(jumpOverEverything, afterPc);
 
-        // Patch break statements to land here.
-        loopStack.pop();
-        for (int p : breakCtx.pendingBreakPcs) patchJumpTarget(p, afterPc);
-        for (int p : breakCtx.pendingContinuePcs) {
-            throw new UnsupportedOperationException("Generator: continue inside switch is not supported here");
+            // Patch break statements to land here.
+            for (int p : breakCtx.pendingBreakPcs) patchJumpTarget(p, afterPc);
+            for (int p : breakCtx.pendingContinuePcs) {
+                throw new UnsupportedOperationException("Generator: continue inside switch is not supported here");
+            }
+        } finally {
+            loopStack.pop();
+            // Restore: tear down the switch's block scope. Remove names
+            // introduced here from `locals`; re-add prior shadowed mappings.
+            // Mirrors BlockStatement's exit-restore. Note: emitted PC layout
+            // above already places afterPc as the next-block start, so any
+            // subsequent statement lowered into the function body sees the
+            // outer `locals` view (no inner switch slots leaking out).
+            for (String name : introducedHere) {
+                Integer prior = savedShadowed.get(name);
+                if (prior != null) locals.put(name, prior);
+                else locals.remove(name);
+            }
         }
     }
 
