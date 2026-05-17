@@ -8463,10 +8463,25 @@ public final class Realm {
             // String.prototype implementations by swapping receiver/arg.
             regExpPrototype.set(wellKnownMatch.asPropertyKey(),
                 nativeFn("[Symbol.match]", 1, (t, a, c) -> {
+                    // ECMA-262 § 22.2.6.10 RegExp.prototype[@@match]: when
+                    // the receiver has a user-overridden `exec` method, the
+                    // spec wants us to dispatch through it. Currently we
+                    // only do that for the non-global case; for global we
+                    // still route through String.prototype.match because the
+                    // spec's loop has subtle lastIndex / writable-descriptor
+                    // interactions we don't yet handle.
+                    if (!(t instanceof JSObject rx)) {
+                        throw AbruptCompletion.typeError("RegExp.prototype[@@match] called on non-object");
+                    }
+                    String inputStr = AbstractOps.toString(arg(a, 0));
+                    Object globalV = AbstractOps.getProperty(rx, "global");
+                    boolean global = AbstractOps.toBoolean(globalV);
+                    if (!global) {
+                        return regExpExec(rx, inputStr, c);
+                    }
                     Object strFn = stringPrototype.get("match");
                     if (!(strFn instanceof JSFunction f)) return null;
-                    String s = AbstractOps.toString(arg(a, 0));
-                    return Interpreter.invokeFunction(f, s, new Object[]{t}, c);
+                    return Interpreter.invokeFunction(f, inputStr, new Object[]{t}, c);
                 }));
             regExpPrototype.setAttributes(wellKnownMatch.asPropertyKey(),
                 (byte)(JSObject.ATTR_WRITABLE | JSObject.ATTR_CONFIGURABLE));
@@ -8895,6 +8910,38 @@ public final class Realm {
      * {@code thrown.constructor === SyntaxError} (etc.) holds. Falls back to a
      * bare object if the prototype hasn't been initialized yet (bootstrap).
      */
+    /** § 22.2.7.1 RegExpExec(R, S). Read R.[[exec]]; if callable, call it
+     *  with R as `this` and [S] as args, validate the return is null or
+     *  Object, return it. Otherwise fall back to the built-in exec via
+     *  {@link #originalRegExpExec}. */
+    public static Object regExpExec(JSObject rx, String S, InterpContext ctx) {
+        Object exec = AbstractOps.getProperty(rx, "exec");
+        if (exec instanceof JSFunction execFn) {
+            Object result = Interpreter.invokeFunction(execFn, rx, new Object[]{S}, ctx);
+            if (result == null || result == Undefined.VALUE) return null;
+            if (!(result instanceof JSObject || result instanceof JSArray)) {
+                throw AbruptCompletion.typeError(
+                    "RegExpExec: result of `exec` must be Object or null");
+            }
+            return result;
+        }
+        if (originalRegExpExec == null) {
+            throw AbruptCompletion.typeError("RegExpExec: receiver is not a RegExp");
+        }
+        return Interpreter.invokeFunction(originalRegExpExec, rx, new Object[]{S}, ctx);
+    }
+
+    /** § 22.2.7.3 AdvanceStringIndex(S, index, unicode). Without unicode,
+     *  return index+1. With unicode, advance past the surrogate pair. */
+    public static long advanceStringIndex(String S, long index, boolean unicode) {
+        if (!unicode || index + 1 >= S.length()) return index + 1;
+        int first = S.charAt((int) index);
+        if (first < 0xD800 || first > 0xDBFF) return index + 1;
+        int second = S.charAt((int) index + 1);
+        if (second < 0xDC00 || second > 0xDFFF) return index + 1;
+        return index + 2;
+    }
+
     public static JSObject makeError(String typeName, String message) {
         JSObject proto = errorPrototypes.get(typeName);
         JSObject err = proto != null ? new JSObject(proto) : new JSObject();
