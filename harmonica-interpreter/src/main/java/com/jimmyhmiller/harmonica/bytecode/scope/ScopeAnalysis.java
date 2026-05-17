@@ -30,17 +30,20 @@ public final class ScopeAnalysis {
     private final IdentityHashMap<Node, ScopeRecord> scopeForNode;
     private final IdentityHashMap<Identifier, IdentifierResolution> resolutions;
     private final IdentityHashMap<FunctionDeclaration, ScopeVariable> annexBBindings;
+    private final IdentityHashMap<FunctionDeclaration, ScopeRecord> annexBEmissionFDs;
 
     ScopeAnalysis(
         ScopeRecord rootScope,
         IdentityHashMap<Node, ScopeRecord> scopeForNode,
         IdentityHashMap<Identifier, IdentifierResolution> resolutions,
-        IdentityHashMap<FunctionDeclaration, ScopeVariable> annexBBindings
+        IdentityHashMap<FunctionDeclaration, ScopeVariable> annexBBindings,
+        IdentityHashMap<FunctionDeclaration, ScopeRecord> annexBEmissionFDs
     ) {
         this.rootScope = rootScope;
         this.scopeForNode = scopeForNode;
         this.resolutions = resolutions;
         this.annexBBindings = annexBBindings;
+        this.annexBEmissionFDs = annexBEmissionFDs;
     }
 
     /**
@@ -60,7 +63,8 @@ public final class ScopeAnalysis {
             collector.rootScope(),
             collector.scopeForNode(),
             analyzer.resolutions(),
-            analyzer.annexBBindings()
+            analyzer.annexBBindings(),
+            analyzer.annexBEmissionFDs()
         );
     }
 
@@ -95,5 +99,21 @@ public final class ScopeAnalysis {
     /** Read-only view of all Annex-B bindings discovered. */
     public Map<FunctionDeclaration, ScopeVariable> annexBBindings() {
         return java.util.Collections.unmodifiableMap(annexBBindings);
+    }
+
+    /**
+     * All function declarations that need the Annex-B round-trip emission
+     * shape (GetBinding + SetVariableBinding) — a superset of
+     * {@link #annexBBindings()} that includes block-scoped FDs even when a
+     * lex conflict on the chain disqualifies them from actual var-binding
+     * synthesis. Maps each FD to its enclosing var scope (so the Generator
+     * can route per-function-body emission separately from script-level).
+     *
+     * <p>Sloppy mode only — strict-mode block-FDs don't need the round-trip
+     * because the spec already treats them as purely block-scoped without
+     * the host extension.
+     */
+    public Map<FunctionDeclaration, ScopeRecord> annexBEmissionFDs() {
+        return java.util.Collections.unmodifiableMap(annexBEmissionFDs);
     }
 }

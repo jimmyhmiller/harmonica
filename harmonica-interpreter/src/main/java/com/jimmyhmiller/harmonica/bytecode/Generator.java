@@ -1798,12 +1798,10 @@ public final class Generator {
         }
 
         // Pre-pass: run scope analysis. Available for downstream consumers
-        // (Annex-B widening + emission fixes land in a follow-up commit).
-        // For now the Annex-B set still comes from the historical AST walker
-        // — the analyzer's spec-faithful output is a SUPERSET that exposes
-        // latent prologue bugs (e.g. async-flag dropped when materializing
-        // hoisted FDs) that need to be fixed in lockstep with the widened
-        // tagging.
+        // (Annex-B widening blocked on per-block binding model — see
+        // {@link com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis#annexBEmissionFDs}).
+        // For now the Annex-B set still comes from the historical narrow
+        // AST walker (switch-case FDs only).
         @SuppressWarnings("unused")
         com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis scopeAnalysis =
             com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis.analyze(
@@ -1884,11 +1882,11 @@ public final class Generator {
                     emit(new Op.CreateMutableBinding(annexBEnvReg,
                         /* canBeDeleted */ false, name));
                     JSFunction fn = generateFunction(name, fd.params(), fd.body(),
-                        /* isArrow */ false, fd.generator());
+                        /* isArrow */ false, fd.generator(), fd.async());
                     int fnIndex = sharedFunctionData.size();
                     sharedFunctionData.add(fn);
                     Variable.Register fnReg = allocRegister();
-                    emit(new Op.NewFunction(fnReg, fnIndex, /* displayName */ null, null));
+                    emit(new Op.NewFunction(fnReg, fnIndex, name, null));
                     emit(new Op.InitializeLexicalBinding(name, fnReg, new EnvironmentCoordinate()));
                     release(fnReg);
                     lexEnvBindingNames.add(name);

@@ -34,6 +34,7 @@ final class ScopeAnalyzer {
     private final ScopeCollector collector;
     private final IdentityHashMap<Identifier, IdentifierResolution> resolutions = new IdentityHashMap<>();
     private final IdentityHashMap<FunctionDeclaration, ScopeVariable> annexBBindings = new IdentityHashMap<>();
+    private final IdentityHashMap<FunctionDeclaration, ScopeRecord> annexBEmissionFDs = new IdentityHashMap<>();
 
     ScopeAnalyzer(ScopeCollector collector) {
         this.collector = collector;
@@ -41,6 +42,7 @@ final class ScopeAnalyzer {
 
     IdentityHashMap<Identifier, IdentifierResolution> resolutions() { return resolutions; }
     IdentityHashMap<FunctionDeclaration, ScopeVariable> annexBBindings() { return annexBBindings; }
+    IdentityHashMap<FunctionDeclaration, ScopeRecord> annexBEmissionFDs() { return annexBEmissionFDs; }
 
     void analyze() {
         propagateEvalPoison(collector.rootScope());
@@ -117,6 +119,13 @@ final class ScopeAnalyzer {
             for (ScopeVariable v : child.variables().values()) {
                 if (v.kind() != BindingKind.Function) continue;
                 if (!(v.declarationNode() instanceof FunctionDeclaration fd)) continue;
+                // Every block-FD in a sloppy var scope needs the Annex-B
+                // round-trip emission (so the Generator's "normal top-level
+                // FD" path doesn't destructively InitializeLexicalBinding
+                // over an outer let/const). The narrower
+                // {@link #annexBBindings} map only covers FDs eligible for
+                // actual var-binding synthesis (no conflicts on the chain).
+                annexBEmissionFDs.put(fd, varScope);
                 if (!isAnnexBHoistable(varScope, child, v)) continue;
                 ScopeVariable existing = varScope.variables().get(v.name());
                 if (existing != null) {
