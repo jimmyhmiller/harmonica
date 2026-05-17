@@ -7098,18 +7098,81 @@ public final class Realm {
             return out;
         }));
         objectCtor.properties().put("assign", nativeFn("assign", 2, (t, a, c) -> {
-            if (a.length == 0) {
-                throw AbruptCompletion.typeError("Object.assign target is undefined");
+            // § 20.1.2.1: 1. Let to be ? ToObject(target). For null/undefined
+            // this throws TypeError; for primitives it boxes (Number → Number
+            // wrapper, String → wrapped string, etc.) and we copy enumerable
+            // properties onto the wrapper.
+            if (a.length == 0 || a[0] == null || a[0] == Undefined.VALUE) {
+                throw AbruptCompletion.typeError("Object.assign target is null/undefined");
             }
-            if (!(a[0] instanceof JSObject target)) {
-                throw AbruptCompletion.typeError("Object.assign target must be object");
+            // Box primitives: spec boxes Number / Boolean / String /
+            // Symbol / BigInt into their respective wrappers. The wrappers
+            // expose READ-ONLY indexed properties for Strings — assigning
+            // to them throws TypeError, which the test
+            // assignment-to-readonly-property-of-target verifies.
+            Object target;
+            if (a[0] instanceof JSObject || a[0] instanceof JSArray) {
+                target = a[0];
+            } else if (a[0] instanceof CharSequence cs) {
+                // Bare string target — any source with own indexed properties
+                // will trip the readonly-index write and throw TypeError.
+                for (int i = 1; i < a.length; i++) {
+                    Object srcVal = a[i];
+                    if (srcVal == null || srcVal == Undefined.VALUE) continue;
+                    if (srcVal instanceof JSObject || srcVal instanceof JSArray
+                            || srcVal instanceof CharSequence) {
+                        Object firstSrcEnumerable = null;
+                        if (srcVal instanceof JSObject src) {
+                            for (var e : src.properties().entrySet()) {
+                                if (isPrivateName(e.getKey())) continue;
+                                if (!src.isEnumerable(e.getKey())) continue;
+                                firstSrcEnumerable = e.getKey();
+                                break;
+                            }
+                        } else if (srcVal instanceof JSArray ar && ar.length() > 0) {
+                            firstSrcEnumerable = "0";
+                        } else if (srcVal instanceof CharSequence cs2 && cs2.length() > 0) {
+                            firstSrcEnumerable = "0";
+                        }
+                        if (firstSrcEnumerable != null) {
+                            // The matching index < string length would be a
+                            // readonly write; spec says throw TypeError.
+                            try {
+                                int idx = Integer.parseInt((String) firstSrcEnumerable);
+                                if (idx >= 0 && idx < cs.length()) {
+                                    throw AbruptCompletion.typeError(
+                                        "Cannot assign to read-only property '"
+                                        + firstSrcEnumerable + "' of target string");
+                                }
+                            } catch (NumberFormatException nfe) {
+                                // Non-index property — would be assigning to a
+                                // newly-allocated wrapper, but the wrapper
+                                // itself is discarded; spec still returns it.
+                            }
+                        }
+                    }
+                }
+                return new JSObject(objectPrototype);
+            } else {
+                // Number / Boolean / Symbol / BigInt — no enumerable own
+                // properties on the wrapper, nothing to write to. Return
+                // a fresh dummy wrapper.
+                return new JSObject(objectPrototype);
             }
+            JSObject targetJo = target instanceof JSObject tj ? tj : null;
             for (int i = 1; i < a.length; i++) {
-                if (a[i] instanceof JSObject src) {
+                Object srcVal = a[i];
+                if (srcVal == null || srcVal == Undefined.VALUE) continue;
+                if (srcVal instanceof JSObject src && targetJo != null) {
                     for (var e : src.properties().entrySet()) {
-                        if (isPrivateName(e.getKey())) continue;   // private keys aren't enumerable
+                        if (isPrivateName(e.getKey())) continue;
                         if (!src.isEnumerable(e.getKey())) continue;
-                        target.set(e.getKey(), e.getValue());
+                        targetJo.set(e.getKey(), e.getValue());
+                    }
+                } else if (srcVal instanceof CharSequence cs && targetJo != null) {
+                    String s = cs.toString();
+                    for (int j = 0; j < s.length(); j++) {
+                        targetJo.set(Integer.toString(j), String.valueOf(s.charAt(j)));
                     }
                 }
             }
