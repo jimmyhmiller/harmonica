@@ -616,8 +616,33 @@ public final class AbstractOps {
             if (trap != null) {
                 InterpContext ctx = InterpContext.current();
                 if (ctx != null) {
-                    return Interpreter.invokeFunction(trap, Realm.proxyHandler(pj),
+                    Object trapResult = Interpreter.invokeFunction(trap, Realm.proxyHandler(pj),
                         new Object[]{target, pkey, pj}, ctx);
+                    // § 10.5.8 ProxyExoticObject [[Get]] invariant: if the
+                    // target has a non-configurable, non-writable own data
+                    // property, the trap MUST return SameValue as the target
+                    // value (else TypeError). Similarly: if the target has a
+                    // non-configurable own accessor with undefined getter, the
+                    // trap must return undefined.
+                    Object descObj = ordinaryGetOwnPropertyDescriptor(target, pkey);
+                    if (descObj instanceof JSObject desc
+                            && Boolean.FALSE.equals(desc.get("configurable"))) {
+                        if (desc.has("value")
+                                && Boolean.FALSE.equals(desc.get("writable"))) {
+                            Object tgtVal = desc.get("value");
+                            if (!strictlyEquals(tgtVal, trapResult)) {
+                                throw AbruptCompletion.typeError(
+                                    "Proxy 'get' trap returned different value for non-configurable, non-writable property '" + pkey + "'");
+                            }
+                        } else if (desc.has("get")
+                                && (desc.get("get") == null || desc.get("get") == Undefined.VALUE)) {
+                            if (trapResult != Undefined.VALUE) {
+                                throw AbruptCompletion.typeError(
+                                    "Proxy 'get' trap returned non-undefined for non-configurable accessor with no getter on '" + pkey + "'");
+                            }
+                        }
+                    }
+                    return trapResult;
                 }
             }
             return getProperty(target, pkey);
@@ -1277,5 +1302,203 @@ public final class AbstractOps {
             return "[object Object]";
         }
         return v.toString();
+    }
+
+    // ---------------------------------------------------------------
+    // Property-operation primitives used by the Proxy trap fallbacks.
+    // These do *not* re-enter Proxy dispatch — they operate directly on
+    // the (target) object so the trap doesn't infinitely recurse.
+    // ---------------------------------------------------------------
+
+    /** § 7.3.11 HasProperty (without Proxy trap dispatch). */
+    public static boolean hasProperty(Object base, String key) {
+        if (base instanceof JSObject jo) {
+            if (jo.has(key)) return true;
+            JSObject proto = jo.proto();
+            if (proto != null) return hasProperty(proto, key);
+            return false;
+        }
+        if (base instanceof JSArray arr) {
+            if ("length".equals(key)) return true;
+            int idx = -1;
+            try { idx = Integer.parseInt(key); } catch (NumberFormatException ignored) {}
+            if (idx >= 0 && idx < arr.length() && !arr.isHole(idx)) return true;
+            if (arr.hasExtraProperty(key)) return true;
+            return Realm.arrayPrototype != null && Realm.arrayPrototype.has(key);
+        }
+        if (base instanceof JSFunction fn) {
+            if (fn.hasOwnStatic(key)) return true;
+            if ("name".equals(key) || "length".equals(key) || "prototype".equals(key)) return true;
+            return Realm.functionPrototype != null && Realm.functionPrototype.has(key);
+        }
+        return false;
+    }
+
+    /** § 7.3.12 DeleteProperty (no Proxy dispatch). */
+    public static boolean deleteProperty(Object base, String key) {
+        if (base instanceof JSObject jo) {
+            if (!jo.has(key)) return true;
+            if (!jo.isConfigurable(key)) return false;
+            jo.properties().remove(key);
+            return true;
+        }
+        if (base instanceof JSArray arr) {
+            int idx = -1;
+            try { idx = Integer.parseInt(key); } catch (NumberFormatException ignored) {}
+            if (idx >= 0 && idx < arr.length()) {
+                arr.set(idx, Op.HOLE);
+                return true;
+            }
+            return true;
+        }
+        return true;
+    }
+
+    /** § 10.1.5 OrdinaryGetOwnProperty (no Proxy dispatch). Returns a
+     *  descriptor object or Undefined.VALUE. */
+    public static Object ordinaryGetOwnPropertyDescriptor(Object base, String key) {
+        if (base instanceof JSObject jo && jo.properties().containsKey(key)) {
+            JSObject desc = new JSObject();
+            Object v = jo.properties().get(key);
+            if (v instanceof Accessor acc) {
+                desc.set("get", acc.getter() == null ? Undefined.VALUE : acc.getter());
+                desc.set("set", acc.setter() == null ? Undefined.VALUE : acc.setter());
+            } else {
+                desc.set("value", v);
+                desc.set("writable", jo.isWritable(key));
+            }
+            desc.set("enumerable", jo.isEnumerable(key));
+            desc.set("configurable", jo.isConfigurable(key));
+            return desc;
+        }
+        if (base instanceof JSFunction fn) {
+            // Function virtual properties — match Object.getOwnPropertyDescriptor
+            // semantics on a JSFunction.
+            JSObject desc = new JSObject();
+            if ("length".equals(key) && !fn.isLengthDeleted()) {
+                desc.set("value", (double) fn.paramCount());
+                desc.set("writable", false);
+                desc.set("enumerable", false);
+                desc.set("configurable", true);
+                return desc;
+            }
+            if ("name".equals(key) && !fn.isNameDeleted()) {
+                desc.set("value", fn.name() != null ? fn.name() : "");
+                desc.set("writable", false);
+                desc.set("enumerable", false);
+                desc.set("configurable", true);
+                return desc;
+            }
+            if ("prototype".equals(key) && fn.prototypeUser() != null) {
+                desc.set("value", fn.prototypeUser());
+                desc.set("writable", !fn.isNative());
+                desc.set("enumerable", false);
+                desc.set("configurable", false);
+                return desc;
+            }
+            if (fn.hasOwnStatic(key)) {
+                Object v = fn.getOwnStatic(key);
+                if (v instanceof Accessor acc) {
+                    desc.set("get", acc.getter() == null ? Undefined.VALUE : acc.getter());
+                    desc.set("set", acc.setter() == null ? Undefined.VALUE : acc.setter());
+                } else {
+                    desc.set("value", v);
+                    desc.set("writable", fn.isWritable(key));
+                }
+                desc.set("enumerable", fn.isEnumerable(key));
+                desc.set("configurable", fn.isConfigurable(key));
+                return desc;
+            }
+        }
+        return Undefined.VALUE;
+    }
+
+    /** § 10.1.6 OrdinaryDefineOwnProperty — simplified (no descriptor
+     *  validation; sufficient for Proxy fallback). Delegates the heavy
+     *  lifting to Object.defineProperty via the Realm bootstrap so we don't
+     *  duplicate the attribute machinery. Returns false only if the target
+     *  is fundamentally non-modifiable (frozen, etc.) — true otherwise. */
+    public static boolean ordinaryDefineProperty(Object base, String key, JSObject desc) {
+        if (base == null || base == Undefined.VALUE) return false;
+        InterpContext ctx = InterpContext.current();
+        Object objectCtor = ctx == null ? null : ctx.globals().get("Object");
+        if (objectCtor instanceof JSFunction objFn) {
+            Object defineFn = objFn.getOwnStatic("defineProperty");
+            if (defineFn instanceof JSFunction df) {
+                try {
+                    Interpreter.invokeFunction(df, objectCtor,
+                        new Object[]{base, key, desc}, ctx);
+                    return true;
+                } catch (AbruptCompletion ac) {
+                    return false;
+                }
+            }
+        }
+        // Bootstrap fallback (Object.defineProperty not yet installed).
+        if (base instanceof JSObject jo) {
+            Object getter = desc.has("get") ? desc.get("get") : null;
+            Object setter = desc.has("set") ? desc.get("set") : null;
+            if (getter != null || setter != null) {
+                JSFunction g = (getter instanceof JSFunction gf) ? gf : null;
+                JSFunction s = (setter instanceof JSFunction sf) ? sf : null;
+                jo.properties().put(key, new Accessor(g, s));
+            } else if (desc.has("value")) {
+                jo.set(key, desc.get("value"));
+            }
+            byte attrs = 0;
+            if (desc.has("writable") && Boolean.TRUE.equals(desc.get("writable"))) attrs |= JSObject.ATTR_WRITABLE;
+            if (desc.has("enumerable") && Boolean.TRUE.equals(desc.get("enumerable"))) attrs |= JSObject.ATTR_ENUMERABLE;
+            if (desc.has("configurable") && Boolean.TRUE.equals(desc.get("configurable"))) attrs |= JSObject.ATTR_CONFIGURABLE;
+            jo.setAttributes(key, attrs);
+            return true;
+        }
+        return false;
+    }
+
+    /** § 10.1.1 OrdinaryGetPrototypeOf. */
+    public static Object ordinaryGetPrototypeOf(Object base) {
+        if (base instanceof JSObject jo) return jo.proto();
+        if (base instanceof JSFunction fn) {
+            JSFunction sc = fn.superConstructor();
+            return sc != null ? sc : Realm.functionPrototype;
+        }
+        if (base instanceof JSArray) return Realm.arrayPrototype;
+        return null;
+    }
+
+    /** § 10.1.2 OrdinarySetPrototypeOf. */
+    public static boolean ordinarySetPrototypeOf(Object base, Object proto) {
+        if (base instanceof JSObject jo) {
+            if (proto != null && proto != Undefined.VALUE && !(proto instanceof JSObject)) return false;
+            jo.setProto(proto instanceof JSObject jp ? jp : null);
+            return true;
+        }
+        return false;
+    }
+
+    /** § 10.1.3 OrdinaryIsExtensible. */
+    public static boolean ordinaryIsExtensible(Object base) {
+        if (base instanceof JSObject jo) return jo.isExtensible();
+        if (base instanceof JSArray ja) return ja.isExtensible();
+        if (base instanceof JSFunction fn) return fn.isExtensible();
+        return true;
+    }
+
+    /** § 10.1.4 OrdinaryPreventExtensions. */
+    public static boolean ordinaryPreventExtensions(Object base) {
+        if (base instanceof JSObject jo) { jo.preventExtensions(); return true; }
+        if (base instanceof JSArray ja) { ja.preventExtensions(); return true; }
+        if (base instanceof JSFunction fn) { fn.preventExtensions(); return true; }
+        return false;
+    }
+
+    /** ToIntegerOrInfinity — public shim for tools that don't import the
+     *  package-private TypedArrays helper. */
+    public static double toIntegerOrInfinity(Object v) {
+        if (v == Undefined.VALUE || v == null) return 0;
+        double n = toNumber(v);
+        if (Double.isNaN(n)) return 0;
+        if (Double.isInfinite(n)) return n;
+        return n >= 0 ? Math.floor(n) : -Math.floor(-n);
     }
 }

@@ -239,6 +239,17 @@ public sealed interface Op {
             }
             Object result = Boolean.TRUE;
             if (b instanceof JSObject jo) {
+                // Proxy [[Delete]] short-circuit: invoke the deleteProperty trap
+                // (if present) and observe the boolean it returns.
+                if (Realm.isProxy(jo)) {
+                    boolean ok = Realm.proxyDelete(jo, property);
+                    if (!ok && ctx.executable() != null && ctx.executable().strictMode()) {
+                        throw AbruptCompletion.typeError(
+                            "Cannot delete property '" + property + "' of proxy");
+                    }
+                    dst.store(ctx, ok);
+                    return pc + 1;
+                }
                 // § 10.4.5.6 IntegerIndexedExoticObject [[Delete]]: a
                 // canonical numeric index on a valid in-bounds slot returns
                 // false (indexed elements aren't configurable); out-of-bounds
@@ -342,6 +353,15 @@ public sealed interface Op {
                 : AbstractOps.toString(key);
             Object result = Boolean.TRUE;
             if (b instanceof JSObject jo) {
+                if (Realm.isProxy(jo)) {
+                    boolean ok = Realm.proxyDelete(jo, prop);
+                    if (!ok && ctx.executable() != null && ctx.executable().strictMode()) {
+                        throw AbruptCompletion.typeError(
+                            "Cannot delete property '" + prop + "' of proxy");
+                    }
+                    dst.store(ctx, ok);
+                    return pc + 1;
+                }
                 // § 10.4.5.6 — same integer-index delete rule as DeleteById.
                 var taState = com.jimmyhmiller.harmonica.bytecode.TypedArrays.stateOf(jo);
                 if (taState != null) {
@@ -671,7 +691,14 @@ public sealed interface Op {
             String key = left instanceof String s ? s
                        : left instanceof JSSymbol sy ? sy.asPropertyKey()
                        : AbstractOps.toString(left);
-            if (right instanceof JSObject jo) { dst.store(ctx, jo.has(key)); return pc + 1; }
+            if (right instanceof JSObject jo) {
+                if (Realm.isProxy(jo)) {
+                    dst.store(ctx, Realm.proxyHas(jo, key));
+                    return pc + 1;
+                }
+                dst.store(ctx, jo.has(key));
+                return pc + 1;
+            }
             if (right instanceof JSArray arr) {
                 if ("length".equals(key)) { dst.store(ctx, true); return pc + 1; }
                 int idx = -1;
@@ -1856,6 +1883,13 @@ public sealed interface Op {
         @Override public int hashCode() { return System.identityHashCode(this); }
         @Override public int interpret(InterpContext ctx, int pc) {
             Object calleeVal = callee.retrieve(ctx);
+            if (calleeVal instanceof JSObject pj && Realm.isProxy(pj)) {
+                Object[] argValues = new Object[args.length];
+                for (int k = 0; k < args.length; k++) argValues[k] = args[k].retrieve(ctx);
+                Object result = Realm.proxyConstruct(pj, argValues, calleeVal);
+                dst.store(ctx, result);
+                return pc + 1;
+            }
             if (!(calleeVal instanceof JSFunction fn)) {
                 throw AbruptCompletion.typeError("not a constructor: " + calleeVal);
             }
@@ -3590,10 +3624,25 @@ public sealed interface Op {
 
         @Override public int interpret(InterpContext ctx, int pc) {
             Object calleeVal = callee.retrieve(ctx);
+            Object thisVal = thisValue.retrieve(ctx);
+            // Proxy [[Call]] / [[Construct]] short-circuit. Function-proxies
+            // dispatch the call through the handler's apply/construct trap.
+            if (calleeVal instanceof JSObject pj && Realm.isProxy(pj)) {
+                Object[] argValues = Interpreter.acquireArgs(args.length);
+                for (int k = 0; k < args.length; k++) argValues[k] = args[k].retrieve(ctx);
+                try {
+                    Object result = isSuperCall || Interpreter.isNewCall()
+                        ? Realm.proxyConstruct(pj, argValues, calleeVal)
+                        : Realm.proxyApply(pj, thisVal, argValues);
+                    dst.store(ctx, result);
+                } finally {
+                    Interpreter.releaseArgs(argValues);
+                }
+                return pc + 1;
+            }
             if (!(calleeVal instanceof JSFunction fn)) {
                 throw AbruptCompletion.typeError("not callable: " + calleeVal);
             }
-            Object thisVal = thisValue.retrieve(ctx);
             Object[] argValues = Interpreter.acquireArgs(args.length);
             for (int k = 0; k < args.length; k++) argValues[k] = args[k].retrieve(ctx);
             try {

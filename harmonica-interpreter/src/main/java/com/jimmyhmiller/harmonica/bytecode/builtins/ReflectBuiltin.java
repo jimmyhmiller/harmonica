@@ -26,25 +26,32 @@ public final class ReflectBuiltin {
 
         reflect.set("apply", method("apply", 3, (a, c) -> {
             Object target = Realm.arg(a, 0);
-            if (!(target instanceof JSFunction fn)) {
-                throw AbruptCompletion.typeError("Reflect.apply: target is not a function");
-            }
             Object thisArg = Realm.arg(a, 1);
             Object argList = Realm.arg(a, 2);
             Object[] callArgs = createListFromArrayLike(argList, "Reflect.apply");
+            if (target instanceof JSObject pj && Realm.isProxy(pj)) {
+                return Realm.proxyApply(pj, thisArg, callArgs);
+            }
+            if (!(target instanceof JSFunction fn)) {
+                throw AbruptCompletion.typeError("Reflect.apply: target is not a function");
+            }
             return Interpreter.invokeFunction(fn, thisArg, callArgs, c);
         }));
 
         reflect.set("construct", method("construct", 2, (a, c) -> {
             Object target = Realm.arg(a, 0);
+            Object argList = Realm.arg(a, 1);
+            Object[] callArgs = createListFromArrayLike(argList, "Reflect.construct");
+            Object newTargetArg = a.length >= 3 ? a[2] : target;
+            if (target instanceof JSObject pj && Realm.isProxy(pj)) {
+                return Realm.proxyConstruct(pj, callArgs, newTargetArg);
+            }
             if (!(target instanceof JSFunction fn) || !fn.isConstructor()) {
                 throw AbruptCompletion.typeError("Reflect.construct: target is not a constructor");
             }
-            Object argList = Realm.arg(a, 1);
-            Object[] callArgs = createListFromArrayLike(argList, "Reflect.construct");
             JSFunction newTarget = fn;
             if (a.length >= 3) {
-                Object nt = Realm.arg(a, 2);
+                Object nt = a[2];
                 if (!(nt instanceof JSFunction ntf) || !ntf.isConstructor()) {
                     throw AbruptCompletion.typeError(
                         "Reflect.construct: newTarget is not a constructor");
@@ -78,6 +85,9 @@ public final class ReflectBuiltin {
         reflect.set("deleteProperty", method("deleteProperty", 2, (a, c) -> {
             Object target = requireObject(Realm.arg(a, 0), "Reflect.deleteProperty");
             String key = toPropertyKey(Realm.arg(a, 1));
+            if (target instanceof JSObject pj && Realm.isProxy(pj)) {
+                return Realm.proxyDelete(pj, key);
+            }
             if (target instanceof JSObject jo) {
                 // TypedArray: valid integer index → false; invalid → true.
                 if (com.jimmyhmiller.harmonica.bytecode.TypedArrays.isTypedArray(jo)) {
@@ -140,6 +150,9 @@ public final class ReflectBuiltin {
 
         reflect.set("getPrototypeOf", method("getPrototypeOf", 1, (a, c) -> {
             Object target = requireObject(Realm.arg(a, 0), "Reflect.getPrototypeOf");
+            if (target instanceof JSObject pj && Realm.isProxy(pj)) {
+                return Realm.proxyGetPrototypeOf(pj);
+            }
             if (target instanceof JSObject jo) return jo.proto() != null ? jo.proto() : null;
             if (target instanceof JSFunction fn) {
                 JSFunction sc = fn.superConstructor();
@@ -153,6 +166,9 @@ public final class ReflectBuiltin {
             Object target = requireObject(Realm.arg(a, 0), "Reflect.has");
             String key = toPropertyKey(Realm.arg(a, 1));
             if (key.startsWith("#")) return false;   // private names invisible to Reflect
+            if (target instanceof JSObject pj && Realm.isProxy(pj)) {
+                return Realm.proxyHas(pj, key);
+            }
             if (target instanceof JSObject jo) {
                 // TypedArray: canonical numeric index → in-bounds-or-not.
                 if (com.jimmyhmiller.harmonica.bytecode.TypedArrays.isTypedArray(jo)) {
@@ -172,12 +188,18 @@ public final class ReflectBuiltin {
 
         reflect.set("isExtensible", method("isExtensible", 1, (a, c) -> {
             Object target = requireObject(Realm.arg(a, 0), "Reflect.isExtensible");
+            if (target instanceof JSObject pj && Realm.isProxy(pj)) {
+                return Realm.proxyIsExtensible(pj);
+            }
             if (target instanceof JSObject jo) return jo.isExtensible();
             return true;
         }));
 
         reflect.set("ownKeys", method("ownKeys", 1, (a, c) -> {
             Object target = requireObject(Realm.arg(a, 0), "Reflect.ownKeys");
+            if (target instanceof JSObject pj && Realm.isProxy(pj)) {
+                return Realm.proxyOwnKeys(pj);
+            }
             JSArray result = new JSArray();
             if (target instanceof JSObject jo) {
                 for (String k : jo.properties().keySet()) {
@@ -195,6 +217,9 @@ public final class ReflectBuiltin {
 
         reflect.set("preventExtensions", method("preventExtensions", 1, (a, c) -> {
             Object target = requireObject(Realm.arg(a, 0), "Reflect.preventExtensions");
+            if (target instanceof JSObject pj && Realm.isProxy(pj)) {
+                return Realm.proxyPreventExtensions(pj);
+            }
             if (target instanceof JSObject jo) {
                 jo.preventExtensions();
                 return true;
@@ -241,6 +266,9 @@ public final class ReflectBuiltin {
             if (proto != null && !(proto instanceof JSObject)) {
                 throw AbruptCompletion.typeError(
                     "Reflect.setPrototypeOf: proto must be Object or null");
+            }
+            if (target instanceof JSObject pj && Realm.isProxy(pj)) {
+                return Realm.proxySetPrototypeOf(pj, proto);
             }
             if (target instanceof JSObject jo) {
                 JSObject newProto = proto instanceof JSObject p ? p : null;

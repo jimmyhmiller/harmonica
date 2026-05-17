@@ -207,14 +207,257 @@ public final class Realm {
         return v == JSObject.ABSENT ? null : v;
     }
 
-    /** Look up a trap on the Proxy handler — returns null if absent or revoked. */
+    /** Look up a trap on the Proxy handler — returns null if absent (caller
+     *  falls through to target). Throws TypeError if the slot exists but is
+     *  not callable (§ 10.5.* GetMethod: a non-callable, non-undefined trap
+     *  must throw before any operation runs). */
     public static JSFunction proxyTrap(JSObject p, String name) {
         Object h = proxyHandler(p);
         if (!(h instanceof JSObject handler)) return null;
-        Object trap = handler.get(name);
+        Object trap = AbstractOps.getProperty(handler, name);
         if (trap == null || trap == Undefined.VALUE) return null;
-        if (!(trap instanceof JSFunction fn)) return null;
+        if (!(trap instanceof JSFunction fn)) {
+            throw AbruptCompletion.typeError(
+                "Proxy handler '" + name + "' trap is not callable");
+        }
         return fn;
+    }
+
+    // ---------------------------------------------------------------
+    // Proxy trap dispatch helpers — used by AbstractOps and Op so the
+    // §28.2.7.* spec algorithms live in one place. Each helper does:
+    //   1. Revocation check.
+    //   2. Trap lookup; on miss, perform the operation on the target.
+    //   3. Trap call with this=handler and (target, key, …) args.
+    // Invariant enforcement (non-configurable target props, non-extensible
+    // target, etc.) is largely deferred — we currently match LibJS only
+    // partially on the invariants. Good enough for the bulk of tests.
+    // ---------------------------------------------------------------
+
+    private static void requireNonRevokedProxy(Object target, String trapName) {
+        if (target == null) {
+            throw AbruptCompletion.typeError("Cannot perform '" + trapName
+                + "' on a proxy that has been revoked");
+        }
+    }
+
+    public static boolean proxyHas(JSObject proxy, String key) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "has");
+        JSFunction trap = proxyTrap(proxy, "has");
+        if (trap == null) return AbstractOps.hasProperty(target, key);
+        InterpContext ctx = InterpContext.current();
+        Object res = Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target, key}, ctx);
+        return AbstractOps.toBoolean(res);
+    }
+
+    public static boolean proxyDelete(JSObject proxy, String key) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "deleteProperty");
+        JSFunction trap = proxyTrap(proxy, "deleteProperty");
+        if (trap == null) {
+            return AbstractOps.deleteProperty(target, key);
+        }
+        InterpContext ctx = InterpContext.current();
+        Object res = Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target, key}, ctx);
+        return AbstractOps.toBoolean(res);
+    }
+
+    /** Returns a JSArray of property-key Strings (or JSSymbols) per the trap. */
+    public static JSArray proxyOwnKeys(JSObject proxy) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "ownKeys");
+        JSFunction trap = proxyTrap(proxy, "ownKeys");
+        if (trap == null) {
+            // OrdinaryOwnPropertyKeys on the target.
+            JSArray out = new JSArray();
+            if (target instanceof JSObject jo) {
+                for (String k : orderedOwnPropertyNames(jo.properties().keySet())) {
+                    out.push(k);
+                }
+            } else if (target instanceof JSArray arr) {
+                for (int i = 0; i < arr.length(); i++) out.push(String.valueOf(i));
+                out.push("length");
+            }
+            return out;
+        }
+        InterpContext ctx = InterpContext.current();
+        Object res = Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target}, ctx);
+        if (!(res instanceof JSArray arr)) {
+            // CreateListFromArrayLike — for non-arrays just iterate length.
+            if (!(res instanceof JSObject lo)) {
+                throw AbruptCompletion.typeError("ownKeys trap returned non-Object");
+            }
+            JSArray out = new JSArray();
+            Object lenV = AbstractOps.getProperty(lo, "length");
+            long len = (long) AbstractOps.toIntegerOrInfinity(lenV);
+            for (long i = 0; i < len; i++) {
+                Object k = AbstractOps.getProperty(lo, Long.toString(i));
+                if (!(k instanceof String) && !(k instanceof JSSymbol)) {
+                    throw AbruptCompletion.typeError("ownKeys trap result has non-PropertyKey");
+                }
+                out.push(k);
+            }
+            return out;
+        }
+        // Validate every element is String / Symbol.
+        for (int i = 0; i < arr.length(); i++) {
+            Object e = arr.get(i);
+            if (!(e instanceof String) && !(e instanceof JSSymbol)) {
+                throw AbruptCompletion.typeError("ownKeys trap result has non-PropertyKey");
+            }
+        }
+        return arr;
+    }
+
+    public static Object proxyGetOwnPropertyDescriptor(JSObject proxy, String key) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "getOwnPropertyDescriptor");
+        JSFunction trap = proxyTrap(proxy, "getOwnPropertyDescriptor");
+        if (trap == null) {
+            return AbstractOps.ordinaryGetOwnPropertyDescriptor(target, key);
+        }
+        InterpContext ctx = InterpContext.current();
+        Object res = Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target, key}, ctx);
+        if (res == Undefined.VALUE) return Undefined.VALUE;
+        if (!(res instanceof JSObject)) {
+            throw AbruptCompletion.typeError(
+                "getOwnPropertyDescriptor trap result must be an Object or undefined");
+        }
+        return res;
+    }
+
+    public static boolean proxyDefineProperty(JSObject proxy, String key, JSObject desc) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "defineProperty");
+        JSFunction trap = proxyTrap(proxy, "defineProperty");
+        if (trap == null) {
+            return AbstractOps.ordinaryDefineProperty(target, key, desc);
+        }
+        InterpContext ctx = InterpContext.current();
+        Object res = Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target, key, desc}, ctx);
+        return AbstractOps.toBoolean(res);
+    }
+
+    public static Object proxyGetPrototypeOf(JSObject proxy) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "getPrototypeOf");
+        JSFunction trap = proxyTrap(proxy, "getPrototypeOf");
+        if (trap == null) {
+            return AbstractOps.ordinaryGetPrototypeOf(target);
+        }
+        InterpContext ctx = InterpContext.current();
+        Object res = Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target}, ctx);
+        if (res != null && res != Undefined.VALUE && !(res instanceof JSObject)) {
+            throw AbruptCompletion.typeError(
+                "getPrototypeOf trap result must be Object or null");
+        }
+        return res == Undefined.VALUE ? null : res;
+    }
+
+    public static boolean proxySetPrototypeOf(JSObject proxy, Object proto) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "setPrototypeOf");
+        JSFunction trap = proxyTrap(proxy, "setPrototypeOf");
+        if (trap == null) {
+            return AbstractOps.ordinarySetPrototypeOf(target, proto);
+        }
+        InterpContext ctx = InterpContext.current();
+        Object res = Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target, proto}, ctx);
+        return AbstractOps.toBoolean(res);
+    }
+
+    public static boolean proxyIsExtensible(JSObject proxy) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "isExtensible");
+        JSFunction trap = proxyTrap(proxy, "isExtensible");
+        if (trap == null) return AbstractOps.ordinaryIsExtensible(target);
+        InterpContext ctx = InterpContext.current();
+        Object res = Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target}, ctx);
+        boolean b = AbstractOps.toBoolean(res);
+        // Invariant: must match target's extensibility.
+        if (b != AbstractOps.ordinaryIsExtensible(target)) {
+            throw AbruptCompletion.typeError(
+                "isExtensible trap result must match target's extensibility");
+        }
+        return b;
+    }
+
+    public static boolean proxyPreventExtensions(JSObject proxy) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "preventExtensions");
+        JSFunction trap = proxyTrap(proxy, "preventExtensions");
+        if (trap == null) return AbstractOps.ordinaryPreventExtensions(target);
+        InterpContext ctx = InterpContext.current();
+        Object res = Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target}, ctx);
+        boolean b = AbstractOps.toBoolean(res);
+        // Invariant: if trap says true, target must actually be non-extensible.
+        if (b && AbstractOps.ordinaryIsExtensible(target)) {
+            throw AbruptCompletion.typeError(
+                "preventExtensions trap returned true but target is still extensible");
+        }
+        return b;
+    }
+
+    public static Object proxyApply(JSObject proxy, Object thisArg, Object[] argList) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "apply");
+        JSFunction trap = proxyTrap(proxy, "apply");
+        if (trap == null) {
+            if (!(target instanceof JSFunction tf)) {
+                throw AbruptCompletion.typeError("Proxy target is not callable");
+            }
+            InterpContext ctx = InterpContext.current();
+            return Interpreter.invokeFunction(tf, thisArg, argList, ctx);
+        }
+        InterpContext ctx = InterpContext.current();
+        JSArray argsArr = new JSArray();
+        for (Object a : argList) argsArr.push(a);
+        return Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target, thisArg, argsArr}, ctx);
+    }
+
+    public static Object proxyConstruct(JSObject proxy, Object[] argList, Object newTarget) {
+        Object target = proxyTarget(proxy);
+        requireNonRevokedProxy(target, "construct");
+        JSFunction trap = proxyTrap(proxy, "construct");
+        Object effectiveNewTarget = (newTarget == null) ? proxy : newTarget;
+        if (trap == null) {
+            if (!(target instanceof JSFunction tf) || !tf.isConstructor()) {
+                throw AbruptCompletion.typeError("Proxy target is not a constructor");
+            }
+            InterpContext ctx = InterpContext.current();
+            // OrdinaryCreateFromConstructor reads newTarget.prototype via
+            // [[Get]] — when newTarget is the proxy itself, this routes
+            // through the get trap. The trap can return a non-Object
+            // (e.g. 42), and the spec requires us to fall back to
+            // %ObjectPrototype% in that case (or throw — depending on caller).
+            Object newTargetProto = AbstractOps.getProperty(effectiveNewTarget, "prototype");
+            JSObject receiverProto = newTargetProto instanceof JSObject jp ? jp
+                : tf.prototypeObject();
+            JSObject receiver = new JSObject(receiverProto);
+            Object res = Interpreter.invokeFunctionAsConstructor(tf, receiver, argList, ctx);
+            return (res instanceof JSObject || res instanceof JSArray
+                    || res instanceof JSFunction) ? res : receiver;
+        }
+        InterpContext ctx = InterpContext.current();
+        JSArray argsArr = new JSArray();
+        for (Object a : argList) argsArr.push(a);
+        Object res = Interpreter.invokeFunction(trap, proxyHandler(proxy),
+            new Object[]{target, argsArr, effectiveNewTarget}, ctx);
+        if (!(res instanceof JSObject)) {
+            throw AbruptCompletion.typeError("construct trap result must be an Object");
+        }
+        return res;
     }
 
     /** Read [[BooleanData]] / [[NumberData]] / [[StringData]] from a wrapper, or null if absent. */
@@ -772,27 +1015,33 @@ public final class Realm {
                 (byte) 0);   // non-writable, non-enumerable, non-configurable
         }
         functionPrototype.set("call", nativeFn("call", 1, (thisVal, a, c) -> {
-            if (!(thisVal instanceof JSFunction fn)) {
-                throw AbruptCompletion.typeError("Function.prototype.call called on non-function");
-            }
             Object newThis = arg(a, 0);
-            // Reuse the per-thread args pool — lodash calls Function.prototype.call
-            // tens of thousands of times in iteratee dispatch, and the
-            // `new Object[a.length-1]` allocation here was 4%+ of allocated
-            // bytes in the workload's profile.
             int n = Math.max(0, a.length - 1);
             Object[] callArgs = Interpreter.acquireArgs(n);
             for (int i = 1; i < a.length; i++) callArgs[i - 1] = a[i];
             try {
+                // Proxy receiver → dispatch via [[Call]] trap.
+                if (thisVal instanceof JSObject pj && isProxy(pj)) {
+                    return proxyApply(pj, newThis, callArgs);
+                }
+                if (!(thisVal instanceof JSFunction fn)) {
+                    throw AbruptCompletion.typeError("Function.prototype.call called on non-function");
+                }
+                // Reuse the per-thread args pool — lodash calls Function.prototype.call
+                // tens of thousands of times in iteratee dispatch, and the
+                // `new Object[a.length-1]` allocation here was 4%+ of allocated
+                // bytes in the workload's profile.
                 return Interpreter.invokeFunction(fn, newThis, callArgs, c);
             } finally {
                 Interpreter.releaseArgs(callArgs);
             }
         }));
         functionPrototype.set("apply", nativeFn("apply", 2, (thisVal, a, c) -> {
-            if (!(thisVal instanceof JSFunction fn)) {
+            boolean isProxyReceiver = thisVal instanceof JSObject pjV && isProxy(pjV);
+            if (!isProxyReceiver && !(thisVal instanceof JSFunction)) {
                 throw AbruptCompletion.typeError("Function.prototype.apply called on non-function");
             }
+            JSFunction fn = isProxyReceiver ? null : (JSFunction) thisVal;
             Object newThis = arg(a, 0);
             Object[] callArgs;
             Object listArg = arg(a, 1);
@@ -818,12 +1067,29 @@ public final class Realm {
                 throw AbruptCompletion.typeError("Function.prototype.apply args must be array-like or null");
             }
             try {
+                if (isProxyReceiver) {
+                    return proxyApply((JSObject) thisVal, newThis, callArgs);
+                }
                 return Interpreter.invokeFunction(fn, newThis, callArgs, c);
             } finally {
                 Interpreter.releaseArgs(callArgs);
             }
         }));
         functionPrototype.set("bind", nativeFn("bind", 1, (thisVal, a, c) -> {
+            // Allow bind on a callable Proxy too — wrap the proxy in a fn
+            // that dispatches through proxyApply.
+            if (thisVal instanceof JSObject pjB && isProxy(pjB)) {
+                Object boundThis = arg(a, 0);
+                Object[] presetArgs = new Object[Math.max(0, a.length - 1)];
+                for (int i = 1; i < a.length; i++) presetArgs[i - 1] = a[i];
+                JSObject pjBfinal = pjB;
+                return nativeFn("bound", 0, (callerThis, callArgs, c2) -> {
+                    Object[] combined = new Object[presetArgs.length + callArgs.length];
+                    System.arraycopy(presetArgs, 0, combined, 0, presetArgs.length);
+                    System.arraycopy(callArgs, 0, combined, presetArgs.length, callArgs.length);
+                    return proxyApply(pjBfinal, boundThis, combined);
+                });
+            }
             if (!(thisVal instanceof JSFunction target)) {
                 throw AbruptCompletion.typeError("Function.prototype.bind called on non-function");
             }
@@ -6767,7 +7033,19 @@ public final class Realm {
             // § 7.3.22 OrdinaryOwnPropertyKeys: array-indices first in
             // ascending numeric order, then string keys in insertion order.
             // § 20.1.2.17: Object.keys returns only OWN ENUMERABLE keys.
-            if (v instanceof JSObject jo) {
+            if (v instanceof JSObject jo && isProxy(jo)) {
+                // Filter the trap result by getOwnPropertyDescriptor.enumerable.
+                JSArray trapped = proxyOwnKeys(jo);
+                for (int i = 0; i < trapped.length(); i++) {
+                    Object k = trapped.get(i);
+                    if (!(k instanceof String ks)) continue;   // skip Symbols
+                    Object desc = proxyGetOwnPropertyDescriptor(jo, ks);
+                    if (desc instanceof JSObject jdesc
+                            && Boolean.TRUE.equals(jdesc.get("enumerable"))) {
+                        out.push(ks);
+                    }
+                }
+            } else if (v instanceof JSObject jo) {
                 for (String k : orderedOwnPropertyNames(jo.properties().keySet())) {
                     if (jo.isEnumerable(k)) out.push(k);
                 }
@@ -6920,6 +7198,7 @@ public final class Realm {
         objectCtor.properties().put("getPrototypeOf", nativeFn("getPrototypeOf", 1, (t, a, c) -> {
             Object v = arg(a, 0);
             if (v instanceof JSObject jo) {
+                if (isProxy(jo)) return proxyGetPrototypeOf(jo);
                 JSObject p = jo.proto();
                 return p == null ? null : p;
             }
@@ -6958,6 +7237,7 @@ public final class Realm {
         }));
         objectCtor.properties().put("isExtensible", nativeFn("isExtensible", 1, (t, a, c) -> {
             Object v = arg(a, 0);
+            if (v instanceof JSObject jo && isProxy(jo)) return proxyIsExtensible(jo);
             if (v instanceof JSObject jo) return jo.isExtensible();
             if (v instanceof JSFunction fn) return fn.isExtensible();
             if (v instanceof JSArray arr) return arr.isExtensible();
@@ -6965,6 +7245,10 @@ public final class Realm {
         }));
         objectCtor.properties().put("preventExtensions", nativeFn("preventExtensions", 1, (t, a, c) -> {
             Object v = arg(a, 0);
+            if (v instanceof JSObject jo && isProxy(jo)) {
+                proxyPreventExtensions(jo);
+                return v;
+            }
             if (v instanceof JSObject jo) jo.preventExtensions();
             else if (v instanceof JSFunction fn) fn.preventExtensions();
             else if (v instanceof JSArray arr) arr.preventExtensions();
@@ -6994,6 +7278,19 @@ public final class Realm {
             if (!(target instanceof JSObject) && !(target instanceof JSFunction)
                 && !(target instanceof JSArray)) {
                 throw AbruptCompletion.typeError("Object.defineProperty called on non-object");
+            }
+            // Proxy [[DefineOwnProperty]] short-circuit.
+            if (target instanceof JSObject targetJo && isProxy(targetJo)) {
+                String pkey = rawKey instanceof String ss ? ss
+                            : rawKey instanceof JSSymbol sy ? sy.asPropertyKey()
+                            : AbstractOps.toString(rawKey);
+                if (!(desc instanceof JSObject djo)) {
+                    throw AbruptCompletion.typeError("Property description must be an object");
+                }
+                if (!proxyDefineProperty(targetJo, pkey, djo)) {
+                    throw AbruptCompletion.typeError("Object.defineProperty: trap returned falsish");
+                }
+                return target;
             }
             // ECMA-262 § 7.1.19 ToPropertyKey: if key is an object, call
             // ToPrimitive(hint: "string") — i.e. try toString, then valueOf;
@@ -7412,6 +7709,10 @@ public final class Realm {
             String key = rawKey instanceof String ss ? ss
                        : rawKey instanceof JSSymbol sy ? sy.asPropertyKey()
                        : AbstractOps.toString(rawKey);
+            // Proxy [[GetOwnProperty]] short-circuit.
+            if (target instanceof JSObject targetJo && isProxy(targetJo)) {
+                return proxyGetOwnPropertyDescriptor(targetJo, key);
+            }
             JSObject desc = new JSObject();
             if (isPrivateName(key)) return Undefined.VALUE;
             if (target instanceof JSObject jo && jo.properties().containsKey(key)) {
@@ -7533,6 +7834,14 @@ public final class Realm {
         objectCtor.properties().put("getOwnPropertyNames", nativeFn("getOwnPropertyNames", 1, (t, a, c) -> {
             JSArray out = new JSArray();
             Object v = arg(a, 0);
+            if (v instanceof JSObject jo && isProxy(jo)) {
+                JSArray trapped = proxyOwnKeys(jo);
+                for (int i = 0; i < trapped.length(); i++) {
+                    Object k = trapped.get(i);
+                    if (k instanceof String ks) out.push(ks);
+                }
+                return out;
+            }
             if (v instanceof JSObject jo) {
                 appendOrderedOwnPropertyNames(jo.properties().keySet(), out);
             } else if (v instanceof JSFunction fn) {
@@ -7575,7 +7884,14 @@ public final class Realm {
                 throw AbruptCompletion.typeError("Object.setPrototypeOf proto must be Object or null");
             }
             if (target instanceof JSObject jo) {
-                jo.setProto(proto instanceof JSObject p ? p : null);
+                if (isProxy(jo)) {
+                    if (!proxySetPrototypeOf(jo, proto)) {
+                        throw AbruptCompletion.typeError(
+                            "Object.setPrototypeOf: trap returned falsish");
+                    }
+                } else {
+                    jo.setProto(proto instanceof JSObject p ? p : null);
+                }
             }
             return target;
         }));
