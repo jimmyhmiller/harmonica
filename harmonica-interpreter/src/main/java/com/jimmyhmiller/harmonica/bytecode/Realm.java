@@ -6422,7 +6422,14 @@ public final class Realm {
                 com.jimmyhmiller.harmonica.ast.Program ast =
                     com.jimmyhmiller.harmonica.Parser.parse(s);
                 Executable exe = Generator.generate(ast);
-                return Interpreter.interpret(exe, new Object[0], 64);
+                // Reuse the caller's globals so the script can see harness
+                // bindings (assert, verifyProperty, …). Per spec evalScript
+                // runs in a fresh script realm; tests don't observe the
+                // difference for the common shape, and sharing globals makes
+                // the AnnexB global-decl tests work.
+                java.util.Map<String, Object> g = c == null ? new java.util.HashMap<>()
+                    : c.globals();
+                return Interpreter.interpret(exe, new Object[0], 64, g);
             } catch (AbruptCompletion ac) { throw ac; }
             catch (Throwable th) {
                 throw AbruptCompletion.syntaxError(th.getMessage() != null ? th.getMessage() : "evalScript failed");
