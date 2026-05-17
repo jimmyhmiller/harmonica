@@ -781,6 +781,28 @@ public final class AbstractOps {
                 if (fn.prototypeObject() != null) return fn.prototypeObject();
                 return Undefined.VALUE;
             }
+            // Walk the [[Prototype]] chain via class extends — when fn was
+            // declared with `class Sub extends Base`, Sub.[[Prototype]] is
+            // Base, so own-statics on Base are inherited (e.g. the legacy
+            // RegExp accessors live on the RegExp constructor and need to
+            // be visible — but invoked with the brand check failing — from
+            // `class MyRegExp extends RegExp`).
+            // Private names (#foo) are per-class and never inherited.
+            JSFunction superFn = (prop != null && !prop.isEmpty() && prop.charAt(0) == '#')
+                                 ? null : fn.superConstructor();
+            while (superFn != null) {
+                if (superFn.hasOwnStatic(prop)) {
+                    Object v = superFn.getOwnStatic(prop);
+                    if (v instanceof Accessor acc) {
+                        if (acc.getter() == null) return Undefined.VALUE;
+                        InterpContext ctx = InterpContext.current();
+                        if (ctx == null) return v;
+                        return Interpreter.invokeFunction(acc.getter(), base, new Object[0], ctx);
+                    }
+                    return v;
+                }
+                superFn = superFn.superConstructor();
+            }
             // Function.prototype methods (call, apply, bind, toString).
             if (Realm.functionPrototype != null) {
                 Object v = Realm.functionPrototype.get(prop);

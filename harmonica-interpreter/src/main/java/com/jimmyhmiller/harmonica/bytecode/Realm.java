@@ -8330,6 +8330,13 @@ public final class Realm {
             return out.toString();
         }));
         TypedArrays.installSpeciesPublic(regExpCtor);
+
+        // Annex B legacy RegExp static accessors — RegExp.input, $_, $&,
+        // $`, $', $1-$9, etc. Per the legacy-features proposal each accessor
+        // brand-checks (`this === %RegExp%`) before reading the stored value;
+        // input/$_ also have a setter that ToString-coerces the assigned val.
+        installLegacyRegExpAccessors(regExpCtor);
+
         globals.putIfAbsent("RegExp", regExpCtor);
 
         // ECMA-262 § 28.1 Reflect — namespace of meta-operations. Ported to
@@ -8908,6 +8915,92 @@ public final class Realm {
     private static final java.util.concurrent.ConcurrentHashMap<String, java.util.regex.Pattern>
         REGEX_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
     private static final int REGEX_CACHE_LIMIT = 256;
+
+    /** Annex B legacy RegExp static state — populated on each successful
+     *  match (we only set it during eager exec calls, not when user code
+     *  drives an exec() loop manually). Empty/null means "no match yet"
+     *  and the getter throws TypeError. */
+    public static volatile String legacyRegExpInput;
+    public static volatile String legacyRegExpLastMatch;
+    public static volatile String legacyRegExpLastParen;
+    public static volatile String legacyRegExpLeftContext;
+    public static volatile String legacyRegExpRightContext;
+    public static final String[] legacyRegExpParens = new String[9];
+
+    private static void installLegacyRegExpAccessors(JSFunction regExpCtor) {
+        // Brand check: every accessor (get + set) must verify `this === %RegExp%`
+        // and throw TypeError on mismatch (cross-realm, subclass, ordinary obj).
+        // input has both get + set; the others have a getter and a no-op setter
+        // (per the legacy proposal — RegExp.$1 = ... silently fails).
+        installLegacyAcc(regExpCtor, "input",
+            () -> legacyRegExpInput,
+            v -> legacyRegExpInput = v);
+        installLegacyAcc(regExpCtor, "$_",
+            () -> legacyRegExpInput,
+            v -> legacyRegExpInput = v);
+        installLegacyAcc(regExpCtor, "lastMatch",
+            () -> legacyRegExpLastMatch, null);
+        installLegacyAcc(regExpCtor, "$&",
+            () -> legacyRegExpLastMatch, null);
+        installLegacyAcc(regExpCtor, "lastParen",
+            () -> legacyRegExpLastParen, null);
+        installLegacyAcc(regExpCtor, "$+",
+            () -> legacyRegExpLastParen, null);
+        installLegacyAcc(regExpCtor, "leftContext",
+            () -> legacyRegExpLeftContext, null);
+        installLegacyAcc(regExpCtor, "$`",
+            () -> legacyRegExpLeftContext, null);
+        installLegacyAcc(regExpCtor, "rightContext",
+            () -> legacyRegExpRightContext, null);
+        installLegacyAcc(regExpCtor, "$'",
+            () -> legacyRegExpRightContext, null);
+        for (int i = 1; i <= 9; i++) {
+            final int idx = i - 1;
+            installLegacyAcc(regExpCtor, "$" + i,
+                () -> legacyRegExpParens[idx], null);
+        }
+    }
+
+    @FunctionalInterface
+    private interface StringSupplier { String get(); }
+    @FunctionalInterface
+    private interface StringConsumer { void accept(String v); }
+
+    private static void installLegacyAcc(JSFunction regExpCtor, String name,
+                                         StringSupplier getter, StringConsumer setter) {
+        JSFunction getFn = new JSFunction("get " + name, 0, (t, a, c) -> {
+            // SameValue(C, thisValue): the `this` value must be exactly the
+            // RegExp constructor. Cross-realm/subclass/ordinary-obj receivers
+            // all fail this check and throw TypeError per the legacy proposal.
+            if (t != regExpCtor) {
+                throw AbruptCompletion.typeError("RegExp." + name
+                    + " getter called on non-%RegExp% receiver");
+            }
+            String v = getter.get();
+            return v == null ? "" : v;
+        });
+        getFn.setNonConstructor(true);
+        JSFunction setFn;
+        if (setter != null) {
+            setFn = new JSFunction("set " + name, 1, (t, a, c) -> {
+                if (t != regExpCtor) {
+                    throw AbruptCompletion.typeError("RegExp." + name
+                        + " setter called on non-%RegExp% receiver");
+                }
+                Object v = a.length > 0 ? a[0] : Undefined.VALUE;
+                setter.accept(AbstractOps.toString(v));
+                return Undefined.VALUE;
+            });
+            setFn.setNonConstructor(true);
+        } else {
+            // Per legacy proposal, only input/$_ have an installed setter;
+            // the others have an undefined setter (assignments silently fail
+            // in sloppy mode, throw in strict mode via the missing-setter path).
+            setFn = null;
+        }
+        regExpCtor.properties().put(name, new Accessor(getFn, setFn));
+        regExpCtor.setAttributes(name, JSObject.ATTR_CONFIGURABLE);
+    }
 
     private static java.util.regex.Pattern compileJsRegex(String source, String flags) {
         // Cache key encodes both source and flags. The pipe is illegal as

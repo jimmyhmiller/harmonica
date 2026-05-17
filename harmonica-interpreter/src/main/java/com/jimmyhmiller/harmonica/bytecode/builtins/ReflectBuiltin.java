@@ -99,12 +99,34 @@ public final class ReflectBuiltin {
         reflect.set("get", method("get", 2, (a, c) -> {
             Object target = requireObject(Realm.arg(a, 0), "Reflect.get");
             toPropertyKey(Realm.arg(a, 1));   // validate (also throws if symbol coercion fails)
-            // Receiver-aware get: when present, Object getters should run
-            // with `this = receiver`. v1: bypass receiver for non-accessor
-            // reads (parity with Reflect.get's normal path) — accessor
-            // routing through receiver is part of the bigger Proxy/accessor
-            // story and isn't needed for the open-target tests.
-            return AbstractOps.getProperty(target, Realm.arg(a, 1));
+            Object key = Realm.arg(a, 1);
+            // Receiver-aware get: if the resolved property is an accessor,
+            // its getter runs with `this = receiver`. Walk the proto chain
+            // ourselves so we can spot Accessor cells before going through
+            // AbstractOps.getProperty (which would bind `this` to target).
+            Object receiver = a.length >= 3 ? a[2] : target;
+            String propKey = key instanceof String s ? s
+                           : key instanceof JSSymbol sy ? sy.asPropertyKey()
+                           : AbstractOps.toString(key);
+            Object cur = target;
+            while (cur != null && cur != Undefined.VALUE) {
+                Object slot;
+                if (cur instanceof JSObject jo && jo.properties().containsKey(propKey)) {
+                    slot = jo.properties().get(propKey);
+                } else if (cur instanceof JSFunction fn && fn.hasOwnStatic(propKey)) {
+                    slot = fn.getOwnStatic(propKey);
+                } else { slot = null; }
+                if (slot instanceof Accessor acc) {
+                    JSFunction getter = acc.getter();
+                    if (getter == null) return Undefined.VALUE;
+                    return Interpreter.invokeFunction(getter, receiver, new Object[0], c);
+                }
+                if (slot != null) break;
+                if (cur instanceof JSObject jo) cur = jo.proto();
+                else if (cur instanceof JSFunction fn) cur = fn.prototypeObject();
+                else cur = null;
+            }
+            return AbstractOps.getProperty(target, key);
         }));
 
         reflect.set("getOwnPropertyDescriptor", method("getOwnPropertyDescriptor", 2, (a, c) -> {
