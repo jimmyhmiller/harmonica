@@ -100,30 +100,11 @@ public final class Generator {
     private final java.util.Map<Object, Integer> catchParamSlots = new java.util.HashMap<>();
 
     /**
-     * Function declarations whose enclosing scope is a non-function block
-     * (switch case) — these get Annex-B "block-scoped function declaration"
-     * treatment: hoisted to the enclosing function/script's lex env via
-     * CreateMutableBinding / InitializeLexicalBinding, then re-bound at the
-     * declaration site via GetBinding + SetVariableBinding.
-     *
-     * <p>Populated by {@link #collectAnnexBFunctionDecls} during the
-     * script-level pre-pass in {@link #lowerProgram}; consulted by
-     * {@link #lowerFunctionDeclaration} to switch to the Annex-B emission
-     * shape. {@link com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis}
-     * computes a broader, spec-faithful version of this set that will
-     * replace the AST walker once the emission shape is fixed.
-     */
-    private final java.util.Set<FunctionDeclaration> annexBFunctionDecls = new java.util.HashSet<>();
-
-    /**
      * Function declarations the top-of-body hoisting pre-pass already
      * materialized + bound. The body-pass's {@link #lowerFunctionDeclaration}
      * skips these so we don't emit the NewFunction+Mov pair twice.
      */
     private final java.util.Set<FunctionDeclaration> hoistedNestedFnDecls = new java.util.HashSet<>();
-    /** True while emitting the script's prologue (so annexB initial NewFunction
-     *  calls don't recurse into the Annex-B re-bind shape). */
-    private boolean inAnnexBPrologue;
 
     /**
      * Pre-allocated block-scope let/const slot mapping, keyed by AST node
@@ -1095,8 +1076,7 @@ public final class Generator {
         // closures.
         java.util.List<FunctionDeclaration> fdsToHoist = new ArrayList<>();
         for (Statement s : body.body()) {
-            if (s instanceof FunctionDeclaration fd && fd.id() != null
-                && !g.annexBFunctionDecls.contains(fd)) {
+            if (s instanceof FunctionDeclaration fd && fd.id() != null) {
                 fdsToHoist.add(fd);
                 g.localFor(fd.id().name());   // reserve slot + register in locals
                 g.hoistedNestedFnDecls.add(fd);
@@ -1979,15 +1959,6 @@ public final class Generator {
                 hoistedVarNames.add(synth.name());
             }
         }
-        // Legacy walker — tags switch-case FDs only. Switch isn't a
-        // BlockStatement, so the dual-binding rework's blockFnSlots
-        // mechanism doesn't cover it. Until lowerSwitch grows proper
-        // block enter/exit shadowing, the legacy round-trip emission
-        // path remains the way switch-case Annex-B preserves
-        // value-preservation for let-conflicted bindings.
-        collectAnnexBFunctionDecls(program.body());
-        boolean hasAnnexBFns = !annexBFunctionDecls.isEmpty();
-
         // Module mode: register ALL top-level binding names (var, function,
         // let/const/class) as lexical so SetGlobal writes don't mirror onto
         // the global object. ECMA-262 § 9.4.6 ModuleEnvironmentRecord: a
@@ -2031,48 +2002,13 @@ public final class Generator {
         // declaration, or class expression (each creates a private lexical
         // scope that needs the saved env as its parent). LibJS emits this
         // before the first user statement.
-        if (hasAnnexBFns
-            || containsTryStatement(program.body())
+        if (containsTryStatement(program.body())
             || containsNamedFunctionExpression(program.body())
             || containsClassDeclaration(program.body())
             || containsClassExpression(program.body())
             || containsForOfStatement(program.body())) {
             emit(new Op.GetLexicalEnvironment(Variable.Register.SAVED_LEXICAL_ENVIRONMENT));
             lexicalEnvironmentSaved = true;
-        }
-
-        // Annex-B prologue: alloc completion register (reg5) + Mov Undef,
-        // alloc env reg (reg6) + CreateLexEnv, then for each fn-decl:
-        // CreateMutableBinding + NewFunction + InitializeLexicalBinding.
-        // The env reg stays alive across the script so subsequent
-        // GetBinding/SetVariableBinding ops have a target.
-        Variable.Register annexBCompletionReg = null;
-        Variable.Register annexBEnvReg = null;
-        if (hasAnnexBFns) {
-            annexBCompletionReg = allocRegister();
-            emit(new Op.Mov(annexBCompletionReg, constant(Undefined.VALUE)));
-            annexBEnvReg = allocRegister();
-            emit(new Op.CreateLexicalEnvironment(annexBEnvReg,
-                Variable.Register.SAVED_LEXICAL_ENVIRONMENT, 0));
-            inAnnexBPrologue = true;
-            try {
-                for (FunctionDeclaration fd : annexBFunctionDecls) {
-                    String name = fd.id().name();
-                    emit(new Op.CreateMutableBinding(annexBEnvReg,
-                        /* canBeDeleted */ false, name));
-                    JSFunction fn = generateFunction(name, fd.params(), fd.body(),
-                        /* isArrow */ false, fd.generator(), fd.async());
-                    int fnIndex = sharedFunctionData.size();
-                    sharedFunctionData.add(fn);
-                    Variable.Register fnReg = allocRegister();
-                    emit(new Op.NewFunction(fnReg, fnIndex, name, null));
-                    emit(new Op.InitializeLexicalBinding(name, fnReg, new EnvironmentCoordinate()));
-                    release(fnReg);
-                    lexEnvBindingNames.add(name);
-                }
-            } finally {
-                inAnnexBPrologue = false;
-            }
         }
 
         // Main pass: lower each top-level statement (skipping hoisted decls).
@@ -2111,15 +2047,8 @@ public final class Generator {
                 lastTopLevelReg = (value instanceof Variable.Register r) ? r : null;
             }
         }
-        // Annex-B teardown: restore outer lex env before script's End.
-        // The annexBCompletionReg holds the script's value for End.
-        if (annexBCompletionReg != null) {
-            emit(new Op.SetLexicalEnvironment(Variable.Register.SAVED_LEXICAL_ENVIRONMENT));
-            emit(new Op.End(annexBCompletionReg));
-        } else {
-            if (last == null) last = constant(Undefined.VALUE);
-            emit(new Op.End(last));
-        }
+        if (last == null) last = constant(Undefined.VALUE);
+        emit(new Op.End(last));
         flushDeferredLoopBranches();
     }
 
@@ -2486,18 +2415,6 @@ public final class Generator {
         // Body-level FD already hoisted by the pre-pass in generateFunction:
         // emit nothing at the declaration site (the binding is already set).
         if (hoistedNestedFnDecls.contains(fd)) return;
-        // Annex-B path: function-decl inside a switch case (or non-function
-        // block). The function value was already materialized in the script
-        // prologue and bound via InitializeLexicalBinding. At the declaration
-        // site we re-bind via GetBinding + SetVariableBinding (matches LibJS).
-        if (annexBFunctionDecls.contains(fd) && !inAnnexBPrologue) {
-            String name = fd.id().name();
-            Variable.Register reg = allocRegister();
-            emit(new Op.GetBinding(reg, name, new EnvironmentCoordinate()));
-            emit(new Op.SetVariableBinding(name, reg, new EnvironmentCoordinate()));
-            release(reg);
-            return;
-        }
         // async/generator: we emit the bytecode (yield/await ops in the body) but
         // the runtime interpreter will refuse to execute yield/await without
         // suspend/resume. Compilation succeeds.
@@ -3069,59 +2986,6 @@ public final class Generator {
             if (s instanceof BlockStatement) return true;
         }
         return false;
-    }
-
-    /**
-     * Collect FunctionDeclarations inside switch cases at the program level
-     * (Annex-B function-declaration-in-block scoping). Adds each to
-     * {@link #annexBFunctionDecls}.
-     *
-     * <p>This is the narrow legacy walker that only tags switch-case FDs.
-     * {@link com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis} computes
-     * the spec-faithful superset (covering all block-FDs at any nesting,
-     * with conflict checks), but switching the {@link #annexBFunctionDecls}
-     * source to the analyzer also requires fixing latent prologue bugs
-     * (e.g. async-flag dropped at line 1881) that the broader tagging
-     * exposes. Hence the legacy walker stays as the source until those
-     * fixes land.
-     */
-    private void collectAnnexBFunctionDecls(java.util.List<Statement> stmts) {
-        for (Statement s : stmts) {
-            collectAnnexBFromStatement(s);
-        }
-    }
-
-    private void collectAnnexBFromStatement(Statement s) {
-        if (s instanceof SwitchStatement ss) {
-            for (com.jimmyhmiller.harmonica.ast.SwitchCase c : ss.cases()) {
-                for (Statement cs : c.consequent()) {
-                    if (cs instanceof FunctionDeclaration fd && fd.id() != null) {
-                        annexBFunctionDecls.add(fd);
-                    } else {
-                        collectAnnexBFromStatement(cs);
-                    }
-                }
-            }
-        } else if (s instanceof BlockStatement bs) {
-            for (Statement inner : bs.body()) {
-                collectAnnexBFromStatement(inner);
-            }
-        } else if (s instanceof IfStatement is) {
-            collectAnnexBFromStatement(is.consequent());
-            if (is.alternate() != null) collectAnnexBFromStatement(is.alternate());
-        } else if (s instanceof WhileStatement ws) {
-            collectAnnexBFromStatement(ws.body());
-        } else if (s instanceof DoWhileStatement dws) {
-            collectAnnexBFromStatement(dws.body());
-        } else if (s instanceof ForStatement fs) {
-            collectAnnexBFromStatement(fs.body());
-        } else if (s instanceof TryStatement ts) {
-            collectAnnexBFromStatement(ts.block());
-            if (ts.handler() != null) collectAnnexBFromStatement(ts.handler().body());
-            if (ts.finalizer() != null) collectAnnexBFromStatement(ts.finalizer());
-        } else if (s instanceof LabeledStatement ls) {
-            collectAnnexBFromStatement(ls.body());
-        }
     }
 
     private static boolean expressionContainsClosure(Expression e) {
