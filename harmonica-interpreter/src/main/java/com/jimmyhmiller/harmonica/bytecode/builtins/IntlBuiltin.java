@@ -470,6 +470,45 @@ public final class IntlBuiltin {
                         && !tagStr.toLowerCase().startsWith("und-")) {
                     throw AbruptCompletion.rangeError( "Invalid Locale tag: " + tagStr);
                 }
+                // Apply options bag overrides per § 14.1.1 ApplyOptionsToTag.
+                // Builder lets us replace components and add Unicode -u- extensions.
+                Object opts = Realm.arg(a, 1);
+                if (opts instanceof JSObject optsJo) {
+                    Locale.Builder b = new Locale.Builder().setLocale(loc);
+                    Object langV = optsJo.get("language");
+                    if (langV != Undefined.VALUE && langV != null) {
+                        String s = AbstractOps.toString(langV);
+                        if (s.isEmpty()) {
+                            throw AbruptCompletion.rangeError("Invalid language: empty");
+                        }
+                        try { b.setLanguage(s); }
+                        catch (Exception e) { throw AbruptCompletion.rangeError("Invalid language: " + s); }
+                    }
+                    Object regV = optsJo.get("region");
+                    if (regV != Undefined.VALUE && regV != null) {
+                        try { b.setRegion(AbstractOps.toString(regV)); }
+                        catch (Exception e) { throw AbruptCompletion.rangeError("Invalid region: " + regV); }
+                    }
+                    Object scrV = optsJo.get("script");
+                    if (scrV != Undefined.VALUE && scrV != null) {
+                        try { b.setScript(AbstractOps.toString(scrV)); }
+                        catch (Exception e) { throw AbruptCompletion.rangeError("Invalid script: " + scrV); }
+                    }
+                    // Unicode extension keys map to -u- subtags.
+                    applyUExt(b, optsJo, "calendar", "ca");
+                    applyUExt(b, optsJo, "collation", "co");
+                    applyUExt(b, optsJo, "hourCycle", "hc");
+                    applyUExt(b, optsJo, "caseFirst", "kf");
+                    applyUExt(b, optsJo, "numberingSystem", "nu");
+                    applyUExt(b, optsJo, "firstDayOfWeek", "fw");
+                    Object numericV = optsJo.get("numeric");
+                    if (numericV != Undefined.VALUE && numericV != null) {
+                        boolean n = AbstractOps.toBoolean(numericV);
+                        try { b.setUnicodeLocaleKeyword("kn", n ? "true" : "false"); }
+                        catch (Exception ignored) {}
+                    }
+                    loc = b.build();
+                }
             } catch (AbruptCompletion ac) {
                 throw ac;
             } catch (Exception e) {
@@ -480,7 +519,14 @@ public final class IntlBuiltin {
             self.setAttributes(SLOT_INTL_LOCALE, (byte) 0);
             return self;
         });
-        installAccessor(proto, "baseName", (t, a, c) -> getLoc(t).toLanguageTag());
+        installAccessor(proto, "baseName", (t, a, c) -> {
+            Locale l = getLoc(t);
+            // Reconstruct base name without the -u- extension.
+            StringBuilder sb = new StringBuilder(l.getLanguage());
+            if (!l.getScript().isEmpty()) sb.append('-').append(l.getScript());
+            if (!l.getCountry().isEmpty()) sb.append('-').append(l.getCountry());
+            return sb.toString();
+        });
         installAccessor(proto, "language", (t, a, c) -> getLoc(t).getLanguage());
         installAccessor(proto, "region", (t, a, c) -> {
             String r = getLoc(t).getCountry();
@@ -490,12 +536,16 @@ public final class IntlBuiltin {
             String s = getLoc(t).getScript();
             return s.isEmpty() ? Undefined.VALUE : s;
         });
-        installAccessor(proto, "calendar",        (t, a, c) -> { getLoc(t); return Undefined.VALUE; });
-        installAccessor(proto, "caseFirst",       (t, a, c) -> { getLoc(t); return Undefined.VALUE; });
-        installAccessor(proto, "collation",       (t, a, c) -> { getLoc(t); return Undefined.VALUE; });
-        installAccessor(proto, "hourCycle",       (t, a, c) -> { getLoc(t); return Undefined.VALUE; });
-        installAccessor(proto, "numberingSystem", (t, a, c) -> { getLoc(t); return Undefined.VALUE; });
-        installAccessor(proto, "numeric",         (t, a, c) -> { getLoc(t); return false; });
+        installAccessor(proto, "calendar",        (t, a, c) -> uExt(t, "ca"));
+        installAccessor(proto, "caseFirst",       (t, a, c) -> uExt(t, "kf"));
+        installAccessor(proto, "collation",       (t, a, c) -> uExt(t, "co"));
+        installAccessor(proto, "hourCycle",       (t, a, c) -> uExt(t, "hc"));
+        installAccessor(proto, "numberingSystem", (t, a, c) -> uExt(t, "nu"));
+        installAccessor(proto, "firstDayOfWeek",  (t, a, c) -> uExt(t, "fw"));
+        installAccessor(proto, "numeric",         (t, a, c) -> {
+            String v = (String) uExt(t, "kn");
+            return "true".equals(v);
+        });
         installMethod(proto, "toString", 0, (t, a, c) -> getLoc(t).toLanguageTag());
         installMethod(proto, "maximize", 0, (t, a, c) -> {
             // Naive: return self — full likely-subtags algorithm needs CLDR data.
@@ -532,6 +582,25 @@ public final class IntlBuiltin {
     private static Locale getLoc(Object t) {
         if (t instanceof JSObject jo && jo.getOwn(SLOT_INTL_LOCALE) instanceof Locale l) return l;
         throw AbruptCompletion.typeError("Intl.Locale method called on non-Locale");
+    }
+
+    /** Read a Unicode locale extension keyword off the locale's -u- subtags. */
+    private static Object uExt(Object t, String key) {
+        Locale l = getLoc(t);
+        String v = l.getUnicodeLocaleType(key);
+        return v == null || v.isEmpty() ? Undefined.VALUE : v;
+    }
+
+    /** Copy options.{jsName} into the BCP-47 -u-{shortKey}-{value} subtag. */
+    private static void applyUExt(Locale.Builder b, JSObject opts, String jsName, String shortKey) {
+        Object v = opts.get(jsName);
+        if (v == Undefined.VALUE || v == null) return;
+        String s = AbstractOps.toString(v);
+        try {
+            b.setUnicodeLocaleKeyword(shortKey, s);
+        } catch (Exception e) {
+            throw AbruptCompletion.rangeError("Invalid " + jsName + ": " + s);
+        }
     }
     private static JSArray weekendArray() {
         JSArray arr = new JSArray(); arr.push(6.0); arr.push(7.0); return arr;
