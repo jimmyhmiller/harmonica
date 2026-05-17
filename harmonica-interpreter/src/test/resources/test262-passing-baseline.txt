@@ -11331,7 +11331,6 @@ built-ins/RegExp/lookBehind/sticky.js
 built-ins/RegExp/lookBehind/variable-length.js
 built-ins/RegExp/lookBehind/word-boundary.js
 built-ins/RegExp/match-indices/no-indices-array.js
-built-ins/RegExp/named-groups/groups-properties.js
 built-ins/RegExp/named-groups/non-unicode-property-names-invalid.js
 built-ins/RegExp/named-groups/string-replace-escaped.js
 built-ins/RegExp/named-groups/string-replace-nocaptures.js
@@ -17987,7 +17986,9 @@ intl402/Intl/getCanonicalLocales/to-string.js
 intl402/Intl/getCanonicalLocales/transformed-ext-valid.js
 intl402/Intl/getCanonicalLocales/weird-cases.js
 intl402/Intl/supportedValuesOf/calendars-accepted-by-DateTimeFormat.js
+intl402/Intl/supportedValuesOf/calendars.js
 intl402/Intl/supportedValuesOf/coerced-to-string.js
+intl402/Intl/supportedValuesOf/collations.js
 intl402/Intl/supportedValuesOf/currencies-accepted-by-NumberFormat.js
 intl402/Intl/supportedValuesOf/invalid-key.js
 intl402/Intl/supportedValuesOf/length.js
@@ -17995,6 +17996,7 @@ intl402/Intl/supportedValuesOf/name.js
 intl402/Intl/supportedValuesOf/numberingSystems-accepted-by-DateTimeFormat.js
 intl402/Intl/supportedValuesOf/numberingSystems-accepted-by-NumberFormat.js
 intl402/Intl/supportedValuesOf/numberingSystems-accepted-by-RelativeTimeFormat.js
+intl402/Intl/supportedValuesOf/numberingSystems.js
 intl402/Intl/supportedValuesOf/prop-desc.js
 intl402/Intl/supportedValuesOf/timeZones-include-non-continental.js
 intl402/Intl/supportedValuesOf/units.js
@@ -18029,6 +18031,13 @@ intl402/ListFormat/prototype/resolvedOptions/prop-desc.js
 intl402/ListFormat/prototype/toStringTag/toString.js
 intl402/ListFormat/prototype/toStringTag/toStringTag.js
 intl402/Locale/canonicalize-locale-list-take-locale.js
+intl402/Locale/constructor-locale-object.js
+intl402/Locale/constructor-options-calendar-valid.js
+intl402/Locale/constructor-options-casefirst-valid.js
+intl402/Locale/constructor-options-collation-valid.js
+intl402/Locale/constructor-options-hourcycle-valid.js
+intl402/Locale/constructor-options-language-grandfathered.js
+intl402/Locale/constructor-options-numberingsystem-valid.js
 intl402/Locale/constructor-options-script-valid-undefined.js
 intl402/Locale/constructor-tag-tostring.js
 intl402/Locale/constructor-unicode-ext-valid.js
@@ -18054,6 +18063,9 @@ intl402/Locale/prototype/collation/name.js
 intl402/Locale/prototype/collation/prop-desc.js
 intl402/Locale/prototype/constructor/prop-desc.js
 intl402/Locale/prototype/firstDayOfWeek/branding.js
+intl402/Locale/prototype/firstDayOfWeek/name.js
+intl402/Locale/prototype/firstDayOfWeek/prop-desc.js
+intl402/Locale/prototype/firstDayOfWeek/valid-id.js
 intl402/Locale/prototype/getCalendars/name.js
 intl402/Locale/prototype/getCalendars/output-array.js
 intl402/Locale/prototype/getCalendars/prop-desc.js
@@ -18153,6 +18165,7 @@ intl402/NumberFormat/prototype/formatRange/argument-to-Intlmathematicalvalue-thr
 intl402/NumberFormat/prototype/formatRange/undefined-arguments-throws.js
 intl402/NumberFormat/prototype/formatRangeToParts/argument-to-Intlmathematicalvalue-throws.js
 intl402/NumberFormat/prototype/formatRangeToParts/undefined-arguments-throws.js
+intl402/NumberFormat/prototype/formatToParts/default-parameter.js
 intl402/NumberFormat/prototype/formatToParts/length.js
 intl402/NumberFormat/prototype/formatToParts/main.js
 intl402/NumberFormat/prototype/formatToParts/name.js
