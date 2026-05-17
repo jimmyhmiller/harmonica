@@ -319,6 +319,7 @@ annexB/language/eval-code/direct/global-switch-dflt-eval-global-existing-var-upd
 annexB/language/eval-code/direct/global-switch-dflt-eval-global-skip-early-err-for-in.js
 annexB/language/eval-code/direct/global-switch-dflt-eval-global-skip-early-err.js
 annexB/language/eval-code/direct/global-switch-dflt-eval-global-update.js
+annexB/language/eval-code/direct/script-decl-lex-no-collision.js
 annexB/language/eval-code/direct/switch-case-decl-nostrict.js
 annexB/language/eval-code/direct/switch-dflt-decl-nostrict.js
 annexB/language/eval-code/direct/var-env-lower-lex-catch-non-strict.js
@@ -458,6 +459,7 @@ annexB/language/function-code/switch-dflt-func-update.js
 annexB/language/global-code/block-decl-global-existing-block-fn-update.js
 annexB/language/global-code/block-decl-global-existing-fn-no-init.js
 annexB/language/global-code/block-decl-global-existing-fn-update.js
+annexB/language/global-code/block-decl-global-existing-global-init.js
 annexB/language/global-code/block-decl-global-existing-var-no-init.js
 annexB/language/global-code/block-decl-global-existing-var-update.js
 annexB/language/global-code/block-decl-global-skip-early-err-block.js
@@ -465,6 +467,7 @@ annexB/language/global-code/block-decl-global-update.js
 annexB/language/global-code/if-decl-else-decl-a-global-existing-block-fn-update.js
 annexB/language/global-code/if-decl-else-decl-a-global-existing-fn-no-init.js
 annexB/language/global-code/if-decl-else-decl-a-global-existing-fn-update.js
+annexB/language/global-code/if-decl-else-decl-a-global-existing-global-init.js
 annexB/language/global-code/if-decl-else-decl-a-global-existing-var-no-init.js
 annexB/language/global-code/if-decl-else-decl-a-global-existing-var-update.js
 annexB/language/global-code/if-decl-else-decl-a-global-skip-early-err-block.js
@@ -472,6 +475,7 @@ annexB/language/global-code/if-decl-else-decl-a-global-update.js
 annexB/language/global-code/if-decl-else-decl-b-global-existing-block-fn-update.js
 annexB/language/global-code/if-decl-else-decl-b-global-existing-fn-no-init.js
 annexB/language/global-code/if-decl-else-decl-b-global-existing-fn-update.js
+annexB/language/global-code/if-decl-else-decl-b-global-existing-global-init.js
 annexB/language/global-code/if-decl-else-decl-b-global-existing-var-no-init.js
 annexB/language/global-code/if-decl-else-decl-b-global-existing-var-update.js
 annexB/language/global-code/if-decl-else-decl-b-global-skip-early-err-block.js
@@ -479,6 +483,7 @@ annexB/language/global-code/if-decl-else-decl-b-global-update.js
 annexB/language/global-code/if-decl-else-stmt-global-existing-block-fn-update.js
 annexB/language/global-code/if-decl-else-stmt-global-existing-fn-no-init.js
 annexB/language/global-code/if-decl-else-stmt-global-existing-fn-update.js
+annexB/language/global-code/if-decl-else-stmt-global-existing-global-init.js
 annexB/language/global-code/if-decl-else-stmt-global-existing-var-no-init.js
 annexB/language/global-code/if-decl-else-stmt-global-existing-var-update.js
 annexB/language/global-code/if-decl-else-stmt-global-skip-early-err-block.js
@@ -486,6 +491,7 @@ annexB/language/global-code/if-decl-else-stmt-global-update.js
 annexB/language/global-code/if-decl-no-else-global-existing-block-fn-update.js
 annexB/language/global-code/if-decl-no-else-global-existing-fn-no-init.js
 annexB/language/global-code/if-decl-no-else-global-existing-fn-update.js
+annexB/language/global-code/if-decl-no-else-global-existing-global-init.js
 annexB/language/global-code/if-decl-no-else-global-existing-var-no-init.js
 annexB/language/global-code/if-decl-no-else-global-existing-var-update.js
 annexB/language/global-code/if-decl-no-else-global-skip-early-err-block.js
@@ -493,16 +499,21 @@ annexB/language/global-code/if-decl-no-else-global-update.js
 annexB/language/global-code/if-stmt-else-decl-global-existing-block-fn-update.js
 annexB/language/global-code/if-stmt-else-decl-global-existing-fn-no-init.js
 annexB/language/global-code/if-stmt-else-decl-global-existing-fn-update.js
+annexB/language/global-code/if-stmt-else-decl-global-existing-global-init.js
 annexB/language/global-code/if-stmt-else-decl-global-existing-var-no-init.js
 annexB/language/global-code/if-stmt-else-decl-global-existing-var-update.js
 annexB/language/global-code/if-stmt-else-decl-global-skip-early-err-block.js
 annexB/language/global-code/if-stmt-else-decl-global-update.js
 annexB/language/global-code/switch-case-global-existing-fn-update.js
+annexB/language/global-code/switch-case-global-existing-global-init.js
+annexB/language/global-code/switch-case-global-existing-non-enumerable-global-init.js
 annexB/language/global-code/switch-case-global-existing-var-no-init.js
 annexB/language/global-code/switch-case-global-existing-var-update.js
 annexB/language/global-code/switch-case-global-skip-early-err.js
 annexB/language/global-code/switch-case-global-update.js
 annexB/language/global-code/switch-dflt-global-existing-fn-update.js
+annexB/language/global-code/switch-dflt-global-existing-global-init.js
+annexB/language/global-code/switch-dflt-global-existing-non-enumerable-global-init.js
 annexB/language/global-code/switch-dflt-global-existing-var-no-init.js
 annexB/language/global-code/switch-dflt-global-existing-var-update.js
 annexB/language/global-code/switch-dflt-global-skip-early-err.js
@@ -3718,9 +3729,11 @@ built-ins/Atomics/and/validate-arraytype-before-index-coercion.js
 built-ins/Atomics/and/validate-arraytype-before-value-coercion.js
 built-ins/Atomics/compareExchange/bad-range.js
 built-ins/Atomics/compareExchange/bigint/bad-range.js
+built-ins/Atomics/compareExchange/bigint/good-views.js
 built-ins/Atomics/compareExchange/bigint/non-shared-bufferdata.js
 built-ins/Atomics/compareExchange/descriptor.js
 built-ins/Atomics/compareExchange/expected-return-value.js
+built-ins/Atomics/compareExchange/good-views.js
 built-ins/Atomics/compareExchange/length.js
 built-ins/Atomics/compareExchange/name.js
 built-ins/Atomics/compareExchange/non-shared-bufferdata.js
@@ -3878,6 +3891,7 @@ built-ins/Atomics/wait/validate-arraytype-before-timeout-coercion.js
 built-ins/Atomics/wait/validate-arraytype-before-value-coercion.js
 built-ins/Atomics/waitAsync/bad-range.js
 built-ins/Atomics/waitAsync/bigint/bad-range.js
+built-ins/Atomics/waitAsync/bigint/false-for-timeout.js
 built-ins/Atomics/waitAsync/bigint/good-views.js
 built-ins/Atomics/waitAsync/bigint/negative-index-throws.js
 built-ins/Atomics/waitAsync/bigint/negative-timeout.js
@@ -3886,6 +3900,8 @@ built-ins/Atomics/waitAsync/bigint/non-shared-bufferdata-throws.js
 built-ins/Atomics/waitAsync/bigint/not-a-typedarray-throws.js
 built-ins/Atomics/waitAsync/bigint/not-an-object-throws.js
 built-ins/Atomics/waitAsync/bigint/null-bufferdata-throws.js
+built-ins/Atomics/waitAsync/bigint/null-for-timeout.js
+built-ins/Atomics/waitAsync/bigint/object-for-timeout.js
 built-ins/Atomics/waitAsync/bigint/out-of-range-index-throws.js
 built-ins/Atomics/waitAsync/bigint/poisoned-object-for-timeout-throws.js
 built-ins/Atomics/waitAsync/bigint/symbol-for-index-throws.js
@@ -3894,6 +3910,7 @@ built-ins/Atomics/waitAsync/bigint/symbol-for-value-throws.js
 built-ins/Atomics/waitAsync/bigint/true-for-timeout.js
 built-ins/Atomics/waitAsync/bigint/value-not-equal.js
 built-ins/Atomics/waitAsync/descriptor.js
+built-ins/Atomics/waitAsync/false-for-timeout.js
 built-ins/Atomics/waitAsync/good-views.js
 built-ins/Atomics/waitAsync/is-function.js
 built-ins/Atomics/waitAsync/length.js
@@ -3905,10 +3922,13 @@ built-ins/Atomics/waitAsync/non-shared-bufferdata-throws.js
 built-ins/Atomics/waitAsync/not-a-typedarray-throws.js
 built-ins/Atomics/waitAsync/not-an-object-throws.js
 built-ins/Atomics/waitAsync/null-bufferdata-throws.js
+built-ins/Atomics/waitAsync/null-for-timeout.js
+built-ins/Atomics/waitAsync/object-for-timeout.js
 built-ins/Atomics/waitAsync/out-of-range-index-throws.js
 built-ins/Atomics/waitAsync/poisoned-object-for-timeout-throws.js
 built-ins/Atomics/waitAsync/returns-result-object-value-is-promise-resolves-to-timed-out.js
 built-ins/Atomics/waitAsync/returns-result-object-value-is-string-not-equal.js
+built-ins/Atomics/waitAsync/returns-result-object-value-is-string-timed-out.js
 built-ins/Atomics/waitAsync/symbol-for-index-throws.js
 built-ins/Atomics/waitAsync/symbol-for-timeout-throws.js
 built-ins/Atomics/waitAsync/symbol-for-value-throws.js
@@ -29537,6 +29557,10 @@ language/global-code/invalid-private-names-member-expression-this.js
 language/global-code/new.target-arrow.js
 language/global-code/new.target.js
 language/global-code/return.js
+language/global-code/script-decl-func-dups.js
+language/global-code/script-decl-lex-deletion.js
+language/global-code/script-decl-lex-var-declared-via-eval.js
+language/global-code/script-decl-lex.js
 language/global-code/super-call-arrow.js
 language/global-code/super-call.js
 language/global-code/super-prop-arrow.js
