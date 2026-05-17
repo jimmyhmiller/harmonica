@@ -296,14 +296,88 @@ public final class IntlBuiltin {
             if (!(t instanceof JSObject jo) || !(jo.getOwn(SLOT_INTL_IMPL) instanceof NumberFormat nf)) {
                 throw AbruptCompletion.typeError("Intl.NumberFormat.formatToParts called on non-NumberFormat");
             }
-            // Minimal implementation: single integer/fraction parts.
-            double n = AbstractOps.toNumber(Realm.arg(a, 0));
-            String formatted = nf.format(n);
+            // Approximate PartitionNumberPattern by post-processing the
+            // java.text.NumberFormat output. Handles minus, integer with
+            // group separators, decimal separator, fraction, percent suffix.
+            // Tests checking nan/inf/+0 use the keywords; we surface them.
+            Locale loc = jo.getOwn(SLOT_INTL_LOCALE) instanceof Locale ll ? ll : Locale.getDefault();
+            java.text.DecimalFormatSymbols sym = (nf instanceof java.text.DecimalFormat df)
+                ? df.getDecimalFormatSymbols()
+                : java.text.DecimalFormatSymbols.getInstance(loc);
+            Object n0 = Realm.arg(a, 0);
+            double n = AbstractOps.toNumber(n0);
             JSArray parts = new JSArray();
-            JSObject part = new JSObject();
-            part.set("type", "integer");
-            part.set("value", formatted);
-            parts.push(part);
+            if (Double.isNaN(n)) {
+                parts.push(numPart("nan", sym.getNaN()));
+                return parts;
+            }
+            String formatted = nf.format(n);
+            char minusChar = sym.getMinusSign();
+            char groupChar = sym.getGroupingSeparator();
+            char decChar   = sym.getDecimalSeparator();
+            int i = 0;
+            // Optional minus / plus prefix.
+            if (i < formatted.length() && formatted.charAt(i) == minusChar) {
+                parts.push(numPart("minusSign", String.valueOf(minusChar)));
+                i++;
+            } else if (n < 0 || (n == 0 && Double.doubleToRawLongBits(n) != 0L)) {
+                // -0 shows no minus from Java's NumberFormat usually.
+            }
+            if (Double.isInfinite(n)) {
+                parts.push(numPart("infinity", sym.getInfinity()));
+                // any trailing currency/percent suffix
+                int sufStart = i + sym.getInfinity().length();
+                if (sufStart < formatted.length()) {
+                    parts.push(numPart("literal", formatted.substring(sufStart)));
+                }
+                return parts;
+            }
+            // Integer + group separators.
+            StringBuilder intRun = new StringBuilder();
+            while (i < formatted.length()) {
+                char ch = formatted.charAt(i);
+                if (ch == decChar) break;
+                if (ch == groupChar) {
+                    if (intRun.length() > 0) {
+                        parts.push(numPart("integer", intRun.toString()));
+                        intRun.setLength(0);
+                    }
+                    parts.push(numPart("group", String.valueOf(groupChar)));
+                    i++;
+                    continue;
+                }
+                if (ch >= '0' && ch <= '9') {
+                    intRun.append(ch);
+                    i++;
+                    continue;
+                }
+                break;
+            }
+            if (intRun.length() > 0) {
+                parts.push(numPart("integer", intRun.toString()));
+            }
+            // Decimal + fraction.
+            if (i < formatted.length() && formatted.charAt(i) == decChar) {
+                parts.push(numPart("decimal", String.valueOf(decChar)));
+                i++;
+                StringBuilder frac = new StringBuilder();
+                while (i < formatted.length()) {
+                    char ch = formatted.charAt(i);
+                    if (ch >= '0' && ch <= '9') { frac.append(ch); i++; }
+                    else break;
+                }
+                if (frac.length() > 0) {
+                    parts.push(numPart("fraction", frac.toString()));
+                }
+            }
+            // Trailing characters (currency symbol, percent, etc.).
+            if (i < formatted.length()) {
+                String tail = formatted.substring(i);
+                String typ = tail.indexOf('%') >= 0 ? "percentSign"
+                           : tail.matches(".*[A-Z]{3}.*") ? "currency"
+                           : "literal";
+                parts.push(numPart(typ, tail));
+            }
             return parts;
         });
         installMethod(proto, "resolvedOptions", 0, (t, a, c) -> {
@@ -577,6 +651,13 @@ public final class IntlBuiltin {
             o.set("firstDay", 1.0); o.set("weekend", weekendArray()); o.set("minimalDays", 1.0);
             return o;
         });
+    }
+
+    private static JSObject numPart(String type, String value) {
+        JSObject o = new JSObject();
+        o.set("type", type);
+        o.set("value", value);
+        return o;
     }
 
     private static Locale getLoc(Object t) {
