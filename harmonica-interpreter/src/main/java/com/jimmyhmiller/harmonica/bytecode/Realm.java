@@ -8922,7 +8922,11 @@ public final class Realm {
         if (flags.contains("i")) f |= java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CASE;
         if (flags.contains("m")) f |= java.util.regex.Pattern.MULTILINE;
         if (flags.contains("s")) f |= java.util.regex.Pattern.DOTALL;
-        if (flags.contains("u")) f |= java.util.regex.Pattern.UNICODE_CHARACTER_CLASS;
+        // NB: deliberately don't set Pattern.UNICODE_CHARACTER_CLASS for /u.
+        // JS Unicode mode keeps \d/\w/\s ASCII (per ECMA-262 § 22.2.2.9.2);
+        // UNICODE_CHARACTER_CLASS broadens them to Unicode categories, which
+        // is what Java means by Unicode regex. Java still supports \p{...}
+        // property escapes without the flag.
         String translated = translateJsRegexToJava(source);
         java.util.regex.Pattern p;
         try {
