@@ -9477,6 +9477,126 @@ public final class Realm {
         if (out.length() < limit) out.push(s.substring(p));
     }
 
+    /** Map JS Unicode property names to Java's regex flavor. Java's
+     *  syntax accepts general-category short names directly (L, Lu, etc.),
+     *  binary properties as {@code IsX}, and scripts as {@code IsLatin}.
+     *  JS uses the long name form by default ({@code Alphabetic} vs.
+     *  Java's {@code IsAlphabetic}; {@code Script=Latin} vs. {@code
+     *  IsLatin}). */
+    private static String translateUnicodePropertyName(String body) {
+        body = body.trim();
+        // Handle key=value form.
+        int eq = body.indexOf('=');
+        if (eq >= 0) {
+            String key = body.substring(0, eq).trim();
+            String val = body.substring(eq + 1).trim();
+            // Script / Script_Extensions → Java's "IsXxx" with the value name.
+            if ("Script".equalsIgnoreCase(key) || "sc".equalsIgnoreCase(key)
+                    || "Script_Extensions".equalsIgnoreCase(key) || "scx".equalsIgnoreCase(key)) {
+                return "Is" + canonicalScriptName(val);
+            }
+            // General_Category → return just the value (Java accepts L, Lu, etc.).
+            if ("General_Category".equalsIgnoreCase(key) || "gc".equalsIgnoreCase(key)) {
+                return canonicalGeneralCategory(val);
+            }
+            // Fallback: try Is<value>.
+            return "Is" + val;
+        }
+        // No `=` — could be a General_Category short name or binary property.
+        String shortGc = canonicalGeneralCategoryOrNull(body);
+        if (shortGc != null) return shortGc;
+        // Binary properties: Java exposes them as IsX (Alphabetic →
+        // IsAlphabetic). Mostly direct map but a few aliases differ.
+        return "Is" + body;
+    }
+
+    private static String canonicalGeneralCategoryOrNull(String name) {
+        switch (name) {
+            case "L": case "Letter":
+                return "L";
+            case "Ll": case "Lowercase_Letter": return "Ll";
+            case "Lu": case "Uppercase_Letter": return "Lu";
+            case "Lt": case "Titlecase_Letter": return "Lt";
+            case "Lm": case "Modifier_Letter":  return "Lm";
+            case "Lo": case "Other_Letter":     return "Lo";
+            case "M":  case "Mark":             return "M";
+            case "Mn": case "Nonspacing_Mark":  return "Mn";
+            case "Mc": case "Spacing_Mark":     return "Mc";
+            case "Me": case "Enclosing_Mark":   return "Me";
+            case "N":  case "Number":           return "N";
+            case "Nd": case "Decimal_Number":   return "Nd";
+            case "Nl": case "Letter_Number":    return "Nl";
+            case "No": case "Other_Number":     return "No";
+            case "P":  case "Punctuation":      return "P";
+            case "Pc": case "Connector_Punctuation":  return "Pc";
+            case "Pd": case "Dash_Punctuation":       return "Pd";
+            case "Ps": case "Open_Punctuation":       return "Ps";
+            case "Pe": case "Close_Punctuation":      return "Pe";
+            case "Pi": case "Initial_Punctuation":    return "Pi";
+            case "Pf": case "Final_Punctuation":      return "Pf";
+            case "Po": case "Other_Punctuation":      return "Po";
+            case "S":  case "Symbol":           return "S";
+            case "Sm": case "Math_Symbol":      return "Sm";
+            case "Sc": case "Currency_Symbol":  return "Sc";
+            case "Sk": case "Modifier_Symbol":  return "Sk";
+            case "So": case "Other_Symbol":     return "So";
+            case "Z":  case "Separator":        return "Z";
+            case "Zs": case "Space_Separator":  return "Zs";
+            case "Zl": case "Line_Separator":   return "Zl";
+            case "Zp": case "Paragraph_Separator": return "Zp";
+            case "C":  case "Other":            return "C";
+            case "Cc": case "Control":          return "Cc";
+            case "Cf": case "Format":           return "Cf";
+            case "Cs": case "Surrogate":        return "Cs";
+            case "Co": case "Private_Use":      return "Co";
+            case "Cn": case "Unassigned":       return "Cn";
+            default: return null;
+        }
+    }
+    private static String canonicalGeneralCategory(String name) {
+        String r = canonicalGeneralCategoryOrNull(name);
+        return r != null ? r : name;
+    }
+    /** Translate a JS script short / long name to Java's {@code Is<Name>}
+     *  body. Java expects long script names (Latin, Greek, Cyrillic, …)
+     *  not aliases like Latn / Grek. Use a small alias table. */
+    private static String canonicalScriptName(String name) {
+        switch (name) {
+            case "Latn": return "Latin";
+            case "Grek": return "Greek";
+            case "Cyrl": return "Cyrillic";
+            case "Hebr": return "Hebrew";
+            case "Arab": return "Arabic";
+            case "Hira": return "Hiragana";
+            case "Kana": return "Katakana";
+            case "Hang": return "Hangul";
+            case "Hani": return "Han";
+            case "Thai": return "Thai";
+            case "Deva": return "Devanagari";
+            case "Beng": return "Bengali";
+            case "Tibt": return "Tibetan";
+            case "Armn": return "Armenian";
+            case "Geor": return "Georgian";
+            case "Ethi": return "Ethiopic";
+            case "Khmr": return "Khmer";
+            case "Mong": return "Mongolian";
+            case "Mymr": return "Myanmar";
+            case "Sinh": return "Sinhala";
+            case "Taml": return "Tamil";
+            case "Telu": return "Telugu";
+            case "Knda": return "Kannada";
+            case "Mlym": return "Malayalam";
+            case "Gujr": return "Gujarati";
+            case "Guru": return "Gurmukhi";
+            case "Orya": return "Oriya";
+            case "Laoo": return "Lao";
+            case "Syrc": return "Syriac";
+            case "Cher": return "Cherokee";
+            case "Cans": return "Canadian_Aboriginal";
+            default: return name;
+        }
+    }
+
     private static String translateJsRegexToJava(String src) {
         StringBuilder sb = new StringBuilder(src.length());
         boolean inClass = false;
@@ -9489,6 +9609,19 @@ public final class Realm {
                     sb.append("\\u0000");
                     i++;
                     continue;
+                }
+                // \p{Property} / \P{Property} — translate JS Unicode property
+                // escapes (\p{Letter}, \p{Script=Latin}, \p{Alphabetic}, …)
+                // to Java's regex flavor.
+                if ((n == 'p' || n == 'P') && i + 2 < src.length() && src.charAt(i + 2) == '{') {
+                    int close = src.indexOf('}', i + 3);
+                    if (close > 0) {
+                        String body = src.substring(i + 3, close);
+                        sb.append('\\').append(n).append('{')
+                          .append(translateUnicodePropertyName(body)).append('}');
+                        i = close;
+                        continue;
+                    }
                 }
                 sb.append(c).append(n);
                 i++;
