@@ -60,6 +60,20 @@ public final class InterpContext {
     public DirectEvalScope directEvalScope() { return directEvalScope; }
     public void setDirectEvalScope(DirectEvalScope s) { this.directEvalScope = s; }
 
+    /** Stack of `with` objects — innermost last. Pushed by Op.PushWithEnv,
+     *  consulted by Op.GetGlobal / SetGlobal before falling back to globals. */
+    private java.util.ArrayList<Object> withStack;
+    public java.util.List<Object> withStack() { return withStack; }
+    public void pushWithEnv(Object o) {
+        if (withStack == null) withStack = new java.util.ArrayList<>();
+        withStack.add(o);
+    }
+    public void popWithEnv() {
+        if (withStack != null && !withStack.isEmpty()) {
+            withStack.remove(withStack.size() - 1);
+        }
+    }
+
     /** Linked-list of name→Cell maps. Innermost (most recent caller) first. */
     public record DirectEvalScope(java.util.Map<String, Cell> bindings, DirectEvalScope outer) {
         public Cell lookup(String name) {

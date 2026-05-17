@@ -188,6 +188,8 @@ public final class Disassembler {
             case Op.CreatePrivateEnvironment o -> "CreatePrivateEnvironment";
             case Op.LeavePrivateEnvironment o -> "LeavePrivateEnvironment";
             case Op.AddPrivateName o -> "AddPrivateName `" + o.name() + "`";
+            case Op.PushWithEnv o -> "PushWithEnv " + operand(o.object(), exe);
+            case Op.PopWithEnv o -> "PopWithEnv";
 
             case Op.GetById o        -> "GetById " + dst(o.dst()) + ", base:" + operand(o.base(), exe)
                                         + ", `" + o.property() + "`"

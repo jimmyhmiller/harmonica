@@ -222,7 +222,11 @@ public enum Operation {
     YIELD                     (OpClass.BRANCH, TERMINATOR | NO_THROW),
 
     // ---- Private fields ----
-    ADD_PRIVATE_NAME          (OpClass.BINDING, NO_THROW);
+    ADD_PRIVATE_NAME          (OpClass.BINDING, NO_THROW),
+
+    // ---- with statement ----
+    PUSH_WITH_ENV             (OpClass.BINDING, NO_THROW),
+    POP_WITH_ENV              (OpClass.BINDING, NO_THROW);
 
     // -------------- Flag bits --------------
     // Held in a nested class so they're available in enum-constant initializers

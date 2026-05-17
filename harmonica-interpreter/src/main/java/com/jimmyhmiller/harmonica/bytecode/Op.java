@@ -1062,6 +1062,32 @@ public sealed interface Op {
         @Override public int interpret(InterpContext ctx, int pc) { return pc + 1; }
     }
 
+    /** Push the {@code with} object onto the context's with-stack. Identifier
+     *  lookups via {@link GetGlobal} consult this stack (innermost first)
+     *  before falling through to globals. § 14.11. */
+    record PushWithEnv(Operand object) implements Op {
+        @Override public Operation operation() { return Operation.PUSH_WITH_ENV; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            Object o = object.retrieve(ctx);
+            if (o == null || o == Undefined.VALUE) {
+                throw AbruptCompletion.typeError(
+                    "Cannot use 'with' on " + (o == null ? "null" : "undefined"));
+            }
+            ctx.pushWithEnv(o);
+            return pc + 1;
+        }
+    }
+
+    /** Pop the topmost with object off the stack. Emitted by the with-body's
+     *  fall-through, break-out, and exception-handling exits. */
+    record PopWithEnv() implements Op {
+        @Override public Operation operation() { return Operation.POP_WITH_ENV; }
+        @Override public int interpret(InterpContext ctx, int pc) {
+            ctx.popWithEnv();
+            return pc + 1;
+        }
+    }
+
     // ============================================================
     //  Property access — IC-bearing
     // ============================================================
@@ -1555,6 +1581,20 @@ public sealed interface Op {
     ) implements Op {
         @Override public Operation operation() { return Operation.GET_GLOBAL; }
         @Override public int interpret(InterpContext ctx, int pc) {
+            // ECMA-262 § 14.11 with statement: identifier lookup consults
+            // the topmost (innermost) with-object first. Each with object
+            // is checked via [[HasProperty]] — if it has the binding, use
+            // its [[Get]] result. Otherwise fall through to the next
+            // outer with, then to direct-eval scope, then to globals.
+            if (ctx.withStack() != null && !ctx.withStack().isEmpty()) {
+                for (int wi = ctx.withStack().size() - 1; wi >= 0; wi--) {
+                    Object w = ctx.withStack().get(wi);
+                    if (AbstractOps.hasProperty(w, identifier)) {
+                        dst.store(ctx, AbstractOps.getProperty(w, identifier));
+                        return pc + 1;
+                    }
+                }
+            }
             // Direct-eval scope chain: ECMA-262 § 19.2.1 step 18.a — eval'd
             // code's identifier lookups walk the caller's lexical environment
             // before falling through to globals.
@@ -1677,6 +1717,19 @@ public sealed interface Op {
         @Override public Operation operation() { return Operation.SET_GLOBAL; }
         @Override public int interpret(InterpContext ctx, int pc) {
             Object value = src.retrieve(ctx);
+            // ECMA-262 § 14.11: assignments inside a `with` block write to
+            // the innermost with object that already has the binding; only
+            // if no with object has it does the write fall through to the
+            // direct-eval / global path.
+            if (ctx.withStack() != null && !ctx.withStack().isEmpty()) {
+                for (int wi = ctx.withStack().size() - 1; wi >= 0; wi--) {
+                    Object w = ctx.withStack().get(wi);
+                    if (AbstractOps.hasProperty(w, identifier)) {
+                        AbstractOps.setProperty(w, identifier, value);
+                        return pc + 1;
+                    }
+                }
+            }
             // Direct-eval scope: assignments to outer-bound names go through
             // the Cell so the caller frame sees the write.
             if (ctx.directEvalScope() != null) {
