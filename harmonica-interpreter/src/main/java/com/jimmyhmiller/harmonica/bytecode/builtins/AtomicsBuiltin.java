@@ -129,12 +129,47 @@ public final class AtomicsBuiltin {
         if (state.rawBuffer() != null && state.rawBuffer().isDetached()) {
             throw AbruptCompletion.typeError("Atomics.compareExchange: buffer is detached");
         }
+        // Spec compares expected via NumericToRawBytes — so the comparison is
+        // truncation-aware. Truncate `expected` to the kind's storage range
+        // before SameValue-ing against the loaded element.
+        Object expectedNormalized = truncateForKind(state.kind, expected);
         synchronized (state.rawBuffer()) {
             Object current = TypedArrays.loadElement(state, i);
-            if (sameValueZero(current, expected)) {
+            if (sameValueZero(current, expectedNormalized)) {
                 TypedArrays.storeElement(state, i, replacement);
             }
             return current;
+        }
+    }
+
+    /** Reduce a coerced Number / BigInt to what storeElement+loadElement
+     *  would round-trip — matches the spec's NumericToRawBytes truncation
+     *  used for CAS comparisons. */
+    private static Object truncateForKind(TypedArrayKind kind, Object value) {
+        if (kind.bigInt) {
+            // BigInt64 / BigUint64: reduce to 64-bit range.
+            java.math.BigInteger bi = ((JSBigInt) value).value;
+            java.math.BigInteger mod = bi.and(
+                java.math.BigInteger.ONE.shiftLeft(64).subtract(java.math.BigInteger.ONE));
+            if (kind == TypedArrayKind.BIGINT64) {
+                // sign-extend top bit
+                if (mod.testBit(63)) {
+                    mod = mod.subtract(java.math.BigInteger.ONE.shiftLeft(64));
+                }
+            }
+            return new JSBigInt(mod);
+        }
+        double d = ((Number) value).doubleValue();
+        long l = (long) d;
+        switch (kind) {
+            case INT8:    return (double) ((byte) l);
+            case UINT8:
+            case UINT8C:  return (double) (l & 0xFF);
+            case INT16:   return (double) ((short) l);
+            case UINT16:  return (double) (l & 0xFFFF);
+            case INT32:   return (double) ((int) l);
+            case UINT32:  return (double) (l & 0xFFFFFFFFL);
+            default:      return value;
         }
     }
 
