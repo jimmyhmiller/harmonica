@@ -4014,7 +4014,8 @@ public sealed interface Op {
                         th.getMessage() != null ? th.getMessage() : "parse error"));
                 }
                 Executable exe;
-                try { exe = Generator.generate(ast); }
+                boolean callerStrict = ctx.executable() != null && ctx.executable().strictMode();
+                try { exe = Generator.generate(ast, /* moduleMode */ false, callerStrict); }
                 catch (Throwable th) {
                     throw new AbruptCompletion(Realm.makeError("SyntaxError",
                         th.getMessage() != null ? th.getMessage() : "compile error"));

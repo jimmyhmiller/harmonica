@@ -140,6 +140,41 @@ public final class Generator {
     private final java.util.IdentityHashMap<Object, java.util.LinkedHashMap<String, Integer>> blockLetSlots = new java.util.IdentityHashMap<>();
 
     /**
+     * Pre-allocated block-scope FunctionDeclaration slot mapping, keyed by
+     * the same scope keys as {@link #blockLetSlots}. Parallel map (not
+     * merged) because FD slots must be primed to {@code undefined} at block
+     * enter (per ECMA-262 B.3.2 / 14.2.6), while let/const slots are primed
+     * to TDZ. Block enter/exit reads from BOTH maps for shadowing; only
+     * blockLetSlots feeds the TDZ priming loop.
+     *
+     * <p>Populated only by the inner-block call path of
+     * {@link #preAllocateLetSlotsForBlock} ({@code collectFds=true}). The
+     * function-body call path leaves this empty — top-of-body FDs are
+     * handled by the dedicated hoist pre-pass in
+     * {@link #generateFunction}.
+     */
+    private final java.util.IdentityHashMap<Object, java.util.LinkedHashMap<String, Integer>> blockFnSlots = new java.util.IdentityHashMap<>();
+
+    /**
+     * Per-script scope analysis result. Populated by {@link #lowerProgram}
+     * before any statement is lowered; consulted by
+     * {@link #lowerFunctionDeclaration} to detect Annex-B-eligible
+     * function-in-block declarations that need a parallel var-scope write
+     * alongside the block-local binding. Null until lowerProgram has run.
+     */
+    private com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis scopeAnalysis;
+
+    /**
+     * Per-function-body var-binding slots for Annex-B-hoisted block-FDs:
+     * name → function-local slot. Allocated and pre-Mov'd to undefined at
+     * function entry; written at the FD declaration site by
+     * {@link #lowerFunctionDeclaration} (alongside the block-local Mov).
+     * Empty for the script-level Generator — script-level synthesized vars
+     * go to globals via SetGlobal instead.
+     */
+    private final java.util.LinkedHashMap<String, Integer> annexBVarSlots = new java.util.LinkedHashMap<>();
+
+    /**
      * Monotonic counter for {@code InitObjectLiteralProperty}'s
      * {@code shape_cache_index} field — increments once per object literal
      * that has at least one init property. Each property within the same
@@ -682,9 +717,20 @@ public final class Generator {
      * cannot collide with user code).
      */
     public static Executable generate(Program program, boolean moduleMode) {
+        return generate(program, moduleMode, /* callerStrict */ false);
+    }
+
+    /**
+     * Compile entry point that lets the caller force strict mode (e.g.
+     * direct eval from a strict-mode caller — § 19.2.1.4 PerformEval step 6,
+     * "strict" is true iff the calling code is strict OR the eval'd source
+     * has a Use Strict Directive). Used by {@link Op.CallDirectEval}.
+     */
+    public static Executable generate(Program program, boolean moduleMode, boolean callerStrict) {
         Generator g = new Generator();
         g.moduleMode = moduleMode;
-        g.strictMode = moduleMode || detectStrictMode(program.sourceType(), program.body());
+        g.strictMode = moduleMode || callerStrict
+            || detectStrictMode(program.sourceType(), program.body());
         g.lowerProgram(program);
         return g.finish();
     }
@@ -875,6 +921,11 @@ public final class Generator {
         g.inStaticMethod = inStaticMethod;
         g.globalNames.addAll(this.globalNames);
         g.parent = this;
+        // Share the script's ScopeAnalysis with nested generators — the
+        // analysis tree covers all function bodies, so child generators
+        // can consult annexBBindings() to identify their own body's
+        // Annex-B-eligible block-FDs without re-running analysis.
+        g.scopeAnalysis = this.scopeAnalysis;
         // Strict mode inherits from outer function (§ 11.2.2): a function
         // is strict if its enclosing code is strict OR its own body has a
         // "use strict" prologue directive. Class bodies (methods) are
@@ -988,10 +1039,11 @@ public final class Generator {
         // post-order (matches LibJS's allocation timing). Function-body's
         // top-level lets are also block-scoped and need a scope entry —
         // synthesize one keyed by the body BlockStatement.
-        g.preAllocateLetSlotsForBlock(body, body.body());
-        for (Statement s : body.body()) {
-            g.preAllocateLetSlotsRecurse(s);
-        }
+        // {@link #preAllocateLetSlotsForBlock} already recurses into every
+        // body statement, so the explicit recurse loop below would be
+        // redundant (and prior to that observation, double-allocated slots
+        // for every nested block's let/const + Annex-B block-FD).
+        g.preAllocateLetSlotsForBlock(body, body.body(), /* collectFds */ false);
 
         // Stage the function-body's top-level let/const names into `locals`
         // BEFORE the FD-hoist pre-pass below, so that an inner function
@@ -1023,6 +1075,9 @@ public final class Generator {
         for (int slot : tdzSlots) {
             g.emit(new Op.Mov(new Variable.Local(slot), tdzConst));
         }
+
+        // (Annex-B function-body var-slot allocation moved below — runs
+        //  after fdsToHoist so existing top-of-body FD slots are findable.)
 
         // Pre-pass: hoist top-of-body FunctionDeclarations so they're bound
         // before any user statement runs (§ 10.2.11 step 28). Two phases so
@@ -1058,6 +1113,56 @@ public final class Generator {
             Variable.Local slot = g.localFor(fname);
             g.emit(new Op.Mov(slot, fnReg));
             g.release(fnReg);
+        }
+
+        // Annex-B § B.3.2.4 — function-body var-scope binding for each
+        // Annex-B-eligible block-FD whose synthesized var lives in THIS
+        // function's body scope. Two cases:
+        //   • Newly synthesized var (declarationNode == fd) — allocate a
+        //     fresh function-local slot, prime to undefined, stage in
+        //     g.locals so reads OUTSIDE the FD's block resolve here. Inside
+        //     the block, blockFnSlots shadows this with the block-local.
+        //   • Existing binding (var/function/parameter with same name) —
+        //     the slot is already in g.locals via its own hoist pre-pass
+        //     (var hoist, fdsToHoist, or param binding). Just record the
+        //     slot in annexBVarSlots so lowerFunctionDeclaration knows
+        //     where to write at the FD site.
+        if (g.scopeAnalysis != null) {
+            var bodyScope = g.scopeAnalysis.scopeFor(body);
+            if (bodyScope != null) {
+                Operand undef = g.constant(Undefined.VALUE);
+                for (var entry : g.scopeAnalysis.annexBBindings().entrySet()) {
+                    var fd = entry.getKey();
+                    var synth = entry.getValue();
+                    if (!synth.isAnnexBHoisted()) continue;
+                    var fdBody = g.scopeAnalysis.scopeFor(fd);
+                    if (fdBody == null || fdBody.parent() == null) continue;
+                    if (fdBody.parent().enclosingVarScope() != bodyScope) continue;
+                    String varName = synth.name();
+                    if (g.annexBVarSlots.containsKey(varName)) continue;
+                    // Prefer reusing an existing function-scope slot if one
+                    // already lives in locals (covers var hoists, fdsToHoist
+                    // top-of-body FDs, parameters, and the implicit
+                    // `arguments` binding — none of which the scope analyzer
+                    // tracks as a ScopeVariable in the function body scope).
+                    Integer existingSlot = g.locals.get(varName);
+                    if (existingSlot != null) {
+                        g.annexBVarSlots.put(varName, existingSlot);
+                    } else if (synth.declarationNode() == fd
+                        && synth.kind() == com.jimmyhmiller.harmonica.bytecode.scope.BindingKind.Var) {
+                        // Newly synthesized var binding, no pre-existing slot
+                        // — allocate one, prime to undefined, stage in locals.
+                        int slot = g.localNames.size();
+                        g.localNames.add(varName);
+                        g.annexBVarSlots.put(varName, slot);
+                        g.emit(new Op.Mov(new Variable.Local(slot), undef));
+                        g.locals.put(varName, slot);
+                    }
+                    // else: existing binding (per analyzer) with no slot —
+                    // unreachable in practice; skip silently rather than
+                    // allocate something the read path can't see.
+                }
+            }
         }
 
         for (Statement s : body.body()) {
@@ -1373,8 +1478,27 @@ public final class Generator {
      * first). Matches LibJS's allocation order.
      */
     private void preAllocateLetSlotsForBlock(Object scopeKey, java.util.List<Statement> stmts) {
+        preAllocateLetSlotsForBlock(scopeKey, stmts, /* collectFds */ true);
+    }
+
+    /**
+     * @param collectFds when true, direct {@link FunctionDeclaration} children
+     *     of {@code stmts} also get block-local slots (stored in
+     *     {@link #blockFnSlots}). Call this with {@code false} for the
+     *     function body's own scope — top-of-body FDs are hoisted via the
+     *     dedicated pre-pass in {@link #generateFunction} and must not get
+     *     a duplicate block-local slot allocated here.
+     */
+    private void preAllocateLetSlotsForBlock(Object scopeKey, java.util.List<Statement> stmts,
+                                              boolean collectFds) {
+        // Idempotent: if we've already pre-allocated for this scope key
+        // (e.g. via an outer preAllocateLetSlotsRecurse pass), skip rather
+        // than allocate duplicate slots and orphan the originals.
+        if (blockLetSlots.containsKey(scopeKey)) return;
         java.util.LinkedHashMap<String, Integer> myMap = new java.util.LinkedHashMap<>();
         blockLetSlots.put(scopeKey, myMap);
+        java.util.LinkedHashMap<String, Integer> myFnMap = new java.util.LinkedHashMap<>();
+        blockFnSlots.put(scopeKey, myFnMap);
         for (Statement s : stmts) {
             preAllocateLetSlotsRecurse(s);
         }
@@ -1388,6 +1512,18 @@ public final class Generator {
                 // *this* block is nested.
                 for (VariableDeclarator d : vd.declarations()) {
                     collectLetIdsFromPattern(d.id(), myMap);
+                }
+            } else if (collectFds && s instanceof FunctionDeclaration fd && fd.id() != null) {
+                // Block-scoped function declaration. Allocate a local slot
+                // that the block-exit restore will tear down (preventing
+                // the leak where the FD's local slot was visible past the
+                // block). The slot is primed to undefined at block enter
+                // (not TDZ — § B.3.2.4 step 1.a).
+                String name = fd.id().name();
+                if (!myMap.containsKey(name) && !myFnMap.containsKey(name)) {
+                    int slot = localNames.size();
+                    localNames.add(name);
+                    myFnMap.put(name, slot);
                 }
             }
         }
@@ -1717,6 +1853,17 @@ public final class Generator {
     // ------------------------------------------------------------
 
     private void lowerProgram(Program program) {
+        // Run scope analysis FIRST so child generators (top-level FD
+        // pre-hoist below) can consult annexBBindings — they inherit
+        // this.scopeAnalysis through the generateFunction constructor.
+        // scriptStrict captures any external strictness imposed before any
+        // body directive is seen: module mode (always strict) OR a strict
+        // calling context propagated through {@link #generate} (direct eval
+        // from a strict caller). The analyzer itself also checks the
+        // Program body's leading directives, so passing a plain script
+        // with `'use strict'` still works.
+        scopeAnalysis = com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis.analyze(
+            program, /* scriptStrict */ moduleMode || strictMode);
         // ECMA-262 § 9.4.3 InitializeHostDefinedRealm + ModuleNamespaceEnvironment:
         // at module top level, the `this` binding is `undefined`. The
         // interpreter's default seeds THIS_VALUE with globalThis for scripts;
@@ -1797,15 +1944,36 @@ public final class Generator {
             }
         }
 
-        // Pre-pass: run scope analysis. Available for downstream consumers
-        // (Annex-B widening blocked on per-block binding model — see
-        // {@link com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis#annexBEmissionFDs}).
-        // For now the Annex-B set still comes from the historical narrow
-        // AST walker (switch-case FDs only).
-        @SuppressWarnings("unused")
-        com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis scopeAnalysis =
-            com.jimmyhmiller.harmonica.bytecode.scope.ScopeAnalysis.analyze(
-                program, /* scriptStrict */ moduleMode);
+        // Annex-B var-name hoisting: the synthesized var binding for each
+        // eligible FD is pre-bound to undefined at script load (§ B.3.2.4
+        // step c — declaredFunctionOrVarNames addition). Without this,
+        // reads of the name BEFORE the block runs throw ReferenceError
+        // instead of returning undefined.
+        com.jimmyhmiller.harmonica.bytecode.scope.ScopeRecord programScope =
+            scopeAnalysis.rootScope();
+        for (var entry : scopeAnalysis.annexBBindings().entrySet()) {
+            com.jimmyhmiller.harmonica.bytecode.scope.ScopeVariable synth = entry.getValue();
+            // Only the synthesized vars whose host var-scope is the program
+            // scope land in script-level hoistedVarNames. Function-body
+            // cases are handled per-function in generateFunction.
+            FunctionDeclaration fd = entry.getKey();
+            com.jimmyhmiller.harmonica.bytecode.scope.ScopeRecord fdBody =
+                scopeAnalysis.scopeFor(fd);
+            if (fdBody == null || fdBody.parent() == null) continue;
+            if (fdBody.parent().enclosingVarScope() != programScope) continue;
+            if (!synth.isAnnexBHoisted()) continue;
+            // Only add to hoistedVarNames when the binding was NEWLY
+            // synthesized by Annex B (declarationNode == fd). If the synth
+            // is an existing var/function/parameter binding that got tagged,
+            // its original hoist mechanism (top-level var hoist, hoisted
+            // functions) already populates globals — adding here would be
+            // redundant.
+            if (synth.declarationNode() == fd
+                && synth.kind() == com.jimmyhmiller.harmonica.bytecode.scope.BindingKind.Var
+                && hoistedVarNameSet.add(synth.name())) {
+                hoistedVarNames.add(synth.name());
+            }
+        }
         collectAnnexBFunctionDecls(program.body());
         boolean hasAnnexBFns = !annexBFunctionDecls.isEmpty();
 
@@ -1978,13 +2146,29 @@ public final class Generator {
                 // outer same-named lets is automatic because the inner's slot
                 // overwrites the outer's entry while we're inside.
                 java.util.LinkedHashMap<String, Integer> myLetSlots = blockLetSlots.get(bs);
+                java.util.LinkedHashMap<String, Integer> myFnSlots = blockFnSlots.get(bs);
                 java.util.Map<String, Integer> savedShadowed = new java.util.HashMap<>();
-                java.util.Set<String> introducedHere = java.util.Set.of();
+                java.util.Set<String> introducedHere = new java.util.HashSet<>();
                 if (myLetSlots != null && !myLetSlots.isEmpty()) {
-                    introducedHere = new java.util.HashSet<>(myLetSlots.keySet());
                     for (java.util.Map.Entry<String, Integer> e : myLetSlots.entrySet()) {
+                        introducedHere.add(e.getKey());
                         Integer prior = locals.get(e.getKey());
                         if (prior != null) savedShadowed.put(e.getKey(), prior);
+                        locals.put(e.getKey(), e.getValue());
+                    }
+                }
+                if (myFnSlots != null && !myFnSlots.isEmpty()) {
+                    // Prime block-local FD slots to undefined (per § B.3.2.4
+                    // step 1.a — function-in-block bindings are created
+                    // initialized to undefined, NOT TDZ).
+                    Operand undef = constant(Undefined.VALUE);
+                    for (java.util.Map.Entry<String, Integer> e : myFnSlots.entrySet()) {
+                        emit(new Op.Mov(new Variable.Local(e.getValue()), undef));
+                        introducedHere.add(e.getKey());
+                        Integer prior = locals.get(e.getKey());
+                        if (prior != null && !savedShadowed.containsKey(e.getKey())) {
+                            savedShadowed.put(e.getKey(), prior);
+                        }
                         locals.put(e.getKey(), e.getValue());
                     }
                 }
@@ -2322,8 +2506,44 @@ public final class Generator {
         if (isTopLevel) {
             emit(new Op.InitializeLexicalBinding(fd.id().name(), fnReg, new EnvironmentCoordinate()));
         } else {
+            // Block-local binding (or normal nested-fn binding when not in
+            // a block). The pre-allocated block-FD slot (from blockFnSlots,
+            // staged into `locals` at block enter) is what localFor returns
+            // when this FD is block-scoped; otherwise localFor creates a
+            // fresh function-local slot as before.
             Variable.Local slot = localFor(fd.id().name());
             emit(new Op.Mov(slot, fnReg));
+            // Annex-B dual binding: when the FD is in a block AND the
+            // ScopeAnalysis flagged it as Annex-B-eligible, ALSO write to
+            // the var-scope binding. The var binding lives in:
+            //   • globals (SetGlobal) when the FD's var scope is the program scope; or
+            //   • a function-local slot (Mov) reserved at function entry by
+            //     {@link #generateFunction}'s annexBVarSlots pre-pass.
+            if (scopeAnalysis != null) {
+                com.jimmyhmiller.harmonica.bytecode.scope.ScopeVariable synth =
+                    scopeAnalysis.annexBBindings().get(fd);
+                if (synth != null && synth.isAnnexBHoisted()) {
+                    // synth may be a newly-synthesized Var OR an existing
+                    // Var/Function/Parameter in the var scope that got tagged
+                    // (e.g. when a top-level `function f()` matches the
+                    // block-FD's name). Either way the write target is the
+                    // same: globals at script scope, or a function-local
+                    // slot at function scope.
+                    com.jimmyhmiller.harmonica.bytecode.scope.ScopeRecord fdBody =
+                        scopeAnalysis.scopeFor(fd);
+                    if (fdBody != null && fdBody.parent() != null) {
+                        var varScope = fdBody.parent().enclosingVarScope();
+                        if (varScope == scopeAnalysis.rootScope()) {
+                            emit(new Op.SetGlobal(fd.id().name(), fnReg, new GlobalVariableCache()));
+                        } else {
+                            Integer varSlot = annexBVarSlots.get(synth.name());
+                            if (varSlot != null) {
+                                emit(new Op.Mov(new Variable.Local(varSlot), fnReg));
+                            }
+                        }
+                    }
+                }
+            }
         }
         release(fnReg);
     }

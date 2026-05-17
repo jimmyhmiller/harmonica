@@ -238,6 +238,11 @@ final class ScopeCollector {
     private void visitFunctionBody(Node node, List<Pattern> params, BlockStatement body) {
         boolean bodyStrict = currentScope.strict() || hasUseStrictDirective(body);
         ScopeRecord fnScope = pushScope(ScopeType.Function, node, bodyStrict);
+        // Also key the body BlockStatement to the same Function scope so
+        // downstream consumers (Generator.generateFunction) that only hold
+        // a reference to `body` — not the enclosing FunctionDeclaration /
+        // FunctionExpression / ArrowFunctionExpression — can still find it.
+        if (body != null) scopeForNode.put(body, fnScope);
         if (params != null) {
             for (Pattern p : params) collectBindingsInPattern(p, BindingKind.Parameter, node, fnScope);
             for (Pattern p : params) visitPatternDefaults(p);
