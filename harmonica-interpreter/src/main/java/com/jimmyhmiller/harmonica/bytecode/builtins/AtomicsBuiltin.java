@@ -235,10 +235,14 @@ public final class AtomicsBuiltin {
         }
         long i = validateAtomicAccess(state, Realm.arg(a, 1), "waitAsync");
         Object expected = coerceForKind(state.kind, Realm.arg(a, 2), "waitAsync");
+        // ECMA-262 § 25.4.11 step 8: timeout = ToNumber(timeout). NaN→+Inf,
+        // negative→0, positive→max(value, 0).
         Object timeoutArg = Realm.arg(a, 3);
-        // ECMA-262 § 25.4.11 — ToNumber the timeout; that runs valueOf
-        // and lets the test observe Symbol coercion / poisoned-getter rejects.
-        if (timeoutArg != Undefined.VALUE) AbstractOps.toNumber(timeoutArg);
+        double timeout = (timeoutArg == Undefined.VALUE)
+            ? Double.POSITIVE_INFINITY
+            : AbstractOps.toNumber(timeoutArg);
+        if (Double.isNaN(timeout)) timeout = Double.POSITIVE_INFINITY;
+        if (timeout < 0) timeout = 0;
         JSObject result = new JSObject();
         Object current = TypedArrays.loadElement(state, i);
         if (!sameValueZero(current, expected)) {
@@ -246,7 +250,14 @@ public final class AtomicsBuiltin {
             result.set("value", "not-equal");
             return result;
         }
-        // Single-agent: resolve immediately with "timed-out".
+        // Spec step 13: if t = 0, return a non-async result with value
+        // "timed-out" directly (not a promise).
+        if (timeout == 0) {
+            result.set("async", false);
+            result.set("value", "timed-out");
+            return result;
+        }
+        // Single-agent: resolve immediately with "timed-out" via a promise.
         result.set("async", true);
         JSObject promise = Realm.wrapInResolvedPromise("timed-out");
         result.set("value", promise);
