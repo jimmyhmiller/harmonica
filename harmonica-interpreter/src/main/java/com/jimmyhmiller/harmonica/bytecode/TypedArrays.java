@@ -1186,23 +1186,50 @@ public final class TypedArrays {
         }));
 
         p.set("fill", nativeFn("fill", 1, (t, a, c) -> {
+            // ECMA-262 § 23.2.3.9 — captures len from TypedArrayLength initially,
+            // coerces value (ToNumber/ToBigInt) + start + end (each may resize the
+            // buffer or detach via Symbol.toPrimitive / valueOf), then re-fetches
+            // len + re-validates bounds. For length-tracking views over a resizable
+            // buffer, the post-coercion length is what governs the write range.
             TypedArrayState s = requireTypedArray(t, "fill");
             int len = s.length();
             Object v = arg(a, 0);
+            // 4-5. Coerce value to the right numeric type so a later
+            // storeElement on a resized-shrunk buffer still has a value.
+            if (s.kind.bigInt) v = AbstractOps.toBigInt(v);
+            else v = (Double) AbstractOps.toNumber(v);
+            // 6-13. Coerce start/end (these reads may run user code that
+            // resizes the buffer). Compute against the initial captured len.
             int start = sliceIdx(arg(a, 1), len, 0);
             int end = arg(a, 2) == Undefined.VALUE ? len : sliceIdx(arg(a, 2), len, len);
+            // 14-16. Re-fetch len + re-validate (spec steps 14-16).
             if (s.outOfBounds()) throw AbruptCompletion.typeError("TypedArray out of bounds");
+            len = s.length();
+            // 17. final = min(final, len). start is clamped against initial len,
+            // which is fine — start <= initial len <= max(int). Clamp end too.
+            end = Math.min(end, len);
+            start = Math.min(start, len);
             for (int i = start; i < end; i++) storeElement(s, i, v);
             return t;
         }));
 
         p.set("copyWithin", nativeFn("copyWithin", 2, (t, a, c) -> {
+            // ECMA-262 § 23.2.3.6 — coerces target/start/end (each may resize
+            // or detach the buffer via ToIntegerOrInfinity → ToNumber side
+            // effects), then re-fetches len + re-validates so the byte copy
+            // only touches still-valid ranges of a length-tracking view.
             TypedArrayState s = requireTypedArray(t, "copyWithin");
             int len = s.length();
             int target = sliceIdx(arg(a, 0), len, 0);
             int start  = sliceIdx(arg(a, 1), len, 0);
             int end    = arg(a, 2) == Undefined.VALUE ? len : sliceIdx(arg(a, 2), len, len);
             int count = Math.min(end - start, len - target);
+            if (count <= 0) return t;
+            // Steps 14-15: re-snapshot the buffer witness, re-fetch len,
+            // and clip count down to whatever the view still covers.
+            if (s.outOfBounds()) throw AbruptCompletion.typeError("TypedArray out of bounds");
+            int len2 = s.length();
+            count = Math.min(count, Math.min(len2 - start, len2 - target));
             if (count <= 0) return t;
             ArrayBufferData buf = s.rawBuffer();
             if (buf == null || buf.isDetached()) throw AbruptCompletion.typeError("Detached");
@@ -1218,16 +1245,21 @@ public final class TypedArrays {
             int start = sliceIdx(arg(a, 0), len, 0);
             int end   = arg(a, 1) == Undefined.VALUE ? len : sliceIdx(arg(a, 1), len, len);
             int count = Math.max(0, end - start);
-            // § 23.2.3.24 step 9: TypedArraySpeciesCreate(O, « count »).
+            // § 23.2.3.24 step 13: TypedArraySpeciesCreate(O, « count »).
             JSObject out = typedArraySpeciesCreate((JSObject) t,
                 new Object[]{(double) count}, c);
-            // Step 10-11: if count > 0, re-check the source buffer for
-            // detach (the species ctor may have detached it).
+            // Step 14: if count > 0, re-snapshot the source buffer for detach
+            // and re-fetch len. For a length-tracking view backed by a buffer
+            // that was shrunk by the species constructor, we copy through the
+            // longest still-valid prefix and leave the rest at default 0.
             if (count > 0) {
                 if (s.outOfBounds()) {
                     throw AbruptCompletion.typeError(
                         "TypedArray.prototype.slice: source buffer was detached by species constructor");
                 }
+                int len2 = s.length();
+                int finalEnd = Math.min(end, len2);
+                count = Math.max(0, finalEnd - start);
                 TypedArrayState os = stateOf(out);
                 if (os.kind == s.kind) {
                     // Same kind: byte-level copy is fine.
@@ -1617,15 +1649,29 @@ public final class TypedArrays {
         }));
 
         p.set("with", nativeFn("with", 2, (t, a, c) -> {
+            // ECMA-262 § 23.2.3.37 — actualIndex is computed against the
+            // initial captured len, but the IsValidIntegerIndex bounds check
+            // (step 9) runs AFTER value coercion, so a resizable buffer that
+            // shrinks during ToNumber/ToBigInt can drop actualIndex out of
+            // range and force a RangeError.
             TypedArrayState s = requireTypedArray(t, "with");
             int len = s.length();
-            int idx = (int) toIntegerOrInfinity(arg(a, 0));
-            if (idx < 0) idx += len;
-            if (idx < 0 || idx >= len) throw AbruptCompletion.rangeError("with: index out of range");
+            double rel = toIntegerOrInfinity(arg(a, 0));
+            double actual = rel >= 0 ? rel : len + rel;
+            // 7-8. Coerce value (may resize / detach the buffer).
+            Object value = arg(a, 1);
+            if (s.kind.bigInt) value = AbstractOps.toBigInt(value);
+            else value = (Double) AbstractOps.toNumber(value);
+            // 9. IsValidIntegerIndex against the current state.
+            if (s.outOfBounds() || actual < 0 || actual >= s.length()
+                || actual != Math.floor(actual) || Double.isInfinite(actual)) {
+                throw AbruptCompletion.rangeError("with: index out of range");
+            }
+            int idx = (int) actual;
             JSObject out = createTypedArrayFromKind(s.kind, len);
             TypedArrayState os = stateOf(out);
             for (int i = 0; i < len; i++) {
-                storeElement(os, i, i == idx ? arg(a, 1) : loadElement(s, i));
+                storeElement(os, i, i == idx ? value : loadElement(s, i));
             }
             return out;
         }));
