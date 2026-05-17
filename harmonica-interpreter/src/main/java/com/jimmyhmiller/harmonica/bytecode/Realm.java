@@ -1248,6 +1248,58 @@ public final class Realm {
         }
     }
 
+    /** Sentinel returned by {@link #tryDispatchStringSymbolMethod} when the
+     *  Object arg has no callable well-known-symbol method (or the arg is
+     *  not an Object at all). Distinct from {@link Undefined#VALUE} because
+     *  a dispatched method could legitimately return {@code undefined}. */
+    static final Object NO_SYMBOL_DISPATCH = new Object();
+
+    /** ECMA-262 § 22.1.3.{13,14,18,19,20,21} step 2 — for the six
+     *  String.prototype methods that defer to RegExp, look up the
+     *  well-known-symbol method on the first arg and dispatch through it
+     *  when it's a user-provided callable. Returns {@link #NO_SYMBOL_DISPATCH}
+     *  when the caller should fall through to the native fast path.
+     *
+     *  <p>Important: when {@code pat} is a real (un-subclassed) RegExp,
+     *  the looked-up method is the default {@code RegExp.prototype[@@x]}
+     *  we install in {@link #installRegExpPrototype}. Several of those
+     *  shims call back into the String.prototype method, which would
+     *  recurse here forever. So we only dispatch when the resolved
+     *  function is NOT the default prototype installation — i.e. the
+     *  user actually overrode it on the instance or on a subclass.
+     *  This still picks up plain objects with their own {@code Symbol.x}
+     *  method, which is the main spec-compliance gap test262 cares about. */
+    static Object tryDispatchStringSymbolMethod(Object pat, JSSymbol wellKnownSym,
+                                                Object self, Object extraArg,
+                                                InterpContext c) {
+        if (!(pat instanceof JSObject patObj)) return NO_SYMBOL_DISPATCH;
+        if (wellKnownSym == null) return NO_SYMBOL_DISPATCH;
+        Object method = AbstractOps.getProperty(patObj, wellKnownSym.asPropertyKey());
+        if (method == null || method == Undefined.VALUE) return NO_SYMBOL_DISPATCH;
+        if (!(method instanceof JSFunction fn)) {
+            // GetMethod: non-undefined, non-callable trap is a TypeError.
+            throw AbruptCompletion.typeError(
+                wellKnownSym + " is not callable on object");
+        }
+        // Skip dispatch when the resolved method IS the default
+        // RegExp.prototype[@@x] shim we install in installRegExpPrototype().
+        // Several of those shims currently re-enter the String.prototype
+        // method (the global-match path, replace's whole body, split, search),
+        // which would recurse here forever. Falling back to the native fast
+        // path matches the previous behavior for un-subclassed RegExps.
+        // Subclasses with overridden exec still benefit because their
+        // String.prototype path winds through RegExpExec on JSObject.
+        if (regExpPrototype != null) {
+            Object defaultProtoFn = regExpPrototype.properties()
+                .get(wellKnownSym.asPropertyKey());
+            if (defaultProtoFn == fn) return NO_SYMBOL_DISPATCH;
+        }
+        Object[] callArgs = extraArg == null
+            ? new Object[]{self}
+            : new Object[]{self, extraArg};
+        return Interpreter.invokeFunction(fn, pat, callArgs, c);
+    }
+
     /** § 7.1.5 ToIntegerOrInfinity for a string-method position arg —
      *  clamped to [0, len]. Default applied when v is undefined. */
     static int stringMethodPos(Object v, int len, int defaultVal) {
@@ -2619,6 +2671,15 @@ public final class Realm {
         }));
         stringPrototype.set("split", nativeFn("split", 2, (t, a, c) -> {
             String s = thisStringCoerced(t, "split");
+            // ECMA-262 § 22.1.3.21 step 1-2: GetMethod(separator, @@split)
+            // on Object args. Called with (this-string, limit). Must happen
+            // before the undefined-separator shortcut since a user-supplied
+            // object with @@split should still be dispatched.
+            Object sep00 = arg(a, 0);
+            Object limit0 = arg(a, 1);
+            Object dispatched = tryDispatchStringSymbolMethod(
+                sep00, wellKnownSplit, s, limit0, c);
+            if (dispatched != NO_SYMBOL_DISPATCH) return dispatched;
             JSArray out = new JSArray();
             if (arg(a, 0) == Undefined.VALUE) { out.push(s); return out; }
             Object sep0 = a[0];
@@ -2790,11 +2851,31 @@ public final class Realm {
             String s = thisStringCoerced(t, "replaceAll");
             Object search0 = arg(a, 0);
             Object repl0 = arg(a, 1);
-            if (asRegExpSource(search0) != null) {
-                String flags = asRegExpFlags(search0);
-                if (!flags.contains("g")) {
-                    throw AbruptCompletion.typeError("replaceAll must be called with a global RegExp");
+            // ECMA-262 § 22.1.3.20 step 2: when searchValue is an Object,
+            // IsRegExp + flags-must-contain-'g' check FIRST, then
+            // GetMethod(searchValue, @@replace) and dispatch. For real
+            // RegExps this also catches the non-global case before the
+            // fast path swallows it.
+            if (search0 instanceof JSObject searchObj) {
+                boolean isReg = asRegExpSource(searchObj) != null;
+                if (!isReg && wellKnownMatch != null) {
+                    Object matchFlag = AbstractOps.getProperty(searchObj, wellKnownMatch.asPropertyKey());
+                    isReg = matchFlag != Undefined.VALUE && AbstractOps.toBoolean(matchFlag);
                 }
+                if (isReg) {
+                    Object flagsVal = AbstractOps.getProperty(searchObj, "flags");
+                    String flags = flagsVal == Undefined.VALUE ? "" : AbstractOps.toString(flagsVal);
+                    if (!flags.contains("g")) {
+                        throw AbruptCompletion.typeError(
+                            "String.prototype.replaceAll called with a non-global RegExp");
+                    }
+                }
+                Object dispatched = tryDispatchStringSymbolMethod(
+                    search0, wellKnownReplace, s, repl0, c);
+                if (dispatched != NO_SYMBOL_DISPATCH) return dispatched;
+            }
+            if (asRegExpSource(search0) != null) {
+                // Flags check already happened above; preserve old delegate path.
                 // Delegate to replace which already handles the global path.
                 Object replaceFn = stringPrototype.get("replace");
                 if (replaceFn instanceof JSFunction f) {
@@ -2859,14 +2940,31 @@ public final class Realm {
         stringPrototype.set("matchAll", nativeFn("matchAll", 1, (t, a, c) -> {
             String s = thisStringCoerced(t, "matchAll");
             Object pat = arg(a, 0);
+            // ECMA-262 § 22.1.3.14 step 2: when regexp is an Object, do the
+            // IsRegExp + flags-must-contain-'g' check first (covers plain
+            // objects with @@match=true that aren't real RegExps), THEN
+            // GetMethod(regexp, @@matchAll) and dispatch.
+            if (pat instanceof JSObject patObj) {
+                boolean isReg = asRegExpSource(patObj) != null;
+                if (!isReg && wellKnownMatch != null) {
+                    Object matchFlag = AbstractOps.getProperty(patObj, wellKnownMatch.asPropertyKey());
+                    isReg = matchFlag != Undefined.VALUE && AbstractOps.toBoolean(matchFlag);
+                }
+                if (isReg) {
+                    Object flagsVal = AbstractOps.getProperty(patObj, "flags");
+                    String fl = flagsVal == Undefined.VALUE ? "" : AbstractOps.toString(flagsVal);
+                    if (!fl.contains("g")) {
+                        throw AbruptCompletion.typeError(
+                            "String.prototype.matchAll requires a global RegExp");
+                    }
+                }
+                Object dispatched = tryDispatchStringSymbolMethod(
+                    pat, wellKnownMatchAll, s, null, c);
+                if (dispatched != NO_SYMBOL_DISPATCH) return dispatched;
+            }
             Object regexp;
             if (pat instanceof JSObject patObj && asRegExpSource(patObj) != null) {
-                Object flagsVal = AbstractOps.getProperty(patObj, "flags");
-                String f = flagsVal == Undefined.VALUE ? "" : AbstractOps.toString(flagsVal);
-                if (!f.contains("g")) {
-                    throw AbruptCompletion.typeError(
-                        "String.prototype.matchAll requires a global RegExp");
-                }
+                // Flags check already done above; reuse the patObj.
                 regexp = patObj;
             } else {
                 String src = (pat == null || pat == Undefined.VALUE) ? "" : AbstractOps.toString(pat);
@@ -2973,9 +3071,14 @@ public final class Realm {
             return sb.toString();
         }));
         stringPrototype.set("replace", nativeFn("replace", 2, (t, a, c) -> {
-            String s = thisStringCoerced(t, "replace");
+            // ECMA-262 § 22.1.3.18 step 1-2: GetMethod(searchValue, @@replace)
+            // on Object args, called with (this-string, replaceValue).
             Object search0 = arg(a, 0);
             Object repl0 = arg(a, 1);
+            String s = thisStringCoerced(t, "replace");
+            Object dispatched = tryDispatchStringSymbolMethod(
+                search0, wellKnownReplace, s, repl0, c);
+            if (dispatched != NO_SYMBOL_DISPATCH) return dispatched;
             if (asRegExpSource(search0) != null) {
                 java.util.regex.Pattern p = compileJsRegex(asRegExpSource(search0), asRegExpFlags(search0));
                 java.util.regex.Matcher m = p.matcher(s);
@@ -3020,8 +3123,17 @@ public final class Realm {
             return s.substring(0, idx) + repl + s.substring(idx + search.length());
         }));
         stringPrototype.set("match", nativeFn("match", 1, (t, a, c) -> {
-            String s = thisStringCoerced(t, "match");
+            // ECMA-262 § 22.1.3.13 step 1-2: RequireObjectCoercible, then
+            // if regexp is an Object, GetMethod(regexp, @@match) and call
+            // it with the coerced this-string. We only dispatch for non-
+            // RegExp Objects (or RegExp subclasses with overridden @@match);
+            // un-subclassed RegExps fall through to the native fast path
+            // to avoid recursing through RegExp.prototype[@@match].
             Object pat0 = arg(a, 0);
+            String s = thisStringCoerced(t, "match");
+            Object dispatched = tryDispatchStringSymbolMethod(
+                pat0, wellKnownMatch, s, null, c);
+            if (dispatched != NO_SYMBOL_DISPATCH) return dispatched;
             String src = asRegExpSource(pat0);
             String flags = src == null ? "" : asRegExpFlags(pat0);
             if (src == null) {
@@ -3056,8 +3168,13 @@ public final class Realm {
             return out;
         }));
         stringPrototype.set("search", nativeFn("search", 1, (t, a, c) -> {
-            String s = thisStringCoerced(t, "search");
+            // ECMA-262 § 22.1.3.14 step 1-2: GetMethod(regexp, @@search) on
+            // Object args; same recursion-avoiding fallback as match.
             Object pat0 = arg(a, 0);
+            String s = thisStringCoerced(t, "search");
+            Object dispatched = tryDispatchStringSymbolMethod(
+                pat0, wellKnownSearch, s, null, c);
+            if (dispatched != NO_SYMBOL_DISPATCH) return dispatched;
             String src = asRegExpSource(pat0);
             String flags = src == null ? "" : asRegExpFlags(pat0);
             if (src == null) {
