@@ -15,6 +15,7 @@ public enum TypedArrayKind {
     UINT16  ("Uint16Array",       2, false, false, false, false),
     INT32   ("Int32Array",        4, false, false, false, true),
     UINT32  ("Uint32Array",       4, false, false, false, false),
+    FLOAT16 ("Float16Array",      2, true,  false, false, false),
     FLOAT32 ("Float32Array",      4, true,  false, false, false),
     FLOAT64 ("Float64Array",      8, true,  false, false, false),
     BIGINT64("BigInt64Array",     8, false, true,  false, true),

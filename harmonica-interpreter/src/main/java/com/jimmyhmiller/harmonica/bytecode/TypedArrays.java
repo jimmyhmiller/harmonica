@@ -229,6 +229,10 @@ public final class TypedArrays {
                        | ((data[off + 3] & 0xFFL) << 24);
                 return (double) v;
             }
+            case FLOAT16: {
+                int bits = (data[off] & 0xFF) | ((data[off + 1] & 0xFF) << 8);
+                return (double) float16BitsToFloat((short) bits);
+            }
             case FLOAT32: {
                 int bits = (data[off] & 0xFF)
                          | ((data[off + 1] & 0xFF) << 8)
@@ -301,6 +305,12 @@ public final class TypedArrays {
                 data[off + 3] = (byte) (v >> 24);
                 return;
             }
+            case FLOAT16: {
+                short bits = doubleToFloat16Bits(AbstractOps.toNumber(value));
+                data[off]     = (byte)  bits;
+                data[off + 1] = (byte) (bits >> 8);
+                return;
+            }
             case FLOAT32: {
                 int bits = Float.floatToRawIntBits((float) AbstractOps.toNumber(value));
                 data[off]     = (byte)  bits;
@@ -343,6 +353,94 @@ public final class TypedArrays {
         double int32bit = posInt - Math.floor(posInt / 4294967296.0) * 4294967296.0;
         long v = (long) int32bit;
         return v;
+    }
+
+    /** IEEE 754 binary16 → IEEE 754 binary32. */
+    static float float16BitsToFloat(short h) {
+        int sign     = (h >>> 15) & 0x1;
+        int exp      = (h >>> 10) & 0x1F;
+        int mantissa = h & 0x3FF;
+        if (exp == 0) {
+            if (mantissa == 0) {
+                return Float.intBitsToFloat(sign << 31);
+            }
+            // Subnormal — normalize.
+            while ((mantissa & 0x400) == 0) {
+                mantissa <<= 1;
+                exp -= 1;
+            }
+            exp += 1;
+            mantissa &= ~0x400;
+            int f32 = (sign << 31) | ((exp + (127 - 15)) << 23) | (mantissa << 13);
+            return Float.intBitsToFloat(f32);
+        }
+        if (exp == 31) {
+            int f32 = (sign << 31) | (0xFF << 23) | (mantissa << 13);
+            return Float.intBitsToFloat(f32);
+        }
+        int f32 = (sign << 31) | ((exp + (127 - 15)) << 23) | (mantissa << 13);
+        return Float.intBitsToFloat(f32);
+    }
+
+    /** Convert a Java {@code float} to IEEE 754 binary16 (overload — most
+     *  callers should prefer the {@code double} overload below to preserve
+     *  precision for tie-breaking). */
+    static short floatToFloat16Bits(float f) {
+        return doubleToFloat16Bits((double) f);
+    }
+
+    /** IEEE 754 binary64 → IEEE 754 binary16 (round to nearest, ties to even).
+     *  Take a {@code double} directly so the spec's tie-breaking distinction
+     *  between adjacent doubles is preserved (going via {@code float} loses
+     *  the 53→24 mantissa precision and ties round wrong). */
+    static short doubleToFloat16Bits(double d) {
+        long bits = Double.doubleToRawLongBits(d);
+        long sign     = (bits >>> 63) & 0x1L;
+        int  exp      = (int)((bits >>> 52) & 0x7FFL);
+        long mantissa = bits & 0xFFFFFFFFFFFFFL;
+        int signBit = (int) (sign << 15);
+        if (exp == 0x7FF) {
+            // Inf / NaN.
+            if (mantissa == 0) return (short) (signBit | 0x7C00);
+            // NaN — keep one mantissa bit so it stays NaN.
+            int m16 = (int)(mantissa >>> 42);
+            if (m16 == 0) m16 = 1;
+            return (short) (signBit | 0x7C00 | m16);
+        }
+        if (exp == 0 && mantissa == 0) return (short) signBit;
+        // Unbias from float64 (bias 1023) and re-bias to float16 (bias 15).
+        int newExp = exp - 1023 + 15;
+        if (newExp >= 0x1F) return (short) (signBit | 0x7C00);   // overflow → Inf
+        if (newExp <= 0) {
+            // Subnormal in float16 or underflow.
+            // Smallest float16 subnormal = 2^-24; threshold for "round to 0"
+            // is 2^-25 (exactly halfway between 0 and 2^-24).
+            if (newExp < -10) return (short) signBit;
+            // Restore the implicit leading 1 — value was normal in float64,
+            // so we set bit 52 to recover the full 53-bit significand.
+            long m = mantissa | 0x10000000000000L;
+            // Target: M = m >>> shift such that M × 2^-24 = m × 2^(newExp-67),
+            // so shift = 43 - newExp.
+            int shift = 43 - newExp;
+            long sub = m >>> shift;
+            long dropped = m & ((1L << shift) - 1);
+            long halfway = 1L << (shift - 1);
+            if (dropped > halfway || (dropped == halfway && (sub & 1L) != 0)) sub += 1;
+            return (short) (signBit | (int) sub);
+        }
+        // Normal in float16. Round half to even on the 42 dropped bits.
+        long retained = mantissa >>> 42;
+        long dropped = mantissa & 0x3FFFFFFFFFFL;
+        long halfway = 1L << 41;
+        if (dropped > halfway || (dropped == halfway && (retained & 1L) != 0)) {
+            retained += 1;
+            if (retained == 0x400) {
+                retained = 0;
+                newExp += 1;
+                if (newExp >= 0x1F) return (short) (signBit | 0x7C00);
+            }
+        }
+        return (short) (signBit | (newExp << 10) | (int) retained);
     }
 
     /**
@@ -864,6 +962,7 @@ public final class TypedArrays {
         dvGet(dataViewPrototype, "getUint16",  2, true,  TypedArrayKind.UINT16);
         dvGet(dataViewPrototype, "getInt32",   4, true,  TypedArrayKind.INT32);
         dvGet(dataViewPrototype, "getUint32",  4, true,  TypedArrayKind.UINT32);
+        dvGet(dataViewPrototype, "getFloat16", 2, true,  TypedArrayKind.FLOAT16);
         dvGet(dataViewPrototype, "getFloat32", 4, true,  TypedArrayKind.FLOAT32);
         dvGet(dataViewPrototype, "getFloat64", 8, true,  TypedArrayKind.FLOAT64);
         dvGet(dataViewPrototype, "getBigInt64", 8, true, TypedArrayKind.BIGINT64);
@@ -875,6 +974,7 @@ public final class TypedArrays {
         dvSet(dataViewPrototype, "setUint16",  2, true,  TypedArrayKind.UINT16);
         dvSet(dataViewPrototype, "setInt32",   4, true,  TypedArrayKind.INT32);
         dvSet(dataViewPrototype, "setUint32",  4, true,  TypedArrayKind.UINT32);
+        dvSet(dataViewPrototype, "setFloat16", 2, true,  TypedArrayKind.FLOAT16);
         dvSet(dataViewPrototype, "setFloat32", 4, true,  TypedArrayKind.FLOAT32);
         dvSet(dataViewPrototype, "setFloat64", 8, true,  TypedArrayKind.FLOAT64);
         dvSet(dataViewPrototype, "setBigInt64", 8, true, TypedArrayKind.BIGINT64);
@@ -962,6 +1062,7 @@ public final class TypedArrays {
             case UINT16: return (double) (bits & 0xFFFF);
             case INT32:  return (double) (int) bits;
             case UINT32: return (double) (bits & 0xFFFFFFFFL);
+            case FLOAT16: return (double) float16BitsToFloat((short) bits);
             case FLOAT32: return (double) Float.intBitsToFloat((int) bits);
             case FLOAT64: return Double.longBitsToDouble(bits);
             case BIGINT64:
@@ -980,6 +1081,7 @@ public final class TypedArrays {
             case UINT16:   bits = toIntPart(value) & 0xFFFFL; break;
             case INT32:
             case UINT32:   bits = toIntPart(value) & 0xFFFFFFFFL; break;
+            case FLOAT16:  bits = doubleToFloat16Bits(AbstractOps.toNumber(value)) & 0xFFFFL; break;
             case FLOAT32:  bits = Float.floatToRawIntBits((float) AbstractOps.toNumber(value)) & 0xFFFFFFFFL; break;
             case FLOAT64:  bits = Double.doubleToRawLongBits(AbstractOps.toNumber(value)); break;
             case BIGINT64:
