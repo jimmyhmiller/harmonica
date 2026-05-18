@@ -62,8 +62,13 @@ public final class Test262ExecRunner {
 
     enum Outcome { PASS, FAIL_PARSE, FAIL_GEN, FAIL_RUNTIME, FAIL_NEGATIVE_NOT_THROWN, FAIL_WRONG_NEGATIVE_TYPE, FAIL_TIMEOUT }
 
-    /** Per-test interpreter timeout. Tests that hit this are reported as FAIL_TIMEOUT. */
-    static final long TEST_TIMEOUT_MS = Long.getLong("test262.timeout", 5000L);
+    /** Per-test interpreter timeout. Tests that hit this are reported as
+     *  FAIL_TIMEOUT. Bumped to 15s because CI's slower runner was crossing
+     *  the prior 5s cap on stress tests that complete in &lt;1s locally
+     *  (decodeURI/decodeURIComponent UTF-8 sweeps, RegExp script-property
+     *  generation, Date DST-cache exhaustive walks). Tests that actually
+     *  hang are still caught — the new cap is just less twitchy. */
+    static final long TEST_TIMEOUT_MS = Long.getLong("test262.timeout", 15000L);
 
     private static final java.util.concurrent.ExecutorService TIMEOUT_POOL =
         java.util.concurrent.Executors.newCachedThreadPool(r -> {
