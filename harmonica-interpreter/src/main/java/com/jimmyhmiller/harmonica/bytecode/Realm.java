@@ -9374,59 +9374,84 @@ public final class Realm {
     /** ECMA-262 § 19.2.6.2 Decode — invert percent-encoding back to UTF-8
      *  code points. {@code decodeURI} preserves reserved syntactic chars
      *  encoded as %XX (the encoder kept them literal, so they stay
-     *  encoded); {@code decodeURIComponent} decodes everything. */
+     *  encoded); {@code decodeURIComponent} decodes everything.
+     *
+     *  <p>Hot path: a 4-byte stack buffer + inline UTF-8 decoding avoids
+     *  per-codepoint ByteArrayOutputStream / byte[]-copy / toString(UTF_8)
+     *  allocation. test262's decodeURI exhaustive tests do ~1M+ decode
+     *  calls per file. */
     static String uriDecode(String s, boolean component) {
         StringBuilder out = new StringBuilder(s.length());
+        byte[] buf = new byte[4];   // UTF-8 sequences are at most 4 bytes
+        int len = s.length();
         int i = 0;
-        while (i < s.length()) {
+        while (i < len) {
             char ch = s.charAt(i);
             if (ch != '%') { out.append(ch); i++; continue; }
-            // Read a sequence of %XX bytes for a single UTF-8 code point.
-            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
-            int j = i;
-            while (j < s.length() && s.charAt(j) == '%') {
-                if (j + 2 >= s.length()) throw AbruptCompletion.uriError("URI malformed");
-                int hi = digitVal(s.charAt(j + 1));
-                int lo = digitVal(s.charAt(j + 2));
-                if (hi < 0 || lo < 0 || hi >= 16 || lo >= 16) {
+            // Read first %XX, determine UTF-8 sequence length, then read
+            // the remaining (needed-1) continuation bytes directly into buf.
+            if (i + 2 >= len) throw AbruptCompletion.uriError("URI malformed");
+            int hi = digitVal(s.charAt(i + 1));
+            int lo = digitVal(s.charAt(i + 2));
+            if ((hi | lo) < 0 || hi >= 16 || lo >= 16) {
+                throw AbruptCompletion.uriError("URI malformed");
+            }
+            int b0 = (hi << 4) | lo;
+            buf[0] = (byte) b0;
+            int needed = (b0 & 0x80) == 0 ? 1
+                       : (b0 & 0xE0) == 0xC0 ? 2
+                       : (b0 & 0xF0) == 0xE0 ? 3
+                       : (b0 & 0xF8) == 0xF0 ? 4
+                       : -1;
+            if (needed < 0) throw AbruptCompletion.uriError("URI malformed");
+            int j = i + 3;
+            for (int k = 1; k < needed; k++) {
+                if (j + 2 >= len || s.charAt(j) != '%') {
                     throw AbruptCompletion.uriError("URI malformed");
                 }
-                bytes.write((hi << 4) | lo);
+                int hi2 = digitVal(s.charAt(j + 1));
+                int lo2 = digitVal(s.charAt(j + 2));
+                if ((hi2 | lo2) < 0 || hi2 >= 16 || lo2 >= 16) {
+                    throw AbruptCompletion.uriError("URI malformed");
+                }
+                buf[k] = (byte) ((hi2 << 4) | lo2);
                 j += 3;
-                if (bytes.size() == 1) {
-                    int b0 = bytes.toByteArray()[0] & 0xFF;
-                    if ((b0 & 0x80) == 0) break;   // ASCII single byte
-                }
-                int b0 = bytes.toByteArray()[0] & 0xFF;
-                int needed = (b0 & 0xE0) == 0xC0 ? 2
-                           : (b0 & 0xF0) == 0xE0 ? 3
-                           : (b0 & 0xF8) == 0xF0 ? 4
-                           : -1;
-                if (needed < 0) throw AbruptCompletion.uriError("URI malformed");
-                if (bytes.size() >= needed) break;
             }
-            try {
-                String decoded = bytes.toString(java.nio.charset.StandardCharsets.UTF_8);
-                if (!component) {
-                    // decodeURI preserves the reserved syntactic chars
-                    // {@code ; / ? : @ & = + $ , #} — emit them as %XX.
-                    boolean preserve = false;
-                    if (decoded.length() == 1) {
-                        char dc = decoded.charAt(0);
-                        preserve = dc == ';' || dc == '/' || dc == '?' || dc == ':' ||
-                                   dc == '@' || dc == '&' || dc == '=' || dc == '+' ||
-                                   dc == '$' || dc == ',' || dc == '#';
-                    }
-                    if (preserve) {
-                        out.append(s, i, j);
-                    } else {
-                        out.append(decoded);
-                    }
-                } else {
-                    out.append(decoded);
+            // decodeURI: preserve reserved syntactic chars as %XX. Only
+            // single-byte ASCII can match; multi-byte sequences never do.
+            if (!component && needed == 1) {
+                char dc = (char) b0;
+                if (dc == ';' || dc == '/' || dc == '?' || dc == ':'
+                    || dc == '@' || dc == '&' || dc == '=' || dc == '+'
+                    || dc == '$' || dc == ',' || dc == '#') {
+                    out.append(s, i, j);
+                    i = j;
+                    continue;
                 }
-            } catch (Exception e) {
-                throw AbruptCompletion.uriError("URI malformed");
+            }
+            // Inline UTF-8 → char(s). Falls back to new String(...) for
+            // the rare malformed-sequence case so we still throw URIError
+            // with the right error shape.
+            if (needed == 1) {
+                out.append((char) b0);
+            } else if (needed == 2) {
+                int c = ((b0 & 0x1F) << 6) | (buf[1] & 0x3F);
+                if ((buf[1] & 0xC0) != 0x80) throw AbruptCompletion.uriError("URI malformed");
+                out.append((char) c);
+            } else if (needed == 3) {
+                if ((buf[1] & 0xC0) != 0x80 || (buf[2] & 0xC0) != 0x80)
+                    throw AbruptCompletion.uriError("URI malformed");
+                int c = ((b0 & 0x0F) << 12) | ((buf[1] & 0x3F) << 6) | (buf[2] & 0x3F);
+                out.append((char) c);
+            } else {  // needed == 4 — produces a surrogate pair
+                if ((buf[1] & 0xC0) != 0x80 || (buf[2] & 0xC0) != 0x80 || (buf[3] & 0xC0) != 0x80)
+                    throw AbruptCompletion.uriError("URI malformed");
+                int cp = ((b0 & 0x07) << 18) | ((buf[1] & 0x3F) << 12)
+                       | ((buf[2] & 0x3F) << 6) | (buf[3] & 0x3F);
+                if (cp < 0x10000 || cp > 0x10FFFF) throw AbruptCompletion.uriError("URI malformed");
+                int sub = cp - 0x10000;
+                out.append((char) (0xD800 | (sub >>> 10)));
+                out.append((char) (0xDC00 | (sub & 0x3FF)));
             }
             i = j;
         }
